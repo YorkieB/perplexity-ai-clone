@@ -1,6 +1,8 @@
 # Phase 4 — AI agent prompt (global answer instructions + privacy)
 
-**Use this entire block as the initial message** when opening a new agent.
+**Status:** Implemented — see **`docs/PHASE-04-COMPLETE.md`** (PR [#8](https://github.com/YorkieB/perplexity-ai-clone/pull/8), commit `723181b` on `cursor/include-web-toggle-6a03`).
+
+**Use this entire block as the initial message** when opening a new agent (historical / replay).
 
 ---
 
