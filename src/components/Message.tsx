@@ -7,6 +7,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { FileAttachment } from './FileAttachment'
 import { FilePreviewModal } from './FilePreviewModal'
 import { FollowUpQuestions } from './FollowUpQuestions'
+import { ModelCouncilResponse } from './ModelCouncilResponse'
 
 interface MessageProps {
   message: MessageType
@@ -92,6 +93,16 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
             <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
               {message.content}
             </p>
+          ) : message.isModelCouncil && message.modelResponses ? (
+            <ModelCouncilResponse
+              modelResponses={message.modelResponses}
+              convergenceScore={
+                message.modelResponses[0]?.convergenceScore
+              }
+              commonThemes={[]}
+              divergentPoints={[]}
+              onCitationHover={setHighlightedSource}
+            />
           ) : (
             <MarkdownRenderer
               content={message.content}

@@ -3,7 +3,7 @@ import { useKV } from '@github/spark/hooks'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
-import { executeWebSearch, generateFollowUpQuestions } from '@/lib/api'
+import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -76,7 +76,7 @@ function App() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[]) => {
+  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean) => {
     setIsGenerating(true)
 
     const userMessage: MessageType = {
@@ -147,9 +147,38 @@ function App() {
           .join('\n')}`
       }
 
-      const promptText = `You are an advanced AI research assistant.${
-        systemPrompt ? ` ${systemPrompt}` : ''
-      }${modeInstruction}${contextSection}${fileContext}
+      if (useModelCouncil) {
+        const councilResult = await executeModelCouncil(query, contextSection, fileContext, systemPrompt + modeInstruction)
+        
+        const assistantMessage: MessageType = {
+          id: generateId(),
+          role: 'assistant',
+          content: 'Model Council Response',
+          sources: webSources.length > 0 ? webSources : undefined,
+          createdAt: Date.now(),
+          focusMode,
+          isModelCouncil: true,
+          modelResponses: councilResult.models.map(m => ({
+            ...m,
+            convergenceScore: councilResult.convergence.score,
+          })),
+        }
+
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: [...t.messages, assistantMessage],
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
+        )
+      } else {
+        const promptText = `You are an advanced AI research assistant.${
+          systemPrompt ? ` ${systemPrompt}` : ''
+        }${modeInstruction}${contextSection}${fileContext}
 
 User query: ${query}
 
@@ -162,32 +191,33 @@ ${
 }
 `
 
-      const response = await window.spark.llm(promptText, 'gpt-4o-mini')
+        const response = await window.spark.llm(promptText, 'gpt-4o-mini')
 
-      const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
+        const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
-      const assistantMessage: MessageType = {
-        id: generateId(),
-        role: 'assistant',
-        content: response,
-        sources: webSources.length > 0 ? webSources : undefined,
-        createdAt: Date.now(),
-        modelUsed: 'gpt-4o-mini',
-        focusMode,
-        followUpQuestions,
-      }
+        const assistantMessage: MessageType = {
+          id: generateId(),
+          role: 'assistant',
+          content: response,
+          sources: webSources.length > 0 ? webSources : undefined,
+          createdAt: Date.now(),
+          modelUsed: 'gpt-4o-mini',
+          focusMode,
+          followUpQuestions,
+        }
 
-      setThreads((current) =>
-        (current || []).map((t) =>
-          t.id === thread.id
-            ? {
-                ...t,
-                messages: [...t.messages, assistantMessage],
-                updatedAt: Date.now(),
-              }
-            : t
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: [...t.messages, assistantMessage],
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
         )
-      )
+      }
     } catch (error) {
       toast.error('Failed to generate response. Please try again.')
       console.error(error)

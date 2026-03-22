@@ -131,3 +131,106 @@ Generate exactly 3 follow-up questions as a JSON array of strings. Each question
     return []
   }
 }
+
+export interface ModelCouncilResult {
+  models: Array<{
+    model: string
+    content: string
+    generatedAt: number
+  }>
+  convergence: {
+    score: number
+    commonThemes: string[]
+    divergentPoints: string[]
+  }
+}
+
+export async function executeModelCouncil(
+  query: string,
+  contextSection: string,
+  fileContext: string,
+  systemPrompt: string
+): Promise<ModelCouncilResult> {
+  const models = ['gpt-4o', 'gpt-4o-mini'] as const
+  
+  const basePrompt = `You are an advanced AI research assistant.${
+    systemPrompt ? ` ${systemPrompt}` : ''
+  }${contextSection}${fileContext}
+
+User query: ${query}
+
+${
+  contextSection
+    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+    : fileContext
+    ? 'Analyze the provided files and answer the user query based on the file content.'
+    : 'Provide a helpful, accurate answer based on your knowledge.'
+}`
+
+  const responses = await Promise.all(
+    models.map(async (model) => {
+      try {
+        const content = await window.spark.llm(basePrompt, model)
+        return {
+          model,
+          content,
+          generatedAt: Date.now(),
+        }
+      } catch (error) {
+        console.error(`Failed to get response from ${model}:`, error)
+        return {
+          model,
+          content: `Error: Failed to generate response from ${model}`,
+          generatedAt: Date.now(),
+        }
+      }
+    })
+  )
+
+  const analysisPrompt = window.spark.llmPrompt`Analyze these responses from different AI models to the same query and identify:
+1. A convergence score (0-100) indicating how much the models agree
+2. Common themes that appear in all responses
+3. Divergent points where models disagree or take different approaches
+
+Query: ${query}
+
+${responses
+  .map(
+    (r, i) => `
+Model ${i + 1} (${r.model}):
+${r.content}
+`
+  )
+  .join('\n')}
+
+Return a JSON object with this structure:
+{
+  "score": <number 0-100>,
+  "commonThemes": ["theme1", "theme2"],
+  "divergentPoints": ["difference1", "difference2"]
+}`
+
+  try {
+    const analysisResult = await window.spark.llm(analysisPrompt, 'gpt-4o-mini', true)
+    const convergence = JSON.parse(analysisResult)
+    
+    return {
+      models: responses,
+      convergence: {
+        score: convergence.score || 0,
+        commonThemes: convergence.commonThemes || [],
+        divergentPoints: convergence.divergentPoints || [],
+      },
+    }
+  } catch (error) {
+    console.error('Failed to analyze convergence:', error)
+    return {
+      models: responses,
+      convergence: {
+        score: 0,
+        commonThemes: [],
+        divergentPoints: [],
+      },
+    }
+  }
+}

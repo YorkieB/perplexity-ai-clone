@@ -18,6 +18,13 @@ export interface UploadedFile {
   uploadedAt: number
 }
 
+export interface ModelResponse {
+  model: string
+  content: string
+  generatedAt: number
+  convergenceScore?: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -29,6 +36,8 @@ export interface Message {
   focusMode?: FocusMode
   isDeepResearch?: boolean
   followUpQuestions?: string[]
+  isModelCouncil?: boolean
+  modelResponses?: ModelResponse[]
 }
 
 export interface Thread {

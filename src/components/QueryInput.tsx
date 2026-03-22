@@ -38,7 +38,7 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[]) => void
+  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean) => void
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -60,6 +60,7 @@ export function QueryInput({
   const [isUploadingFile, setIsUploadingFile] = useState(false)
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [useModelCouncil, setUseModelCouncil] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -70,9 +71,10 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined)
+      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil)
       setQuery('')
       setAttachedFiles([])
+      setUseModelCouncil(false)
     }
   }
 
@@ -195,14 +197,16 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => {
+                    setUseModelCouncil(true)
+                    toast.success('Model Council enabled for next query')
+                  }}
                 >
                   <Hammer size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Model council</span>
                   <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-primary/10 text-primary border-primary/20">
                     Max
                   </Badge>
-                  <Lock size={14} className="text-muted-foreground" />
                 </button>
 
                 <button
