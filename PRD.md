@@ -41,11 +41,11 @@ This is a multi-view application with sophisticated state management across work
 - **Success criteria**: Toggle state persists per workspace, visual feedback is immediate, responses demonstrably differ in depth
 
 ### AI Search with Source Attribution
-- **Functionality**: LLM-powered responses enriched with real-time web search results from Tavily API, including cited sources with URLs, titles, and relevant snippets
-- **Purpose**: Provides trustworthy, verifiable, and up-to-date information for research tasks by combining AI reasoning with current web data
+- **Functionality**: LLM-powered responses enriched with real-time web search results from Tavily API, including cited sources with URLs, titles, and relevant snippets. Features advanced Markdown rendering with syntax highlighting for code blocks, support for tables, lists, and inline citations that interactively highlight corresponding sources.
+- **Purpose**: Provides trustworthy, verifiable, and up-to-date information for research tasks by combining AI reasoning with current web data, with visual citation mapping for immediate fact verification.
 - **Trigger**: User submits any query in an active thread
-- **Progression**: Query submitted → User message appears → Web search executes in background → Loading skeleton for AI response → Search results gathered → Response generated with real-time context → Response streams in with synthesized information → Source cards appear at bottom with actual web results → Click source → Opens in new tab
-- **Success criteria**: Sources are relevant, current, and clickable; citations map to source cards; responses feel conversational yet authoritative; graceful fallback if search API fails; toast notification on search errors
+- **Progression**: Query submitted → User message appears → Web search executes in background → Loading skeleton for AI response → Search results gathered → Response generated with real-time context → Response streams in with synthesized information → Horizontal scrollable source carousel appears above response with favicon, domain, and title for each source → Markdown-formatted response renders with proper formatting → User hovers over inline citation numbers [1], [2], etc. → Corresponding source card in carousel highlights with accent ring and scale animation → Click citation or source card → Opens in new tab
+- **Success criteria**: Sources are relevant, current, and clickable; inline citations [1], [2] etc. are parsed from response text and rendered as interactive superscripts; hovering/clicking citations highlights corresponding source cards; Markdown renders correctly including bold, lists, tables, and code blocks with syntax highlighting; source carousel is horizontally scrollable on mobile; graceful fallback if search API fails; toast notification on search errors
 
 ### Empty State Experience
 - **Functionality**: When no thread is active, display large centered textarea with welcoming interface
@@ -131,7 +131,10 @@ Animations should reinforce the sense of intelligence and responsiveness—every
 
 - **Customizations**:
   - Custom message bubble component with role-based styling (user vs assistant)
-  - Custom source citation component with hover states showing full snippet
+  - Custom Markdown renderer component that parses and renders bold, italics, lists (bulleted and numbered), tables, code blocks with syntax highlighting, and blockquotes
+  - Custom citation parser that uses regex to find [1], [2], etc. patterns and transforms them into interactive superscript buttons
+  - Custom source card component redesigned as compact horizontal cards showing favicon (via Google favicon API), domain name (extracted from URL), and truncated title
+  - Custom source carousel with horizontal scroll, custom scrollbar styling, and highlight states triggered by citation hover
   - Custom sidebar navigation items with active state indicators (vertical accent bar)
   - Custom empty state component with centered layout and example queries
   - Custom loading indicator for streaming AI responses (animated gradient)
@@ -141,6 +144,8 @@ Animations should reinforce the sense of intelligence and responsiveness—every
   - Inputs: Default border → Focus (accent glow with ring) → Error (red border) → Disabled
   - Sidebar Items: Default → Hover (background highlight) → Active (accent border + background) → Loading (skeleton)
   - Toggle: Off (muted) → Transitioning (spring animation) → On (accent color glow)
+  - Citation Superscripts: Default (accent background/text) → Hover (accent solid with scale) → Active (maintains highlight)
+  - Source Cards: Default → Hover (border accent) → Highlighted via citation (accent ring, background tint, scale up) → Active (maintains highlight)
 
 - **Icon Selection**:
   - List/Sidebar for sidebar collapse/expand toggle
@@ -168,7 +173,11 @@ Animations should reinforce the sense of intelligence and responsiveness—every
   - Sidebar becomes full-screen overlay with slide-in animation from left
   - Hamburger menu button appears in top-left corner
   - Main textarea reduces to single-column layout with full width
-  - Source cards stack vertically instead of grid
+  - Source carousel maintains horizontal scroll with touch gestures, cards sized at 256px-288px width
+  - Citation superscripts remain interactive with tap instead of hover
+  - Markdown content scales typography appropriately (14px body text on mobile vs 15px desktop)
+  - Code blocks in Markdown become horizontally scrollable to prevent overflow
+  - Tables in Markdown become horizontally scrollable within their container
   - Input bar maintains sticky position but with reduced padding
   - Workspace detail view becomes scrollable single column
-  - Touch targets minimum 44px for all interactive elements
+  - Touch targets minimum 44px for all interactive elements including citation superscripts
