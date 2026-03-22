@@ -2,6 +2,10 @@
 
 A production-ready, highly responsive AI-powered search engine built with React, TypeScript, and Tailwind CSS. Features real-time web search integration, workspace organization, and persistent conversation threads.
 
+## Documentation
+
+- **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
+
 ## 🚀 Features
 
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data
