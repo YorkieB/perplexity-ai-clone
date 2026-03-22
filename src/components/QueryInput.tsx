@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { UploadedFile } from '@/lib/types'
+import { CloudFile, UploadedFile } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
@@ -15,7 +15,6 @@ import { ModelCouncilSelector } from '@/components/ModelCouncilSelector'
 import { CloudFileBrowser } from '@/components/CloudFileBrowser'
 import { FileAnalysisDialog } from '@/components/FileAnalysisDialog'
 import {
-  ArrowRight,
   Lightning,
   Plus,
   UploadSimple,
@@ -27,11 +26,9 @@ import {
   FilePlus,
   GraduationCap,
   CaretRight,
-  Lock,
   Microphone,
   Waveform,
   Desktop,
-  Sparkle,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -83,7 +80,7 @@ export function QueryInput({
     setFileAnalysisOpen(true)
   }
 
-  const handleCloudFilesImport = (files: any[]) => {
+  const handleCloudFilesImport = (files: CloudFile[]) => {
     const processedFiles: UploadedFile[] = files.map((file) => ({
       id: file.id,
       name: file.name,
