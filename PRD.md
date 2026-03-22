@@ -61,6 +61,13 @@ This is a multi-view application with sophisticated state management across work
 - **Progression**: Query submitted → Tavily API called with advanced search depth → Up to 6 high-quality sources retrieved → Results passed as context to LLM → LLM synthesizes answer using web data → Sources displayed with response
 - **Success criteria**: API key properly configured via environment variable, graceful error handling with user-friendly toast notifications, no hardcoded credentials, search failures don't block basic AI functionality
 
+### Enhanced Query Input with Advanced Options
+- **Functionality**: Rich input interface with expandable options menu including file upload, cloud integration, connectors, deep research mode, model council, and learning modes. Features model selection, voice input, and keyboard shortcuts.
+- **Purpose**: Provides power users with advanced tools while maintaining simplicity for basic searches through progressive disclosure
+- **Trigger**: Click "+" button to reveal options menu, or type "/" for search mode shortcuts
+- **Progression**: User clicks + icon → Popover menu appears with options → User selects option (e.g., "Deep research" with New badge) → Option activates with visual feedback → Query input adapts to selected mode → User types query with mode context → Submit executes with enhanced parameters
+- **Success criteria**: Options menu is intuitive and accessible, badges clearly indicate new/premium features, locked features show lock icons, model selector works smoothly, voice input button provides visual feedback, keyboard shortcuts are discoverable, textarea auto-expands as user types, all interactive elements have proper hover/focus states
+
 ### Active Thread View
 - **Functionality**: Scrollable message history with sticky input bar at bottom
 - **Purpose**: Maintains conversation context while keeping input always accessible

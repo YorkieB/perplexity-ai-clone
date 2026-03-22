@@ -1,9 +1,36 @@
-import { useState, KeyboardEvent } from 'react'
+import { useState, KeyboardEvent, useRef, useEffect } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { ArrowRight, Lightning } from '@phosphor-icons/react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Badge } from '@/components/ui/badge'
+import { Separator } from '@/components/ui/separator'
+import {
+  ArrowRight,
+  Lightning,
+  Plus,
+  UploadSimple,
+  CloudArrowUp,
+  Plugs,
+  MagnifyingGlass,
+  Hammer,
+  DotsThree,
+  FilePlus,
+  GraduationCap,
+  CaretRight,
+  Lock,
+  Microphone,
+  Waveform,
+  Desktop,
+} from '@phosphor-icons/react'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 interface QueryInputProps {
   onSubmit: (query: string, advancedMode: boolean) => void
@@ -21,6 +48,10 @@ export function QueryInput({
   onAdvancedModeChange,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [moreExpanded, setMoreExpanded] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const handleSubmit = () => {
     if (query.trim() && !isLoading) {
@@ -34,28 +65,199 @@ export function QueryInput({
       e.preventDefault()
       handleSubmit()
     }
+    if (e.key === '/' && query === '') {
+      e.preventDefault()
+      setShowSuggestions(true)
+    }
   }
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
+    }
+  }, [query])
 
   return (
     <div className="space-y-3">
-      <div className="relative">
-        <Textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          className="min-h-[120px] resize-none pr-12 text-base"
-          disabled={isLoading}
-          id="query-input"
-        />
-        <Button
-          size="icon"
-          onClick={handleSubmit}
-          disabled={!query.trim() || isLoading}
-          className="absolute bottom-3 right-3 h-9 w-9"
-        >
-          <ArrowRight size={18} weight="bold" />
-        </Button>
+      <div className="relative bg-card border border-border rounded-xl shadow-sm">
+        <div className="flex items-start gap-2 p-3">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 mt-1 flex-shrink-0 hover:bg-muted"
+                disabled={isLoading}
+              >
+                <Plus size={18} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              className="w-72 p-2"
+              align="start"
+              side="top"
+              sideOffset={8}
+            >
+              <div className="space-y-1">
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <UploadSimple size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Upload files or images</span>
+                  <Lock size={14} className="text-muted-foreground" />
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <CloudArrowUp size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Add files from cloud</span>
+                  <CaretRight size={14} className="text-muted-foreground" />
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <Plugs size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Connectors and sources</span>
+                  <CaretRight size={14} className="text-muted-foreground" />
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <MagnifyingGlass size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Deep research</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20">
+                    New
+                  </Badge>
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <Hammer size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Model council</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-primary/10 text-primary border-primary/20">
+                    Max
+                  </Badge>
+                  <Lock size={14} className="text-muted-foreground" />
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => setMoreExpanded(!moreExpanded)}
+                >
+                  <DotsThree size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">More</span>
+                  <CaretRight
+                    size={14}
+                    className={`text-muted-foreground transition-transform ${
+                      moreExpanded ? 'rotate-90' : ''
+                    }`}
+                  />
+                </button>
+
+                {moreExpanded && (
+                  <div className="pl-8 space-y-1 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm text-muted-foreground">
+                      Additional options...
+                    </button>
+                  </div>
+                )}
+
+                <Separator className="my-1" />
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <FilePlus size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Create files and apps</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20">
+                    New
+                  </Badge>
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={() => {}}
+                >
+                  <GraduationCap size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">Learn step by step</span>
+                </button>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <div className="flex-1 min-w-0">
+            <Textarea
+              ref={textareaRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              className="min-h-[40px] max-h-[200px] resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-base leading-relaxed"
+              disabled={isLoading}
+              id="query-input"
+              rows={1}
+            />
+            {showSuggestions && query === '' && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Show suggestions
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto px-2">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 hover:bg-muted"
+              disabled={isLoading}
+            >
+              <Desktop size={16} />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 hover:bg-muted"
+              disabled={isLoading}
+            >
+              <Microphone size={16} />
+            </Button>
+
+            <Button
+              size="icon"
+              onClick={handleSubmit}
+              disabled={!query.trim() || isLoading}
+              className="h-8 w-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Waveform size={16} weight="fill" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="px-3 pb-2 flex items-center gap-2 text-xs text-muted-foreground border-t border-border pt-2 mt-1">
+          <span>Type / for search modes and shortcuts</span>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
