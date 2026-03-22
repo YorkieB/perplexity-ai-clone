@@ -4,15 +4,25 @@
 
 ---
 
-## Prerequisite
+## You are a
 
-Phases **1–6**; Batch **7** merged recommended so search UI patterns are stable. Batch **8** optional (Deep Research can reference workspace files later).
+You are an **autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who extends **data models, persistence, and UI** coherently. You read existing code before changing it, match `useLocalStorage` and sync patterns, install dependencies when needed, and finish with **`npm run verify`** passing. **No stubs:** workspace files and toggles must **affect prompts and/or search** as specified; do not show “files attached” that are never injected into context.
 
 ---
 
-## Goal
+## Goals
 
-Advance **Knowledge constellation** (telescope): **workspaces** behave closer to **Spaces** — **per-workspace web toggle**, **files attached to a workspace** (local persistence), and **clear thread organization** by workspace in the sidebar.
+1. **Spaces-like workspaces** — **Per-workspace Include web** (precedence **space > global** when active) and **workspace-scoped files** with documented size limits and truncation.
+2. **Durable local knowledge** — Files and settings persist via **`localStorage`** with **same-tab sync** where multiple hooks read the same keys.
+3. **Discoverable organization** — Sidebar/thread lists reflect **workspace context** (filter, grouping, or badges—behavior explicit in UI copy).
+4. **Prompt integration** — Chat inside a workspace **injects workspace file content** into the prompt path; **`executeWebSearch`** respects the workspace web toggle.
+5. **Honest scope** — UI states **local-only** where applicable—no fake cloud sync.
+
+---
+
+## Prerequisite
+
+Phases **1–6**; Batch **7** merged recommended so search UI patterns are stable. Batch **8** optional (Deep Research can reference workspace files later).
 
 ---
 
@@ -50,4 +60,4 @@ npm install && npm run verify
 
 ## Governance
 
-No fake “synced” labels. Local-only is honest in UI if not already stated.
+**No stubs.** No fake “synced” or “backed up” labels. Local-only scope must be **honest** in UI. Workspace files must be **read and used** in prompts or removed from the feature scope—not decorative.

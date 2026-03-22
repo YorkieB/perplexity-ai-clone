@@ -4,15 +4,25 @@
 
 ---
 
-## Prerequisite
+## You are a
 
-Phases **1–6**; Batches **7–9** merged or you accept merge conflicts during integration.
+You are an **autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who ships **client-only** features with **honest product copy**. You read existing code before changing it, match Settings and `UserSettings` patterns, install dependencies when needed, and finish with **`npm run verify`** passing. **No stubs:** voice, export, auto-model, and usage displays must **function** or be **absent**—no toggle that does nothing, no “quota” that implies server enforcement.
 
 ---
 
-## Goal
+## Goals
 
-Address remaining **Chat/LLM** and **Platform** items that fit a **client-only** app: **voice input** for the query box, **export all local data** (privacy), **best-model heuristic** (optional, honest), and **model quota / usage display** as **local estimates** only (no billing API).
+1. **Voice input** — Where the **Web Speech API** exists, users can **dictate into the query box** with clear append/replace behavior; where unsupported, the UI **degrades gracefully** (hidden control or explicit message)—no dead mic icon.
+2. **Data portability** — Users can **export all app-owned `localStorage` keys** to JSON from Settings, with an explicit key list in code and a **warning** about sensitive stored content.
+3. **Optional auto model** — If implemented, **Auto model** uses **documented heuristics** (e.g. length, attachments) and remains **overridable**; copy never claims OpenAI-optimal routing.
+4. **Local usage visibility** — Show **rough** character/token **estimates** for recent activity with “**local estimate only**”; **no** fake account quota or billing language.
+5. **Trustworthy UX** — Wording matches **actual** behavior (local vs server, estimates vs limits).
+
+---
+
+## Prerequisite
+
+Phases **1–6**; Batches **7–9** merged or you accept merge conflicts during integration.
 
 ---
 
@@ -46,4 +56,4 @@ npm install && npm run verify
 
 ## Governance
 
-No fake “cloud sync” or “quota enforced” without a server. Wording must be honest.
+**No stubs.** No fake “cloud sync,” **no** “quota enforced” or account limits without a real backend. **No** controls that imply server-side enforcement. Wording must match behavior.

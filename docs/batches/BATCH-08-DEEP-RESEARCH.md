@@ -4,17 +4,27 @@
 
 ---
 
-## Prerequisite
+## You are a
 
-Batch **7** merged (or at minimum Phases 1–6 + stable `executeWebSearch` / UI).
+You are an **autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who ships **real multi-step flows**—each stage performs actual LLM or search work. You read existing code before changing it, match project conventions, install dependencies when needed, and finish with **`npm run verify`** passing. **No stubs:** no decorative progress lists, no fake “searching…” states without real `executeWebSearch` calls, no buttons that no-op.
 
 ---
 
-## Goal
+## Goals
 
-Ship a **credible Deep Research** flow (telescope **Execution constellation**): an **orchestrated multi-step** research pass — **plan → multiple searches → synthesize** — with **visible progress**, **cancellable** or **single-flight** guard, and **respect** for Include web / focus / workspace prompts.
+1. **Real Deep Research pipeline** — **Plan → N searches → synthesize** using existing **`/api/llm`** and **`executeWebSearch`** (Tavily), with honest behavior when **Include web** is off (disable with explanation **or** documented LLM-only path—pick one).
+2. **Observable progress** — Users see **actual** stages (planning, sub-query i/n, synthesizing) tied to real async work; errors are **visible**, not swallowed.
+3. **Safe orchestration** — Caps, ordering, and parallelism are **documented constants**; single-flight or cancel policy is explicit and works.
+4. **Integrated answer** — Final assistant content reflects **aggregated** retrieval + synthesis (tables in prompt when comparing sources).
+5. **Optional persistence** — If time allows, message metadata captures deep-research facts for export; otherwise skip metadata rather than stub fields.
 
 This is **not** Comet, Labs, or server-side jobs — all in-browser with existing `/api/llm` + Tavily.
+
+---
+
+## Prerequisite
+
+Batch **7** merged (or at minimum Phases 1–6 + stable `executeWebSearch` / UI).
 
 ---
 
@@ -52,4 +62,4 @@ npm install && npm run verify
 
 ## Governance
 
-Every step must **do real work** or **not be shown**. No fake progress ticks.
+**No stubs.** Every progress step must correspond to **real work** (LLM call, search call, or explicit user-visible abort/skip with honest copy). No fake progress ticks or static step lists.

@@ -4,15 +4,25 @@
 
 ---
 
-## Prerequisite
+## You are a
 
-Phases **1–6** merged or present on your working branch (`docs/PHASE-01-COMPLETE.md` … `docs/PHASE-06-COMPLETE.md`).
+You are an **autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who ships **complete, working features** (no placeholders). You read existing code before changing it, match project conventions, install dependencies when needed, and finish with **`npm run verify`** passing. **No stubs:** do not add fake search steps, empty “transparency” panels, or UI that suggests behavior that is not implemented—**hide** or **omit** rather than fake.
 
 ---
 
-## Goal
+## Goals
 
-Close major **gaps in the Search constellation** (telescope Layer 2–3): users can **see how search was performed**, get **deduplicated / grouped sources**, and **reliable related questions** — without changing the core Tavily integration contract unless necessary.
+1. **Transparent search UX** — When web search runs successfully, users understand **what** was queried and **how** (focus, advanced) via a real, data-backed trace; when web is off, **no** trace block.
+2. **Cleaner sources** — `Source[]` is **deduplicated** by normalized URL without breaking `SourceCard` or downstream consumers.
+3. **Scannable citations** — Sources are **grouped by domain** with expand/collapse where it helps; single-source groups behave like today.
+4. **Reliable follow-ups** — Related questions appear **consistently** after answers (including council paths where applicable), with a sensible empty state.
+5. **Shippable quality** — Optional dev-only logging only; production UI stays clean.
+
+---
+
+## Prerequisite
+
+Phases **1–6** merged or present on your working branch (`docs/PHASE-01-COMPLETE.md` … `docs/PHASE-06-COMPLETE.md`).
 
 ---
 
@@ -48,4 +58,4 @@ npm install && npm run verify
 
 ## Governance
 
-No placeholder panels. If step trace has nothing to show, hide it.
+**No stubs.** No placeholder panels, no invented steps. If the step trace has nothing truthful to show, **hide** the block entirely.
