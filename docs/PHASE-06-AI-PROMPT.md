@@ -1,6 +1,8 @@
 # Phase 6 — AI agent prompt (defaults & appearance)
 
-**Use this entire block as the initial message** when opening a new agent.
+**Status:** Implemented — see **`docs/PHASE-06-COMPLETE.md`** (merge commit / PR as per your feature branch).
+
+**Use this entire block as the initial message** when opening a new agent (historical / replay).
 
 ---
 
