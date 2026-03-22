@@ -69,3 +69,33 @@ export function buildPriorLlmMessages(priorMessages: Message[]): LlmChatMessage[
 
   return out
 }
+
+/**
+ * Matches {@link App.tsx} main-path system line: workspace prompt + advanced-mode instruction concatenated as one string.
+ */
+export function buildAssistantSystemContentFromCombined(combinedInstructions: string): string {
+  const rest = combinedInstructions.trimStart()
+  if (!rest) return 'You are an advanced AI research assistant.'
+  return `You are an advanced AI research assistant. ${rest}`
+}
+
+/**
+ * Final user turn for Model Council: web/file snippets + query + legacy council task instructions (unchanged from pre–Phase 3 single-blob prompt).
+ */
+export function buildCouncilResearchUserContent(
+  contextSection: string,
+  fileContext: string,
+  query: string
+): string {
+  const taskInstruction = contextSection.trim()
+    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+    : fileContext.trim()
+      ? 'Analyze the provided files and answer the user query based on the file content.'
+      : 'Provide a helpful, accurate answer based on your knowledge.'
+
+  return `${contextSection}${fileContext}
+
+User query: ${query}
+
+${taskInstruction}`
+}

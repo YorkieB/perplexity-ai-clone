@@ -1,5 +1,10 @@
-import { callLlm, llmPrompt } from './llm'
-import { Source, FocusMode } from './types'
+import { callLlm, llmPrompt, type LlmChatMessage } from './llm'
+import { Source, FocusMode, type Message } from './types'
+import {
+  buildAssistantSystemContentFromCombined,
+  buildCouncilResearchUserContent,
+  buildPriorLlmMessages,
+} from './threadContext'
 
 export interface TavilySearchResult {
   url: string
@@ -153,31 +158,30 @@ export async function executeModelCouncil(
   contextSection: string,
   fileContext: string,
   systemPrompt: string,
-  selectedModels: string[] = ['gpt-4o', 'gpt-4o-mini']
+  selectedModels: string[] = ['gpt-4o', 'gpt-4o-mini'],
+  priorMessages: Message[] = []
 ): Promise<ModelCouncilResult> {
   const models = selectedModels.length > 0 ? selectedModels : ['gpt-4o', 'gpt-4o-mini']
-  
-  const basePrompt = `You are an advanced AI research assistant.${
-    systemPrompt ? ` ${systemPrompt}` : ''
-  }${contextSection}${fileContext}
 
-User query: ${query}
+  const systemContent = buildAssistantSystemContentFromCombined(systemPrompt)
+  const prior = buildPriorLlmMessages(priorMessages)
+  const researchUserContent = buildCouncilResearchUserContent(contextSection, fileContext, query)
 
-${
-  contextSection
-    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
-    : fileContext
-    ? 'Analyze the provided files and answer the user query based on the file content.'
-    : 'Provide a helpful, accurate answer based on your knowledge.'
-}`
+  const sharedCouncilMessages: LlmChatMessage[] = [
+    { role: 'system', content: systemContent },
+    ...prior,
+    { role: 'user', content: researchUserContent },
+  ]
+
+  const promptCharBudget = sharedCouncilMessages.reduce((n, m) => n + m.content.length, 0)
 
   const responses = await Promise.all(
     models.map(async (model) => {
       const startTime = Date.now()
       try {
-        const content = await callLlm(basePrompt, model)
+        const content = await callLlm({ model, messages: sharedCouncilMessages, jsonMode: false })
         const responseTime = Date.now() - startTime
-        const tokenCount = Math.ceil((basePrompt.length + content.length) / 4)
+        const tokenCount = Math.ceil((promptCharBudget + content.length) / 4)
         return {
           model,
           content,

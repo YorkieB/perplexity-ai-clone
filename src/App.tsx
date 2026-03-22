@@ -14,7 +14,7 @@ import {
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
-import { buildPriorLlmMessages } from '@/lib/threadContext'
+import { buildAssistantSystemContentFromCombined, buildPriorLlmMessages } from '@/lib/threadContext'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -179,7 +179,14 @@ function MainApp() {
       }
 
       if (useModelCouncil) {
-        const councilResult = await executeModelCouncil(query, contextSection, fileContext, systemPrompt + modeInstruction, selectedModels)
+        const councilResult = await executeModelCouncil(
+          query,
+          contextSection,
+          fileContext,
+          systemPrompt + modeInstruction,
+          selectedModels,
+          thread.messages.slice(0, -1)
+        )
         
         const assistantMessage: MessageType = {
           id: generateId(),
@@ -220,7 +227,7 @@ User query: ${query}
 
 ${taskInstruction}`
 
-        const systemContent = `You are an advanced AI research assistant.${systemPrompt ? ` ${systemPrompt}` : ''}${modeInstruction}`
+        const systemContent = buildAssistantSystemContentFromCombined(`${systemPrompt}${modeInstruction}`)
 
         const prior = buildPriorLlmMessages(thread.messages.slice(0, -1))
 

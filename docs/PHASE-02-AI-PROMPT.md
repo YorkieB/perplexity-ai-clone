@@ -8,7 +8,11 @@ The standard assistant reply uses **OpenAI Chat Completions** via `POST /api/llm
 2. **Prior turns** — Built by `buildPriorLlmMessages()` in `src/lib/threadContext.ts` from `thread.messages.slice(0, -1)` (everything before the current user message). Roles are `user` / `assistant` with plain text; model-council replies are condensed from `modelResponses`.
 3. **Final `user`** — Current-turn web snippets, file snippets, the user query, and task instructions (web vs files vs general knowledge).
 
-Legacy single-string `callLlm(prompt, model)` remains for follow-up questions, Model Council, JSON helpers, etc.
+Legacy single-string `callLlm(prompt, model)` remains for follow-up questions, JSON helpers, and convergence analysis.
+
+### Model Council (Phase 3)
+
+Each council model uses the same `messages` shape as the main path: **system** (`buildAssistantSystemContentFromCombined`), **prior** (`buildPriorLlmMessages`), **final user** (`buildCouncilResearchUserContent` — legacy council task text, not the main-path “prior conversation when relevant” wording). Convergence analysis stays a single-shot `callLlm` with JSON mode on the current query plus model outputs.
 
 ### Limits (see `threadContext.ts`)
 
