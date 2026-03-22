@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useKV } from '@github/spark/hooks'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -40,8 +40,8 @@ export function AppSidebar({
   onNewWorkspace,
   onOpenSettings,
 }: AppSidebarProps) {
-  const [threads] = useKV<Thread[]>('threads', [])
-  const [workspaces] = useKV<Workspace[]>('workspaces', [])
+  const [threads] = useLocalStorage<Thread[]>('threads', [])
+  const [workspaces] = useLocalStorage<Workspace[]>('workspaces', [])
   const [libraryOpen, setLibraryOpen] = useState(true)
   const [workspacesOpen, setWorkspacesOpen] = useState(true)
 

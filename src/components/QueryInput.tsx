@@ -63,7 +63,7 @@ export function QueryInput({
   const [previewOpen, setPreviewOpen] = useState(false)
   const [useModelCouncil, setUseModelCouncil] = useState(false)
   const [modelCouncilDialogOpen, setModelCouncilDialogOpen] = useState(false)
-  const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'claude-3.5-sonnet'])
+  const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'gpt-4o-mini'])
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false)
   const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)

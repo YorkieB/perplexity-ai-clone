@@ -1,4 +1,4 @@
-import { sparkLlmPrompt } from './sparkLlmPrompt'
+import { callLlm, llmPrompt } from './llm'
 import { Source, FocusMode } from './types'
 
 export interface TavilySearchResult {
@@ -109,7 +109,7 @@ export async function generateFollowUpQuestions(
   sources: Source[]
 ): Promise<string[]> {
   try {
-    const prompt = sparkLlmPrompt`Based on this conversation, generate 3 concise follow-up questions that would help the user dig deeper.
+    const prompt = llmPrompt`Based on this conversation, generate 3 concise follow-up questions that would help the user dig deeper.
 
 User Query: ${query}
 
@@ -117,11 +117,11 @@ Assistant Response: ${response.substring(0, 500)}...
 
 Sources covered: ${sources.map((s) => s.title).join(', ')}
 
-Generate exactly 3 follow-up questions as a JSON array of strings. Each question should be specific and actionable.`
+Return a JSON object only, with this shape: {"questions": ["question1", "question2", "question3"]}. Each question must be specific and actionable.`
 
-    const result = await window.spark.llm(prompt, 'gpt-4o-mini', true)
+    const result = await callLlm(prompt, 'gpt-4o-mini', true)
     const parsed = JSON.parse(result)
-    
+
     if (parsed.questions && Array.isArray(parsed.questions)) {
       return parsed.questions.slice(0, 3)
     }
@@ -175,7 +175,7 @@ ${
     models.map(async (model) => {
       const startTime = Date.now()
       try {
-        const content = await window.spark.llm(basePrompt, model)
+        const content = await callLlm(basePrompt, model)
         const responseTime = Date.now() - startTime
         const tokenCount = Math.ceil((basePrompt.length + content.length) / 4)
         return {
@@ -199,7 +199,7 @@ ${
     })
   )
 
-  const analysisPrompt = sparkLlmPrompt`Analyze these responses from different AI models to the same query and identify:
+  const analysisPrompt = llmPrompt`Analyze these responses from different AI models to the same query and identify:
 1. A convergence score (0-100) indicating how much the models agree
 2. Common themes that appear in all responses
 3. Divergent points where models disagree or take different approaches
@@ -223,7 +223,7 @@ Return a JSON object with this structure:
 }`
 
   try {
-    const analysisResult = await window.spark.llm(analysisPrompt, 'gpt-4o-mini', true)
+    const analysisResult = await callLlm(analysisPrompt, 'gpt-4o-mini', true)
     const convergence = JSON.parse(analysisResult)
     
     return {

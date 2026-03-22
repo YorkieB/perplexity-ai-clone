@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { useKV } from '@github/spark/hooks'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
+import { callLlm } from '@/lib/llm'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -17,8 +18,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
 function MainApp() {
-  const [threads, setThreads] = useKV<Thread[]>('threads', [])
-  const [workspaces, setWorkspaces] = useKV<Workspace[]>('workspaces', [])
+  const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
+  const [workspaces, setWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
@@ -194,7 +195,7 @@ ${
 }
 `
 
-        const response = await window.spark.llm(promptText, 'gpt-4o-mini')
+        const response = await callLlm(promptText, 'gpt-4o-mini')
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 

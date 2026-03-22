@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useKV } from '@github/spark/hooks'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
 import { Card } from '@/components/ui/card'
@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
 
 export function OAuthCallback() {
-  const [settings, setSettings] = useKV<UserSettings>('user-settings', {
+  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
     apiKeys: {},
     oauthTokens: {},
     oauthClientIds: {},
