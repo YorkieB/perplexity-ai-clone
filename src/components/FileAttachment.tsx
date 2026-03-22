@@ -1,16 +1,17 @@
 import { UploadedFile } from '@/lib/types'
 import { formatFileSize } from '@/lib/helpers'
 import { Button } from '@/components/ui/button'
-import { X, File, FileText, Image, FileCsv } from '@phosphor-icons/react'
+import { X, File, FileText, Image, FileCsv, Sparkle } from '@phosphor-icons/react'
 
 interface FileAttachmentProps {
   file: UploadedFile
   onRemove?: () => void
   showRemove?: boolean
   onPreview?: () => void
+  onAnalyze?: () => void
 }
 
-export function FileAttachment({ file, onRemove, showRemove = true, onPreview }: FileAttachmentProps) {
+export function FileAttachment({ file, onRemove, showRemove = true, onPreview, onAnalyze }: FileAttachmentProps) {
   const getFileIcon = () => {
     if (file.type.startsWith('image/')) {
       return <Image size={16} className="text-accent" />
@@ -59,6 +60,17 @@ export function FileAttachment({ file, onRemove, showRemove = true, onPreview }:
           </div>
           <div className="text-xs text-muted-foreground">{formatFileSize(file.size)}</div>
         </button>
+        {onAnalyze && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 flex-shrink-0"
+            onClick={onAnalyze}
+            title="Analyze with AI"
+          >
+            <Sparkle size={12} weight="fill" className="text-primary" />
+          </Button>
+        )}
         {showRemove && onRemove && (
           <Button
             variant="ghost"

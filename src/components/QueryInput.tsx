@@ -12,6 +12,8 @@ import { processFile } from '@/lib/helpers'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
 import { ModelCouncilSelector } from '@/components/ModelCouncilSelector'
+import { CloudFileBrowser } from '@/components/CloudFileBrowser'
+import { FileAnalysisDialog } from '@/components/FileAnalysisDialog'
 import {
   ArrowRight,
   Lightning,
@@ -29,6 +31,7 @@ import {
   Microphone,
   Waveform,
   Desktop,
+  Sparkle,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -64,12 +67,32 @@ export function QueryInput({
   const [useModelCouncil, setUseModelCouncil] = useState(false)
   const [modelCouncilDialogOpen, setModelCouncilDialogOpen] = useState(false)
   const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'claude-3.5-sonnet'])
+  const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false)
+  const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
+  const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
     setPreviewOpen(true)
+  }
+
+  const handleFileAnalyze = (file: UploadedFile) => {
+    setFileToAnalyze(file)
+    setFileAnalysisOpen(true)
+  }
+
+  const handleCloudFilesImport = (files: any[]) => {
+    const processedFiles: UploadedFile[] = files.map((file) => ({
+      id: file.id,
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      content: `[Cloud file from ${file.source}]\nPath: ${file.path}\nSize: ${(file.size / 1024).toFixed(2)} KB\nLast modified: ${new Date(file.modifiedAt).toLocaleDateString()}`,
+      uploadedAt: Date.now(),
+    }))
+    setAttachedFiles((prev) => [...prev, ...processedFiles])
   }
 
   const handleSubmit = () => {
@@ -185,7 +208,9 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => {
+                    setCloudBrowserOpen(true)
+                  }}
                 >
                   <CloudArrowUp size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Add files from cloud</span>
@@ -280,6 +305,7 @@ export function QueryInput({
                     file={file}
                     onRemove={() => handleRemoveFile(file.id)}
                     onPreview={() => handleFilePreview(file)}
+                    onAnalyze={() => handleFileAnalyze(file)}
                   />
                 ))}
               </div>
@@ -374,6 +400,10 @@ export function QueryInput({
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
+      
+      <FileAnalysisDialog file={fileToAnalyze} open={fileAnalysisOpen} onOpenChange={setFileAnalysisOpen} />
+      
+      <CloudFileBrowser open={cloudBrowserOpen} onOpenChange={setCloudBrowserOpen} onSelectFiles={handleCloudFilesImport} />
       
       <ModelCouncilSelector
         open={modelCouncilDialogOpen}
