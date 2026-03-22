@@ -6,25 +6,20 @@ export function llmPrompt(strings: TemplateStringsArray, ...values: unknown[]): 
   return strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), '')
 }
 
-export async function callLlm(
-  prompt: string,
-  model: string,
-  jsonMode = false
-): Promise<string> {
-  const body: Record<string, unknown> = {
-    model,
-    messages: [
-      { role: 'system', content: 'You are a helpful assistant.' },
-      { role: 'user', content: prompt },
-    ],
-    temperature: 1,
-    max_tokens: 4096,
-  }
+export type LlmChatRole = 'system' | 'user' | 'assistant'
 
-  if (jsonMode) {
-    body.response_format = { type: 'json_object' }
-  }
+export interface LlmChatMessage {
+  role: LlmChatRole
+  content: string
+}
 
+export interface CallLlmChatOptions {
+  model: string
+  messages: LlmChatMessage[]
+  jsonMode?: boolean
+}
+
+async function postChatCompletion(body: Record<string, unknown>): Promise<string> {
   const response = await fetch('/api/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,4 +45,44 @@ export async function callLlm(
     throw new Error('LLM response missing message content')
   }
   return content
+}
+
+export async function callLlm(prompt: string, model: string, jsonMode?: boolean): Promise<string>
+export async function callLlm(options: CallLlmChatOptions): Promise<string>
+export async function callLlm(
+  promptOrOptions: string | CallLlmChatOptions,
+  model?: string,
+  jsonMode = false
+): Promise<string> {
+  if (typeof promptOrOptions === 'object' && promptOrOptions !== null && 'messages' in promptOrOptions) {
+    const { model: m, messages, jsonMode: j = false } = promptOrOptions
+    const body: Record<string, unknown> = {
+      model: m,
+      messages,
+      temperature: 1,
+      max_tokens: 4096,
+    }
+    if (j) {
+      body.response_format = { type: 'json_object' }
+    }
+    return postChatCompletion(body)
+  }
+
+  const prompt = promptOrOptions as string
+  const mod = model as string
+  const body: Record<string, unknown> = {
+    model: mod,
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 1,
+    max_tokens: 4096,
+  }
+
+  if (jsonMode) {
+    body.response_format = { type: 'json_object' }
+  }
+
+  return postChatCompletion(body)
 }

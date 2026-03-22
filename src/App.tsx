@@ -14,6 +14,7 @@ import {
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
+import { buildPriorLlmMessages } from '@/lib/threadContext'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -48,6 +49,12 @@ function MainApp() {
       includeWebSearch: enabled,
     }))
   }, [setUserSettings])
+
+  useEffect(() => {
+    if (!includeWebSearch) {
+      setFocusMode('all')
+    }
+  }, [includeWebSearch])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
@@ -200,22 +207,27 @@ function MainApp() {
           )
         )
       } else {
-        const promptText = `You are an advanced AI research assistant.${
-          systemPrompt ? ` ${systemPrompt}` : ''
-        }${modeInstruction}${contextSection}${fileContext}
+        const taskInstruction =
+          webSources.length > 0
+            ? 'Using the web search results provided above (and prior conversation when relevant), give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+            : files && files.length > 0
+              ? 'Analyze the provided files and answer the user query based on the file content and prior conversation when relevant.'
+              : 'Provide a helpful, accurate answer based on your knowledge and the conversation so far.'
+
+        const currentUserContent = `${contextSection}${fileContext}
 
 User query: ${query}
 
-${
-  webSources.length > 0
-    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
-    : files && files.length > 0
-    ? 'Analyze the provided files and answer the user query based on the file content.'
-    : 'Provide a helpful, accurate answer based on your knowledge.'
-}
-`
+${taskInstruction}`
 
-        const response = await callLlm(promptText, 'gpt-4o-mini')
+        const systemContent = `You are an advanced AI research assistant.${systemPrompt ? ` ${systemPrompt}` : ''}${modeInstruction}`
+
+        const prior = buildPriorLlmMessages(thread.messages.slice(0, -1))
+
+        const response = await callLlm({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: systemContent }, ...prior, { role: 'user', content: currentUserContent }],
+        })
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
@@ -291,7 +303,12 @@ ${
         <div className="flex flex-col h-screen">
           <div className="border-b border-border bg-background px-6 py-3">
             <div className="max-w-4xl mx-auto flex items-center gap-3">
-              <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
+              <FocusModeSelector
+                value={focusMode}
+                onChange={setFocusMode}
+                disabled={isGenerating}
+                webSearchEnabled={includeWebSearch}
+              />
               <span className="text-sm text-muted-foreground">
                 {activeThread.messages.length} message{activeThread.messages.length !== 1 ? 's' : ''}
               </span>
@@ -334,7 +351,12 @@ ${
       <div className="flex flex-col h-screen">
         <div className="border-b border-border bg-background px-6 py-3">
           <div className="max-w-2xl mx-auto">
-            <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
+            <FocusModeSelector
+              value={focusMode}
+              onChange={setFocusMode}
+              disabled={isGenerating}
+              webSearchEnabled={includeWebSearch}
+            />
           </div>
         </div>
         <EmptyState onExampleClick={(query) => handleQuery(query, advancedMode)} />
