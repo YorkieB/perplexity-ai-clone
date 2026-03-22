@@ -37,6 +37,13 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     },
   })
 
+  const connectedServicesData = settings?.connectedServices ?? {
+    googledrive: false,
+    onedrive: false,
+    github: false,
+    dropbox: false,
+  }
+
   const [activeService, setActiveService] = useState<'googledrive' | 'onedrive' | 'github' | 'dropbox' | null>(null)
   const [files, setFiles] = useState<CloudFile[]>([])
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
@@ -50,7 +57,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-500',
       bgColor: 'bg-blue-500/10',
-      connected: settings?.connectedServices?.googledrive ?? false,
+      connected: connectedServicesData.googledrive,
     },
     {
       id: 'onedrive' as const,
@@ -58,7 +65,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-600',
       bgColor: 'bg-blue-600/10',
-      connected: settings?.connectedServices?.onedrive ?? false,
+      connected: connectedServicesData.onedrive,
     },
     {
       id: 'github' as const,
@@ -66,7 +73,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-gray-500',
       bgColor: 'bg-gray-500/10',
-      connected: settings?.connectedServices?.github ?? false,
+      connected: connectedServicesData.github,
     },
     {
       id: 'dropbox' as const,
@@ -74,7 +81,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-400',
       bgColor: 'bg-blue-400/10',
-      connected: settings?.connectedServices?.dropbox ?? false,
+      connected: connectedServicesData.dropbox,
     },
   ]
 
