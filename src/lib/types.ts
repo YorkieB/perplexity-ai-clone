@@ -102,6 +102,11 @@ export interface UserSettings {
   }
   /** When true (default), run Tavily/web search before answering. When false, skip web search and use workspace prompt, thread context, files, and model knowledge only. */
   includeWebSearch?: boolean
+  /** Global assistant behaviour (merged before workspace prompt in the system message). */
+  answerRole?: string
+  answerTone?: string
+  answerStructure?: string
+  answerConstraints?: string
 }
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {

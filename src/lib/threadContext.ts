@@ -1,5 +1,20 @@
-import type { Message } from '@/lib/types'
+import type { Message, UserSettings } from '@/lib/types'
 import type { LlmChatMessage } from '@/lib/llm'
+
+/** Max length per global answer-instruction field before truncation. */
+export const MAX_ANSWER_INSTRUCTION_FIELD_CHARS = 4000
+
+export type GlobalAnswerInstructions = Pick<
+  UserSettings,
+  'answerRole' | 'answerTone' | 'answerStructure' | 'answerConstraints'
+>
+
+export interface AssistantSystemContentParams {
+  /** Global defaults (applied before workspace); empty fields omitted. */
+  globalAnswer?: Partial<GlobalAnswerInstructions>
+  /** Workspace `customSystemPrompt` + advanced-mode instruction (concatenated). */
+  workspaceAndMode: string
+}
 
 /** Max prior messages (user + assistant) before the current turn. */
 export const MAX_PRIOR_MESSAGES = 28
@@ -70,13 +85,34 @@ export function buildPriorLlmMessages(priorMessages: Message[]): LlmChatMessage[
   return out
 }
 
+function buildGlobalAnswerBlock(globalAnswer?: Partial<GlobalAnswerInstructions>): string {
+  if (!globalAnswer) return ''
+  const lines: string[] = []
+  const add = (label: string, key: keyof GlobalAnswerInstructions) => {
+    const raw = globalAnswer[key]
+    if (raw === undefined || raw === null) return
+    const t = truncate(String(raw).trim(), MAX_ANSWER_INSTRUCTION_FIELD_CHARS)
+    if (t) lines.push(`${label}: ${t}`)
+  }
+  add('Role', 'answerRole')
+  add('Tone', 'answerTone')
+  add('Structure', 'answerStructure')
+  add('Constraints', 'answerConstraints')
+  return lines.join('\n')
+}
+
 /**
- * Matches {@link App.tsx} main-path system line: workspace prompt + advanced-mode instruction concatenated as one string.
+ * Single system-message builder for main chat and Model Council.
+ * Merge order: base persona → global answer instructions → workspace + mode (additive).
  */
-export function buildAssistantSystemContentFromCombined(combinedInstructions: string): string {
-  const rest = combinedInstructions.trimStart()
-  if (!rest) return 'You are an advanced AI research assistant.'
-  return `You are an advanced AI research assistant. ${rest}`
+export function buildAssistantSystemContent(params: AssistantSystemContentParams): string {
+  const globalBlock = buildGlobalAnswerBlock(params.globalAnswer)
+  const wm = params.workspaceAndMode.trim()
+  const parts: string[] = ['You are an advanced AI research assistant.']
+  if (globalBlock) parts.push(globalBlock)
+  if (wm) parts.push(wm)
+  if (parts.length === 1) return parts[0]
+  return parts.join('\n\n')
 }
 
 /**

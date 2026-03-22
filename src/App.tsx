@@ -14,7 +14,11 @@ import {
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
-import { buildAssistantSystemContentFromCombined, buildPriorLlmMessages } from '@/lib/threadContext'
+import {
+  buildAssistantSystemContent,
+  buildPriorLlmMessages,
+  type AssistantSystemContentParams,
+} from '@/lib/threadContext'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -55,6 +59,18 @@ function MainApp() {
       setFocusMode('all')
     }
   }, [includeWebSearch])
+
+  const handleClearAllThreads = useCallback(() => {
+    setThreads([])
+    setActiveThreadId(null)
+    toast.success('All conversations cleared')
+  }, [setThreads])
+
+  const handleClearAllWorkspaces = useCallback(() => {
+    setWorkspaces([])
+    setActiveWorkspaceId(null)
+    toast.success('All workspaces cleared')
+  }, [setWorkspaces])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
@@ -156,6 +172,16 @@ function MainApp() {
         ? ' Provide a comprehensive, in-depth analysis with detailed explanations.'
         : ''
 
+      const assistantSystem: AssistantSystemContentParams = {
+        globalAnswer: {
+          answerRole: userSettings?.answerRole,
+          answerTone: userSettings?.answerTone,
+          answerStructure: userSettings?.answerStructure,
+          answerConstraints: userSettings?.answerConstraints,
+        },
+        workspaceAndMode: `${systemPrompt}${modeInstruction}`,
+      }
+
       let contextSection = ''
       if (webSources.length > 0) {
         contextSection = `\n\nWeb Search Results:\n${webSources
@@ -183,7 +209,7 @@ function MainApp() {
           query,
           contextSection,
           fileContext,
-          systemPrompt + modeInstruction,
+          assistantSystem,
           selectedModels,
           thread.messages.slice(0, -1)
         )
@@ -227,7 +253,7 @@ User query: ${query}
 
 ${taskInstruction}`
 
-        const systemContent = buildAssistantSystemContentFromCombined(`${systemPrompt}${modeInstruction}`)
+        const systemContent = buildAssistantSystemContent(assistantSystem)
 
         const prior = buildPriorLlmMessages(thread.messages.slice(0, -1))
 
@@ -411,6 +437,8 @@ ${taskInstruction}`
       <SettingsDialog
         open={settingsDialogOpen}
         onOpenChange={setSettingsDialogOpen}
+        onClearAllThreads={handleClearAllThreads}
+        onClearAllWorkspaces={handleClearAllWorkspaces}
       />
     </div>
   )

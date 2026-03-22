@@ -12,14 +12,38 @@ import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Globe } from '@phosphor-icons/react'
+import {
+  Key,
+  CloudArrowUp,
+  Link as LinkIcon,
+  CheckCircle,
+  Warning,
+  XCircle,
+  Globe,
+  NotePencil,
+  ShieldWarning,
+} from '@phosphor-icons/react'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onClearAllThreads: () => void
+  onClearAllWorkspaces: () => void
 }
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, onClearAllThreads, onClearAllWorkspaces }: SettingsDialogProps) {
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const [localApiKeys, setLocalApiKeys] = useState({
@@ -55,6 +79,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     dropbox: false,
   })
 
+  const [localAnswerInstructions, setLocalAnswerInstructions] = useState({
+    answerRole: '',
+    answerTone: '',
+    answerStructure: '',
+    answerConstraints: '',
+  })
+
   useEffect(() => {
     setLocalApiKeys({
       digitalOcean: settings?.apiKeys.digitalOcean || '',
@@ -71,7 +102,24 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       github: settings?.oauthClientSecrets.github || '',
       dropbox: settings?.oauthClientSecrets.dropbox || '',
     })
+    setLocalAnswerInstructions({
+      answerRole: settings?.answerRole ?? '',
+      answerTone: settings?.answerTone ?? '',
+      answerStructure: settings?.answerStructure ?? '',
+      answerConstraints: settings?.answerConstraints ?? '',
+    })
   }, [settings])
+
+  const handleSaveAnswerInstructions = () => {
+    setSettings((current) => ({
+      ...current!,
+      answerRole: localAnswerInstructions.answerRole.trim() || undefined,
+      answerTone: localAnswerInstructions.answerTone.trim() || undefined,
+      answerStructure: localAnswerInstructions.answerStructure.trim() || undefined,
+      answerConstraints: localAnswerInstructions.answerConstraints.trim() || undefined,
+    }))
+    toast.success('Answer instructions saved')
+  }
 
   const handleSaveApiKeys = () => {
     setSettings((current) => ({
@@ -195,19 +243,27 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         <DialogHeader>
           <DialogTitle className="text-2xl font-bold">Settings</DialogTitle>
           <DialogDescription>
-            Manage your API keys and cloud storage connections
+            API keys, assistant defaults, OAuth, and privacy controls
           </DialogDescription>
         </DialogHeader>
 
         <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="api-keys" className="gap-2">
-              <Key size={16} />
-              API Keys
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 gap-1 h-auto p-1">
+            <TabsTrigger value="api-keys" className="gap-1.5 text-xs sm:text-sm px-2">
+              <Key size={16} className="shrink-0" />
+              <span className="truncate">API Keys</span>
             </TabsTrigger>
-            <TabsTrigger value="oauth" className="gap-2">
-              <CloudArrowUp size={16} />
-              OAuth Connections
+            <TabsTrigger value="oauth" className="gap-1.5 text-xs sm:text-sm px-2">
+              <CloudArrowUp size={16} className="shrink-0" />
+              <span className="truncate">OAuth</span>
+            </TabsTrigger>
+            <TabsTrigger value="assistant" className="gap-1.5 text-xs sm:text-sm px-2">
+              <NotePencil size={16} className="shrink-0" />
+              <span className="truncate">Assistant</span>
+            </TabsTrigger>
+            <TabsTrigger value="privacy" className="gap-1.5 text-xs sm:text-sm px-2">
+              <ShieldWarning size={16} className="shrink-0" />
+              <span className="truncate">Privacy</span>
             </TabsTrigger>
           </TabsList>
 
@@ -465,6 +521,147 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </p>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="assistant" className="flex-1 overflow-y-auto space-y-6 mt-4">
+            <Card className="p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-primary/10 rounded-lg">
+                  <NotePencil className="text-primary" size={20} />
+                </div>
+                <div className="flex-1 space-y-1">
+                  <h3 className="font-semibold text-lg">Answer instructions</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Global defaults for how the assistant behaves. Applied before workspace-specific prompts. Leave fields empty to skip.
+                  </p>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="answer-role">Role</Label>
+                  <Textarea
+                    id="answer-role"
+                    placeholder="e.g. You are a careful technical writer…"
+                    value={localAnswerInstructions.answerRole}
+                    onChange={(e) =>
+                      setLocalAnswerInstructions((p) => ({ ...p, answerRole: e.target.value }))
+                    }
+                    className="min-h-[72px] resize-y"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="answer-tone">Tone</Label>
+                  <Textarea
+                    id="answer-tone"
+                    placeholder="e.g. Neutral, concise, friendly…"
+                    value={localAnswerInstructions.answerTone}
+                    onChange={(e) =>
+                      setLocalAnswerInstructions((p) => ({ ...p, answerTone: e.target.value }))
+                    }
+                    className="min-h-[72px] resize-y"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="answer-structure">Structure</Label>
+                  <Textarea
+                    id="answer-structure"
+                    placeholder="e.g. Use headings, lead with a summary…"
+                    value={localAnswerInstructions.answerStructure}
+                    onChange={(e) =>
+                      setLocalAnswerInstructions((p) => ({ ...p, answerStructure: e.target.value }))
+                    }
+                    className="min-h-[72px] resize-y"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="answer-constraints">Constraints</Label>
+                  <Textarea
+                    id="answer-constraints"
+                    placeholder="Always / never rules, length limits, formatting…"
+                    value={localAnswerInstructions.answerConstraints}
+                    onChange={(e) =>
+                      setLocalAnswerInstructions((p) => ({ ...p, answerConstraints: e.target.value }))
+                    }
+                    className="min-h-[96px] resize-y"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Close
+                </Button>
+                <Button onClick={handleSaveAnswerInstructions}>Save answer instructions</Button>
+              </div>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="privacy" className="flex-1 overflow-y-auto space-y-6 mt-4">
+            <Card className="p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-destructive/10 rounded-lg">
+                  <ShieldWarning className="text-destructive" size={20} />
+                </div>
+                <div className="flex-1 space-y-1">
+                  <h3 className="font-semibold text-lg">Local data</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Conversations and workspaces are stored in this browser. These actions cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <Separator />
+              <div className="flex flex-col sm:flex-row gap-3">
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" className="w-full sm:w-auto">
+                      Clear all conversations
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Clear all conversations?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This removes every chat thread stored on this device. Your current selection will be cleared.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={() => onClearAllThreads()}
+                      >
+                        Clear conversations
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" className="w-full sm:w-auto">
+                      Clear all workspaces
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Clear all workspaces?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This removes every workspace and its custom instructions stored on this device.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={() => onClearAllWorkspaces()}
+                      >
+                        Clear workspaces
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            </Card>
           </TabsContent>
         </Tabs>
       </DialogContent>

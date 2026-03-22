@@ -12,7 +12,7 @@ Legacy single-string `callLlm(prompt, model)` remains for follow-up questions, J
 
 ### Model Council (Phase 3)
 
-Each council model uses the same `messages` shape as the main path: **system** (`buildAssistantSystemContentFromCombined`), **prior** (`buildPriorLlmMessages`), **final user** (`buildCouncilResearchUserContent` — legacy council task text, not the main-path “prior conversation when relevant” wording). Convergence analysis stays a single-shot `callLlm` with JSON mode on the current query plus model outputs.
+Each council model uses the same `messages` shape as the main path: **system** (`buildAssistantSystemContent` — global answer instructions + workspace/mode), **prior** (`buildPriorLlmMessages`), **final user** (`buildCouncilResearchUserContent` — legacy council task text, not the main-path “prior conversation when relevant” wording). Convergence analysis stays a single-shot `callLlm` with JSON mode on the current query plus model outputs.
 
 ### Limits (see `threadContext.ts`)
 

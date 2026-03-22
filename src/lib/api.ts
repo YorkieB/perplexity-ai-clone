@@ -1,7 +1,8 @@
 import { callLlm, llmPrompt, type LlmChatMessage } from './llm'
 import { Source, FocusMode, type Message } from './types'
 import {
-  buildAssistantSystemContentFromCombined,
+  buildAssistantSystemContent,
+  type AssistantSystemContentParams,
   buildCouncilResearchUserContent,
   buildPriorLlmMessages,
 } from './threadContext'
@@ -157,13 +158,13 @@ export async function executeModelCouncil(
   query: string,
   contextSection: string,
   fileContext: string,
-  systemPrompt: string,
+  assistantSystem: AssistantSystemContentParams,
   selectedModels: string[] = ['gpt-4o', 'gpt-4o-mini'],
   priorMessages: Message[] = []
 ): Promise<ModelCouncilResult> {
   const models = selectedModels.length > 0 ? selectedModels : ['gpt-4o', 'gpt-4o-mini']
 
-  const systemContent = buildAssistantSystemContentFromCombined(systemPrompt)
+  const systemContent = buildAssistantSystemContent(assistantSystem)
   const prior = buildPriorLlmMessages(priorMessages)
   const researchUserContent = buildCouncilResearchUserContent(contextSection, fileContext, query)
 
