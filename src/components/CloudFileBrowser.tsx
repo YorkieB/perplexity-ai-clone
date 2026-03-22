@@ -26,6 +26,9 @@ interface CloudFileBrowserProps {
 export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFileBrowserProps) {
   const [settings] = useKV<UserSettings>('user-settings', {
     apiKeys: {},
+    oauthTokens: {},
+    oauthClientIds: {},
+    oauthClientSecrets: {},
     connectedServices: {
       googleDrive: false,
       oneDrive: false,

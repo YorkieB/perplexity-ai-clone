@@ -61,9 +61,34 @@ export interface Workspace {
   createdAt: number
 }
 
+export interface OAuthToken {
+  accessToken: string
+  refreshToken?: string
+  expiresAt: number
+  tokenType: string
+}
+
 export interface UserSettings {
   apiKeys: {
     digitalOcean?: string
+    googleDrive?: string
+    oneDrive?: string
+    github?: string
+    dropbox?: string
+  }
+  oauthTokens: {
+    googleDrive?: OAuthToken
+    oneDrive?: OAuthToken
+    github?: OAuthToken
+    dropbox?: OAuthToken
+  }
+  oauthClientIds: {
+    googleDrive?: string
+    oneDrive?: string
+    github?: string
+    dropbox?: string
+  }
+  oauthClientSecrets: {
     googleDrive?: string
     oneDrive?: string
     github?: string

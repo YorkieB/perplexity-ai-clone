@@ -12,10 +12,14 @@ import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
 import { SettingsDialog } from '@/components/SettingsDialog'
+import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
 function App() {
+  if (window.location.pathname === '/oauth/callback') {
+    return <OAuthCallback />
+  }
   const [threads, setThreads] = useKV<Thread[]>('threads', [])
   const [workspaces, setWorkspaces] = useKV<Workspace[]>('workspaces', [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
