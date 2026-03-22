@@ -16,6 +16,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **[Phase 4 complete (summary)](docs/PHASE-04-COMPLETE.md)** — `UserSettings` answer fields, `buildAssistantSystemContent`, Privacy tab (PR #8).
 - **[Phase 5 AI prompt](docs/PHASE-05-AI-PROMPT.md)** — export / copy thread & answers as Markdown (Pages-lite, client-only).
 - **[Phase 5 complete (summary)](docs/PHASE-05-COMPLETE.md)** — `exportMarkdown.ts`, `ThreadExportActions`, download & clipboard (PR #8).
+- **[Phase 6 AI prompt](docs/PHASE-06-AI-PROMPT.md)** — default chat model, theme (next-themes), notifications stub (General settings).
 
 ## 🚀 Features
 
