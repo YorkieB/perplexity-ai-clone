@@ -41,11 +41,11 @@ This is a multi-view application with sophisticated state management across work
 - **Success criteria**: Toggle state persists per workspace, visual feedback is immediate, responses demonstrably differ in depth
 
 ### AI Search with Source Attribution
-- **Functionality**: LLM-powered responses that include cited sources with URLs, titles, and relevant snippets
-- **Purpose**: Provides trustworthy, verifiable information for research tasks
+- **Functionality**: LLM-powered responses enriched with real-time web search results from Tavily API, including cited sources with URLs, titles, and relevant snippets
+- **Purpose**: Provides trustworthy, verifiable, and up-to-date information for research tasks by combining AI reasoning with current web data
 - **Trigger**: User submits any query in an active thread
-- **Progression**: Query submitted → User message appears → Loading skeleton for AI response → Response streams in with inline citations → Source cards appear at bottom → Click source → Opens in new tab
-- **Success criteria**: Sources are relevant and clickable, citations map to source cards, responses feel conversational yet authoritative
+- **Progression**: Query submitted → User message appears → Web search executes in background → Loading skeleton for AI response → Search results gathered → Response generated with real-time context → Response streams in with synthesized information → Source cards appear at bottom with actual web results → Click source → Opens in new tab
+- **Success criteria**: Sources are relevant, current, and clickable; citations map to source cards; responses feel conversational yet authoritative; graceful fallback if search API fails; toast notification on search errors
 
 ### Empty State Experience
 - **Functionality**: When no thread is active, display large centered textarea with welcoming interface
@@ -53,6 +53,13 @@ This is a multi-view application with sophisticated state management across work
 - **Trigger**: User opens app with no active thread or clicks "New Chat"
 - **Progression**: App loads/New chat clicked → Main view shows centered large textarea → User types → Textarea expands to fit content → Submit creates new thread
 - **Success criteria**: Textarea auto-focuses, expands smoothly up to max height, Advanced Analysis toggle is clearly visible
+
+### Real-Time Web Search Integration
+- **Functionality**: Integration with Tavily Search API for real-time web data retrieval on every query
+- **Purpose**: Ensures AI responses are grounded in current, verifiable web information
+- **Trigger**: Automatically executes when user submits a query
+- **Progression**: Query submitted → Tavily API called with advanced search depth → Up to 6 high-quality sources retrieved → Results passed as context to LLM → LLM synthesizes answer using web data → Sources displayed with response
+- **Success criteria**: API key properly configured via environment variable, graceful error handling with user-friendly toast notifications, no hardcoded credentials, search failures don't block basic AI functionality
 
 ### Active Thread View
 - **Functionality**: Scrollable message history with sticky input bar at bottom
@@ -64,6 +71,8 @@ This is a multi-view application with sophisticated state management across work
 ## Edge Case Handling
 - **Empty Library**: Display encouraging empty state with "Start your first search" prompt and example queries
 - **Failed AI Requests**: Show error message with retry button, preserve user's query in input for resubmission
+- **Failed Web Search**: Display toast notification about search failure, continue with AI response using only LLM knowledge (graceful degradation)
+- **Missing API Key**: Log error to console, show user-friendly toast about search service configuration, continue with basic AI functionality
 - **Network Offline**: Indicate offline state in UI, queue messages for sending when reconnected
 - **Long Messages**: Implement text wrapping and max heights with scroll for excessively long responses
 - **Concurrent Edits**: Optimistic updates with rollback on error, showing toast notifications for conflicts

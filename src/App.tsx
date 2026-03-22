@@ -3,6 +3,7 @@ import { useKV } from '@github/spark/hooks'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
+import { executeWebSearch } from '@/lib/api'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -105,49 +106,51 @@ function App() {
     }
 
     try {
+      const searchResult = await executeWebSearch(query)
+      
+      let webSources: Source[] = []
+      
+      if ('error' in searchResult) {
+        toast.error(searchResult.message)
+      } else {
+        webSources = searchResult
+      }
+
       const systemPrompt = activeWorkspace?.customSystemPrompt || ''
       const modeInstruction = useAdvancedMode
         ? ' Provide a comprehensive, in-depth analysis with detailed explanations.'
         : ''
 
+      let contextSection = ''
+      if (webSources.length > 0) {
+        contextSection = `\n\nWeb Search Results:\n${webSources
+          .map(
+            (source, idx) =>
+              `[${idx + 1}] ${source.title}\nURL: ${source.url}\nContent: ${source.snippet}\n`
+          )
+          .join('\n')}`
+      }
+
       const promptText = `You are an advanced AI research assistant.${
         systemPrompt ? ` ${systemPrompt}` : ''
-      }${modeInstruction}
+      }${modeInstruction}${contextSection}
 
 User query: ${query}
 
-Provide a helpful, accurate answer. After your response, provide 2-3 relevant sources in the following JSON format at the very end:
-
-SOURCES:
-${JSON.stringify([
-  {
-    url: 'https://example.com',
-    title: 'Example Source Title',
-    snippet: 'Brief relevant excerpt',
-  },
-])}
+${
+  webSources.length > 0
+    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+    : 'Provide a helpful, accurate answer based on your knowledge.'
+}
 `
 
       const response = await window.spark.llm(promptText, 'gpt-4o-mini')
 
-      const sourcesMatch = response.match(/SOURCES:\s*(\[[\s\S]*\])/i)
-      let content = response
-      let sources: Source[] = []
-
-      if (sourcesMatch) {
-        content = response.substring(0, sourcesMatch.index).trim()
-        try {
-          sources = JSON.parse(sourcesMatch[1])
-        } catch {
-          sources = []
-        }
-      }
-
       const assistantMessage: MessageType = {
         id: generateId(),
         role: 'assistant',
-        content,
-        sources: sources.length > 0 ? sources : undefined,
+        content: response,
+        sources: webSources.length > 0 ? webSources : undefined,
         createdAt: Date.now(),
       }
 
