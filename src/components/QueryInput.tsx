@@ -10,6 +10,7 @@ import { toast } from 'sonner'
 import { UploadedFile } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { FileAttachment } from '@/components/FileAttachment'
+import { FilePreviewModal } from '@/components/FilePreviewModal'
 import {
   ArrowRight,
   Lightning,
@@ -57,8 +58,15 @@ export function QueryInput({
   const [moreExpanded, setMoreExpanded] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
   const [isUploadingFile, setIsUploadingFile] = useState(false)
+  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFilePreview = (file: UploadedFile) => {
+    setPreviewFile(file)
+    setPreviewOpen(true)
+  }
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
@@ -251,6 +259,7 @@ export function QueryInput({
                     key={file.id}
                     file={file}
                     onRemove={() => handleRemoveFile(file.id)}
+                    onPreview={() => handleFilePreview(file)}
                   />
                 ))}
               </div>
@@ -343,6 +352,8 @@ export function QueryInput({
           <span>Enable Advanced Analysis</span>
         </Label>
       </div>
+
+      <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
     </div>
   )
 }

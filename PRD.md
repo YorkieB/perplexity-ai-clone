@@ -62,11 +62,18 @@ This is a multi-view application with sophisticated state management across work
 - **Success criteria**: API key properly configured via environment variable, graceful error handling with user-friendly toast notifications, no hardcoded credentials, search failures don't block basic AI functionality
 
 ### Enhanced Query Input with Advanced Options
-- **Functionality**: Rich input interface with expandable options menu including file upload, cloud integration, connectors, deep research mode, model council, and learning modes. Features model selection, voice input, and keyboard shortcuts.
+- **Functionality**: Rich input interface with expandable options menu including file upload, cloud integration, connectors, deep research mode, model council, and learning modes. Features model selection, voice input, and keyboard shortcuts. Uploaded files are displayed as compact attachment cards below the input with preview capability.
 - **Purpose**: Provides power users with advanced tools while maintaining simplicity for basic searches through progressive disclosure
 - **Trigger**: Click "+" button to reveal options menu, or type "/" for search mode shortcuts
 - **Progression**: User clicks + icon → Popover menu appears with options → User selects option (e.g., "Deep research" with New badge) → Option activates with visual feedback → Query input adapts to selected mode → User types query with mode context → Submit executes with enhanced parameters
 - **Success criteria**: Options menu is intuitive and accessible, badges clearly indicate new/premium features, locked features show lock icons, model selector works smoothly, voice input button provides visual feedback, keyboard shortcuts are discoverable, textarea auto-expands as user types, all interactive elements have proper hover/focus states
+
+### File Preview Modal
+- **Functionality**: Full-screen modal dialog for previewing uploaded images and text-based documents (txt, md, csv, json) with download capability. Images display at full resolution with zoom controls, text files show content in a monospace font with scroll area, PDFs show a download prompt.
+- **Purpose**: Allows users to verify file contents before submission and review attached files in message history without leaving the application
+- **Trigger**: Click on any file attachment card in the query input area or in message history
+- **Progression**: User clicks file attachment → Modal opens with smooth animation → File content/preview loads → User can scroll through text or view full image → Click Download button to save locally → Click Close or outside modal to dismiss
+- **Success criteria**: Modal opens instantly with smooth fade-in animation, images scale appropriately to viewport, text is readable and scrollable, download functionality works for all file types, modal is dismissible via Close button/Escape key/outside click, proper error states for unsupported file types
 
 ### Active Thread View
 - **Functionality**: Scrollable message history with sticky input bar at bottom

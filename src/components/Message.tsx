@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Message as MessageType } from '@/lib/types'
+import { Message as MessageType, UploadedFile } from '@/lib/types'
 import { Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { FileAttachment } from './FileAttachment'
+import { FilePreviewModal } from './FilePreviewModal'
 
 interface MessageProps {
   message: MessageType
@@ -13,6 +14,13 @@ interface MessageProps {
 export function Message({ message }: MessageProps) {
   const isUser = message.role === 'user'
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
+  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+
+  const handleFilePreview = (file: UploadedFile) => {
+    setPreviewFile(file)
+    setPreviewOpen(true)
+  }
 
   return (
     <div
@@ -46,6 +54,7 @@ export function Message({ message }: MessageProps) {
                   key={file.id}
                   file={file}
                   showRemove={false}
+                  onPreview={() => handleFilePreview(file)}
                 />
               ))}
             </div>
@@ -88,6 +97,8 @@ export function Message({ message }: MessageProps) {
           )}
         </div>
       </div>
+
+      <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
     </div>
   )
 }

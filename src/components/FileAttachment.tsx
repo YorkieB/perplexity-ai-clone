@@ -7,9 +7,10 @@ interface FileAttachmentProps {
   file: UploadedFile
   onRemove?: () => void
   showRemove?: boolean
+  onPreview?: () => void
 }
 
-export function FileAttachment({ file, onRemove, showRemove = true }: FileAttachmentProps) {
+export function FileAttachment({ file, onRemove, showRemove = true, onPreview }: FileAttachmentProps) {
   const getFileIcon = () => {
     if (file.type.startsWith('image/')) {
       return <Image size={16} className="text-accent" />
@@ -38,14 +39,26 @@ export function FileAttachment({ file, onRemove, showRemove = true }: FileAttach
     return null
   }
 
+  const handleClick = () => {
+    if (onPreview) {
+      onPreview()
+    }
+  }
+
   return (
-    <div className="bg-muted/50 border border-border rounded-lg p-2">
+    <div className="bg-muted/50 border border-border rounded-lg p-2 group">
       <div className="flex items-start gap-2">
         <div className="flex-shrink-0 mt-0.5">{getFileIcon()}</div>
-        <div className="flex-1 min-w-0">
-          <div className="text-xs font-medium truncate">{file.name}</div>
+        <button
+          onClick={handleClick}
+          className="flex-1 min-w-0 text-left hover:opacity-70 transition-opacity"
+          disabled={!onPreview}
+        >
+          <div className="text-xs font-medium truncate group-hover:text-accent transition-colors">
+            {file.name}
+          </div>
           <div className="text-xs text-muted-foreground">{formatFileSize(file.size)}</div>
-        </div>
+        </button>
         {showRemove && onRemove && (
           <Button
             variant="ghost"
