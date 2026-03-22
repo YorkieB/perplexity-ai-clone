@@ -144,8 +144,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   }
 
   const getConnectionStatus = (provider: 'googleDrive' | 'oneDrive' | 'github' | 'dropbox') => {
-    const isConnected = settings?.connectedServices[provider]
-    const token = settings?.oauthTokens[provider]
+    const isConnected = settings?.connectedServices?.[provider]
+    const token = settings?.oauthTokens?.[provider]
 
     if (!isConnected || !token) {
       return { status: 'disconnected', label: 'Not Connected', icon: XCircle, color: 'text-muted-foreground' }
