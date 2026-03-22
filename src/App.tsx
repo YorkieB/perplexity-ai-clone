@@ -30,6 +30,7 @@ import { SettingsDialog } from '@/components/SettingsDialog'
 import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { ThreadExportActions } from '@/components/ThreadExportActions'
 
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
@@ -74,6 +75,9 @@ function MainApp() {
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
+  const threadWorkspaceName = activeThread?.workspaceId
+    ? (workspaces || []).find((w) => w.id === activeThread.workspaceId)?.name
+    : undefined
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -335,16 +339,23 @@ ${taskInstruction}`
       return (
         <div className="flex flex-col h-screen">
           <div className="border-b border-border bg-background px-6 py-3">
-            <div className="max-w-4xl mx-auto flex items-center gap-3">
-              <FocusModeSelector
-                value={focusMode}
-                onChange={setFocusMode}
+            <div className="max-w-4xl mx-auto flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <FocusModeSelector
+                  value={focusMode}
+                  onChange={setFocusMode}
+                  disabled={isGenerating}
+                  webSearchEnabled={includeWebSearch}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {activeThread.messages.length} message{activeThread.messages.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <ThreadExportActions
+                thread={activeThread}
+                workspaceName={threadWorkspaceName}
                 disabled={isGenerating}
-                webSearchEnabled={includeWebSearch}
               />
-              <span className="text-sm text-muted-foreground">
-                {activeThread.messages.length} message{activeThread.messages.length !== 1 ? 's' : ''}
-              </span>
             </div>
           </div>
 
