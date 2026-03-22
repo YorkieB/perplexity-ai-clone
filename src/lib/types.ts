@@ -107,6 +107,12 @@ export interface UserSettings {
   answerTone?: string
   answerStructure?: string
   answerConstraints?: string
+  /** Default model for the main chat composer; must match `CHAT_MODEL_IDS` in `chatModels.ts`. */
+  defaultChatModel?: string
+  /** UI + next-themes: light, dark, or follow OS. */
+  themePreference?: 'system' | 'light' | 'dark'
+  /** Browser desktop notifications when a reply finishes while the tab is in the background. */
+  notificationsEnabled?: boolean
 }
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
@@ -121,6 +127,9 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
     dropbox: false,
   },
   includeWebSearch: true,
+  defaultChatModel: 'gpt-4o-mini',
+  themePreference: 'system',
+  notificationsEnabled: false,
 }
 
 export interface CloudFile {

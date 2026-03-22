@@ -1,4 +1,5 @@
 import { useState, KeyboardEvent, useRef, useEffect } from 'react'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -7,7 +8,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CloudFile, UploadedFile } from '@/lib/types'
+import { CloudFile, UploadedFile, UserSettings, DEFAULT_USER_SETTINGS } from '@/lib/types'
+import { normalizeChatModel } from '@/lib/chatModels'
 import { processFile } from '@/lib/helpers'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
@@ -40,7 +42,14 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
+  onSubmit: (
+    query: string,
+    advancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    chatModel?: string
+  ) => void
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -58,9 +67,10 @@ export function QueryInput({
   includeWebSearch,
   onIncludeWebSearchChange,
 }: QueryInputProps) {
+  const [settings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [selectedModel, setSelectedModel] = useState(() => normalizeChatModel(settings?.defaultChatModel))
   const [moreExpanded, setMoreExpanded] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
   const [isUploadingFile, setIsUploadingFile] = useState(false)
@@ -74,6 +84,10 @@ export function QueryInput({
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setSelectedModel(normalizeChatModel(settings?.defaultChatModel))
+  }, [settings?.defaultChatModel])
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
@@ -99,7 +113,14 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        selectedModel
+      )
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
@@ -341,7 +362,10 @@ export function QueryInput({
           />
 
           <div className="flex items-center gap-1 flex-shrink-0">
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <Select
+              value={selectedModel}
+              onValueChange={(v) => setSelectedModel(normalizeChatModel(v))}
+            >
               <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto px-2">
                 <SelectValue />
               </SelectTrigger>

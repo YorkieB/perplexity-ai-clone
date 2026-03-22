@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTheme } from 'next-themes'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings, DEFAULT_USER_SETTINGS } from '@/lib/types'
 import { buildAuthUrl, isTokenExpired } from '@/lib/oauth'
@@ -22,6 +23,8 @@ import {
   Globe,
   NotePencil,
   ShieldWarning,
+  GearSix,
+  Bell,
 } from '@phosphor-icons/react'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -35,6 +38,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { CHAT_MODEL_IDS, normalizeChatModel } from '@/lib/chatModels'
+import { canUseDesktopNotifications, requestEnableNotifications } from '@/lib/desktopNotifications'
 
 interface SettingsDialogProps {
   open: boolean
@@ -44,7 +56,9 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onOpenChange, onClearAllThreads, onClearAllWorkspaces }: SettingsDialogProps) {
+  const { setTheme } = useTheme()
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
+  const notificationsSupported = canUseDesktopNotifications()
 
   const [localApiKeys, setLocalApiKeys] = useState({
     digitalOcean: settings?.apiKeys.digitalOcean || '',
@@ -247,8 +261,12 @@ export function SettingsDialog({ open, onOpenChange, onClearAllThreads, onClearA
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 gap-1 h-auto p-1">
+        <Tabs defaultValue="general" className="flex-1 overflow-hidden flex flex-col">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1 h-auto p-1">
+            <TabsTrigger value="general" className="gap-1.5 text-xs sm:text-sm px-2">
+              <GearSix size={16} className="shrink-0" />
+              <span className="truncate">General</span>
+            </TabsTrigger>
             <TabsTrigger value="api-keys" className="gap-1.5 text-xs sm:text-sm px-2">
               <Key size={16} className="shrink-0" />
               <span className="truncate">API Keys</span>
@@ -266,6 +284,113 @@ export function SettingsDialog({ open, onOpenChange, onClearAllThreads, onClearA
               <span className="truncate">Privacy</span>
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="general" className="flex-1 overflow-y-auto space-y-6 mt-4">
+            <Card className="p-6 space-y-6">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-primary/10 rounded-lg">
+                  <GearSix className="text-primary" size={20} />
+                </div>
+                <div className="flex-1 space-y-1">
+                  <h3 className="font-semibold text-lg">Appearance & defaults</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Theme applies immediately. Default chat model is used for new sends and when the composer does not pass a model; it does not rewrite messages already in threads.
+                  </p>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <Label htmlFor="settings-theme">Theme</Label>
+                <Select
+                  value={settings?.themePreference ?? 'system'}
+                  onValueChange={(v) => {
+                    const next = v as 'system' | 'light' | 'dark'
+                    setSettings((c) => ({ ...(c ?? DEFAULT_USER_SETTINGS), themePreference: next }))
+                    setTheme(next)
+                  }}
+                >
+                  <SelectTrigger id="settings-theme" className="w-full max-w-md">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="system">System</SelectItem>
+                    <SelectItem value="light">Light</SelectItem>
+                    <SelectItem value="dark">Dark</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Light and dark use the app&apos;s CSS variables (class-based <code className="text-xs">.dark</code> on <code className="text-xs">html</code>).
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="settings-default-model">Default chat model</Label>
+                <Select
+                  value={normalizeChatModel(settings?.defaultChatModel)}
+                  onValueChange={(v) =>
+                    setSettings((c) => ({ ...(c ?? DEFAULT_USER_SETTINGS), defaultChatModel: v }))
+                  }
+                >
+                  <SelectTrigger id="settings-default-model" className="w-full max-w-md">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CHAT_MODEL_IDS.map((id) => (
+                      <SelectItem key={id} value={id}>
+                        {id === 'gpt-4o' ? 'GPT-4o' : 'GPT-4o Mini'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Separator />
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-accent/10 rounded-lg">
+                  <Bell className="text-accent" size={20} />
+                </div>
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <h3 className="font-semibold text-lg">Desktop notifications</h3>
+                    <p className="text-sm text-muted-foreground">
+                      When enabled, you&apos;ll get a system notification if a reply finishes while this tab is in the background. Nothing is sent from a server.
+                    </p>
+                  </div>
+                  {!notificationsSupported && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      Notifications are unavailable here (need a supported browser and HTTPS or localhost).
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-4 py-3">
+                    <Label htmlFor="settings-notifications" className="cursor-pointer text-sm font-medium">
+                      Notify when a reply is ready (background tab)
+                    </Label>
+                    <Switch
+                      id="settings-notifications"
+                      checked={settings?.notificationsEnabled === true}
+                      disabled={!notificationsSupported}
+                      onCheckedChange={async (checked) => {
+                        if (!checked) {
+                          setSettings((c) => ({ ...(c ?? DEFAULT_USER_SETTINGS), notificationsEnabled: false }))
+                          return
+                        }
+                        if (!notificationsSupported) {
+                          toast.error('Notifications are not available in this environment.')
+                          return
+                        }
+                        const granted = await requestEnableNotifications()
+                        if (!granted) {
+                          toast.error('Notification permission denied or blocked.')
+                          setSettings((c) => ({ ...(c ?? DEFAULT_USER_SETTINGS), notificationsEnabled: false }))
+                          return
+                        }
+                        setSettings((c) => ({ ...(c ?? DEFAULT_USER_SETTINGS), notificationsEnabled: true }))
+                        toast.success('Desktop notifications enabled')
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="api-keys" className="flex-1 overflow-y-auto space-y-6 mt-4">
             <div className="space-y-6">

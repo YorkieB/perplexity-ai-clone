@@ -6,6 +6,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 
 - **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
 - **[Phase 5 — Share & export (Pages-lite)](docs/PHASE-05-AI-PROMPT.md)** — Markdown export (thread / last answer), download and clipboard; client-only.
+- **[Phase 6 — General settings](docs/PHASE-06-AI-PROMPT.md)** — Default chat model, theme (light/dark/system), browser desktop notifications; client-only.
 
 ## 🚀 Features
 
@@ -17,6 +18,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **Dark Mode UI**: Sophisticated, minimalist interface optimized for extended use
 - **Source Citations**: Every AI response includes clickable sources from real web searches
 - **Markdown export**: Download or copy the full thread or the last answer as `.md` (client-side only; no hosted Pages)
+- **General settings**: Default chat model, light/dark/system theme, and optional desktop notifications when a reply finishes in the background (browser API only)
 
 ## 🛠️ Setup
 

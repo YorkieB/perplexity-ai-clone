@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
+import { Toaster } from '@/components/ui/sonner'
 import {
   Thread,
   Workspace,
@@ -31,6 +32,9 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { ThreadExportActions } from '@/components/ThreadExportActions'
+import { ThemePreferenceSync } from '@/components/ThemePreferenceSync'
+import { normalizeChatModel } from '@/lib/chatModels'
+import { notifyIfAllowed, notificationBodyFromResponse } from '@/lib/desktopNotifications'
 
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
@@ -125,8 +129,18 @@ function MainApp() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => {
+  const handleQuery = async (
+    query: string,
+    useAdvancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    /** Composer model for this send; falls back to `userSettings.defaultChatModel` when omitted (e.g. follow-up chips). */
+    chatModel?: string
+  ) => {
     setIsGenerating(true)
+
+    const effectiveChatModel = normalizeChatModel(chatModel ?? userSettings?.defaultChatModel)
 
     const userMessage: MessageType = {
       id: generateId(),
@@ -159,6 +173,15 @@ function MainApp() {
     }
 
     try {
+      const notifyAssistantReady = (previewText: string) => {
+        if (typeof document === 'undefined') return
+        // Only nudge when the user is not looking at this tab (avoid spam per message).
+        if (document.visibilityState !== 'hidden') return
+        if (!userSettings?.notificationsEnabled) return
+        const title = thread.title.trim() || 'AI Search Engine'
+        notifyIfAllowed(!!userSettings?.notificationsEnabled, title, notificationBodyFromResponse(previewText))
+      }
+
       const shouldSearchWeb = includeWebSearch
       let webSources: Source[] = []
 
@@ -232,6 +255,8 @@ function MainApp() {
           })),
         }
 
+        notifyAssistantReady(councilResult.models.map((m) => m.content).join('\n\n'))
+
         setThreads((current) =>
           (current || []).map((t) =>
             t.id === thread.id
@@ -262,7 +287,7 @@ ${taskInstruction}`
         const prior = buildPriorLlmMessages(thread.messages.slice(0, -1))
 
         const response = await callLlm({
-          model: 'gpt-4o-mini',
+          model: effectiveChatModel,
           messages: [{ role: 'system', content: systemContent }, ...prior, { role: 'user', content: currentUserContent }],
         })
 
@@ -274,10 +299,12 @@ ${taskInstruction}`
           content: response,
           sources: webSources.length > 0 ? webSources : undefined,
           createdAt: Date.now(),
-          modelUsed: 'gpt-4o-mini',
+          modelUsed: effectiveChatModel,
           focusMode,
           followUpQuestions,
         }
+
+        notifyAssistantReady(response)
 
         setThreads((current) =>
           (current || []).map((t) =>
@@ -422,8 +449,9 @@ ${taskInstruction}`
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <ThemePreferenceSync />
       <Toaster position="top-center" />
-      
+
       <AppSidebar
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
