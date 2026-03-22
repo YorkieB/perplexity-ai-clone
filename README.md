@@ -7,6 +7,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **[Telescope analysis (Perplexity reference)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — layer-by-layer product breakdown (reference taxonomy).
 - **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify`, CI expectations before moving on.
 - **[Phase 1 AI prompt](docs/PHASE-01-AI-PROMPT.md)** — copy-paste instructions for the first implementation slice (“Include web” + context routing).
+- **[Phase 1 complete (summary)](docs/PHASE-01-COMPLETE.md)** — what shipped on PR #8 (`includeWebSearch`, UI, verification).
 
 ## 🚀 Features
 
