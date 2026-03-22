@@ -1,15 +1,16 @@
 import { useState, useRef, useEffect } from 'react'
 import { useKV } from '@github/spark/hooks'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile } from '@/lib/types'
+import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
-import { executeWebSearch } from '@/lib/api'
+import { executeWebSearch, generateFollowUpQuestions } from '@/lib/api'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
 import { MessageSkeleton } from '@/components/MessageSkeleton'
 import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
+import { FocusModeSelector } from '@/components/FocusModeSelector'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
@@ -23,6 +24,7 @@ function App() {
   const [editingWorkspace, setEditingWorkspace] = useState<Workspace | undefined>()
   const [isGenerating, setIsGenerating] = useState(false)
   const [advancedMode, setAdvancedMode] = useState(false)
+  const [focusMode, setFocusMode] = useState<FocusMode>('all')
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
@@ -83,6 +85,7 @@ function App() {
       content: query,
       files: files,
       createdAt: Date.now(),
+      focusMode,
     }
 
     let thread: Thread
@@ -107,7 +110,7 @@ function App() {
     }
 
     try {
-      const searchResult = await executeWebSearch(query)
+      const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
       
       let webSources: Source[] = []
       
@@ -161,12 +164,17 @@ ${
 
       const response = await window.spark.llm(promptText, 'gpt-4o-mini')
 
+      const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
+
       const assistantMessage: MessageType = {
         id: generateId(),
         role: 'assistant',
         content: response,
         sources: webSources.length > 0 ? webSources : undefined,
         createdAt: Date.now(),
+        modelUsed: 'gpt-4o-mini',
+        focusMode,
+        followUpQuestions,
       }
 
       setThreads((current) =>
@@ -225,11 +233,25 @@ ${
     if (activeThread) {
       return (
         <div className="flex flex-col h-screen">
+          <div className="border-b border-border bg-background px-6 py-3">
+            <div className="max-w-4xl mx-auto flex items-center gap-3">
+              <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
+              <span className="text-sm text-muted-foreground">
+                {activeThread.messages.length} message{activeThread.messages.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+          </div>
+
           <div className="flex-1 overflow-hidden">
             <ScrollArea className="h-full" ref={scrollAreaRef}>
               <div className="max-w-4xl mx-auto px-6 py-8">
                 {activeThread.messages.map((message) => (
-                  <Message key={message.id} message={message} />
+                  <Message
+                    key={message.id}
+                    message={message}
+                    onFollowUpClick={(q) => handleQuery(q, advancedMode)}
+                    isGenerating={isGenerating}
+                  />
                 ))}
                 {isGenerating && <MessageSkeleton />}
               </div>
@@ -252,6 +274,11 @@ ${
 
     return (
       <div className="flex flex-col h-screen">
+        <div className="border-b border-border bg-background px-6 py-3">
+          <div className="max-w-2xl mx-auto">
+            <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
+          </div>
+        </div>
         <EmptyState onExampleClick={(query) => handleQuery(query, advancedMode)} />
         <div className="border-t border-border bg-background">
           <div className="max-w-2xl mx-auto px-6 py-6">

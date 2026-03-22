@@ -6,12 +6,15 @@ import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { FileAttachment } from './FileAttachment'
 import { FilePreviewModal } from './FilePreviewModal'
+import { FollowUpQuestions } from './FollowUpQuestions'
 
 interface MessageProps {
   message: MessageType
+  onFollowUpClick?: (question: string) => void
+  isGenerating?: boolean
 }
 
-export function Message({ message }: MessageProps) {
+export function Message({ message, onFollowUpClick, isGenerating = false }: MessageProps) {
   const isUser = message.role === 'user'
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
@@ -96,6 +99,14 @@ export function Message({ message }: MessageProps) {
             />
           )}
         </div>
+
+        {!isUser && message.followUpQuestions && message.followUpQuestions.length > 0 && onFollowUpClick && (
+          <FollowUpQuestions
+            questions={message.followUpQuestions}
+            onQuestionClick={onFollowUpClick}
+            isLoading={isGenerating}
+          />
+        )}
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />

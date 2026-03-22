@@ -1,7 +1,12 @@
+export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
+
 export interface Source {
   url: string
   title: string
   snippet: string
+  confidence?: number
+  domain?: string
+  favicon?: string
 }
 
 export interface UploadedFile {
@@ -20,6 +25,10 @@ export interface Message {
   sources?: Source[]
   files?: UploadedFile[]
   createdAt: number
+  modelUsed?: string
+  focusMode?: FocusMode
+  isDeepResearch?: boolean
+  followUpQuestions?: string[]
 }
 
 export interface Thread {
