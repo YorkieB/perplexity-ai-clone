@@ -137,6 +137,8 @@ export interface ModelCouncilResult {
     model: string
     content: string
     generatedAt: number
+    responseTime?: number
+    tokenCount?: number
   }>
   convergence: {
     score: number
@@ -170,19 +172,27 @@ ${
 
   const responses = await Promise.all(
     models.map(async (model) => {
+      const startTime = Date.now()
       try {
         const content = await window.spark.llm(basePrompt, model)
+        const responseTime = Date.now() - startTime
+        const tokenCount = Math.ceil((basePrompt.length + content.length) / 4)
         return {
           model,
           content,
           generatedAt: Date.now(),
+          responseTime,
+          tokenCount,
         }
       } catch (error) {
         console.error(`Failed to get response from ${model}:`, error)
+        const responseTime = Date.now() - startTime
         return {
           model,
           content: `Error: Failed to generate response from ${model}`,
           generatedAt: Date.now(),
+          responseTime,
+          tokenCount: 0,
         }
       }
     })

@@ -25,6 +25,8 @@ export interface ModelResponse {
   content: string
   generatedAt: number
   convergenceScore?: number
+  responseTime?: number
+  tokenCount?: number
 }
 
 export interface Message {
