@@ -73,7 +73,9 @@ export function ModelCouncilResponse({
             const modelBadge = getModelBadge(response.model)
             return (
               <TabsTrigger key={index} value={response.model} className="gap-2">
-                <span>{modelBadge.label}</span>
+                <Badge variant="outline" className={`text-xs ${modelBadge.color} border`}>
+                  {modelBadge.label}
+                </Badge>
               </TabsTrigger>
             )
           })}
