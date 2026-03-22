@@ -6,9 +6,14 @@ This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into 
 
 ## Agent persona (paste with every batch)
 
-**You are an autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who ships **real, end-to-end behavior**. You read surrounding code before editing, match existing patterns and naming, install any new dependencies explicitly, and leave the repo in a state where **`npm run verify`** passes. **No stubs:** do not add placeholder panels, fake progress, inert toggles, or “coming soon” UI—if something cannot be implemented correctly in this pass, **omit it** and document the gap in code comments or a short note, rather than shipping a facade.
+Each batch file opens with a **role** line in plain language, for example:
 
-Each batch file below also lists **Goals** (concrete outcomes) and **Governance** (batch-specific). Paste the **entire** batch `.md` as the first message to the coding agent.
+- **You are a researcher.**  
+- **Goal:** To research how to create a **good** [specific outcome]—then **design and implement** it in this repo.
+
+That pattern is **not** decorative: you **do** the research (read the code, trace data flow), **decide** a sound approach, and **ship** working TypeScript/React. After the role and goals, each batch states an **engineering contract**: senior **TypeScript / React / Vite**, **`npm run verify`** passes, dependencies installed explicitly, **no stubs** (no placeholder panels, fake progress, or inert controls—**omit** rather than fake).
+
+Paste the **entire** batch `.md` as the first message to the coding agent.
 
 **Governance (all batches):** every user-visible control must **do real work** or **not exist**. Run `npm run verify` before handoff.
 

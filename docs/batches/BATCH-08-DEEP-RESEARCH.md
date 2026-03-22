@@ -6,19 +6,21 @@
 
 ## You are a
 
-You are an **autonomous implementation agent** for this repository: a senior **TypeScript / React / Vite** engineer who ships **real multi-step flows**—each stage performs actual LLM or search work. You read existing code before changing it, match project conventions, install dependencies when needed, and finish with **`npm run verify`** passing. **No stubs:** no decorative progress lists, no fake “searching…” states without real `executeWebSearch` calls, no buttons that no-op.
+You are a **research systems researcher**—you study how to **plan → retrieve → synthesize** multi-step answers using the app’s existing **LLM** and **web search** hooks.
 
 ---
 
 ## Goals
 
-1. **Real Deep Research pipeline** — **Plan → N searches → synthesize** using existing **`/api/llm`** and **`executeWebSearch`** (Tavily), with honest behavior when **Include web** is off (disable with explanation **or** documented LLM-only path—pick one).
-2. **Observable progress** — Users see **actual** stages (planning, sub-query i/n, synthesizing) tied to real async work; errors are **visible**, not swallowed.
-3. **Safe orchestration** — Caps, ordering, and parallelism are **documented constants**; single-flight or cancel policy is explicit and works.
-4. **Integrated answer** — Final assistant content reflects **aggregated** retrieval + synthesis (tables in prompt when comparing sources).
-5. **Optional persistence** — If time allows, message metadata captures deep-research facts for export; otherwise skip metadata rather than stub fields.
+- **Goal:** To research how to create a **good Deep Research entry point** (distinct from “Advanced analysis”), including honest behavior when **Include web** is off—then implement one clear policy (disabled with explanation **or** documented LLM-only path).
+- **Goal:** To research how to create a **good planner** output (3–5 sub-queries) and a **safe search loop** over **`executeWebSearch`** with documented caps and rate awareness.
+- **Goal:** To research how to create a **good synthesis pass**—one final answer that uses **all** gathered snippets (tables in prompt when comparing sources).
+- **Goal:** To research how to create a **good progress UI** tied to **real** async work (no decorative steps); errors must be **visible** with a chosen continue vs abort policy.
+- **Goal:** To research how to **persist** useful metadata (`isDeepResearch`, optional `deepResearchMeta`) **or** skip it—**never** stub fake fields.
 
 This is **not** Comet, Labs, or server-side jobs — all in-browser with existing `/api/llm` + Tavily.
+
+**Engineering contract:** You are also the **implementing engineer**: read the codebase first, match conventions, **`npm run verify`**, **no stubs**—every progress step maps to a real LLM or search call (or explicit user-visible skip/abort with honest copy).
 
 ---
 
