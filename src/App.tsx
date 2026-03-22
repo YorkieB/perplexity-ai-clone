@@ -11,6 +11,7 @@ import { MessageSkeleton } from '@/components/MessageSkeleton'
 import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
+import { SettingsDialog } from '@/components/SettingsDialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
@@ -25,6 +26,7 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [advancedMode, setAdvancedMode] = useState(false)
   const [focusMode, setFocusMode] = useState<FocusMode>('all')
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
@@ -337,6 +339,7 @@ ${
         onWorkspaceSelect={handleWorkspaceSelect}
         onNewThread={handleNewThread}
         onNewWorkspace={handleNewWorkspace}
+        onOpenSettings={() => setSettingsDialogOpen(true)}
       />
 
       <main className="flex-1 overflow-hidden">{renderMainContent()}</main>
@@ -346,6 +349,11 @@ ${
         onOpenChange={setWorkspaceDialogOpen}
         workspace={editingWorkspace}
         onSave={handleSaveWorkspace}
+      />
+
+      <SettingsDialog
+        open={settingsDialogOpen}
+        onOpenChange={setSettingsDialogOpen}
       />
     </div>
   )

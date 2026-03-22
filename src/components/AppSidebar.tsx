@@ -10,7 +10,8 @@ import {
   ChatCircle, 
   Folder,
   CaretDown,
-  CaretRight
+  CaretRight,
+  Gear
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
@@ -25,6 +26,7 @@ interface AppSidebarProps {
   onWorkspaceSelect: (workspaceId: string) => void
   onNewThread: () => void
   onNewWorkspace: () => void
+  onOpenSettings: () => void
 }
 
 export function AppSidebar({
@@ -36,6 +38,7 @@ export function AppSidebar({
   onWorkspaceSelect,
   onNewThread,
   onNewWorkspace,
+  onOpenSettings,
 }: AppSidebarProps) {
   const [threads] = useKV<Thread[]>('threads', [])
   const [workspaces] = useKV<Workspace[]>('workspaces', [])
@@ -181,6 +184,18 @@ export function AppSidebar({
           </Button>
         </div>
       )}
+
+      <div className="p-3 border-t border-border">
+        <Button
+          variant="ghost"
+          size={isCollapsed ? 'icon' : 'sm'}
+          onClick={onOpenSettings}
+          className={cn('gap-2', isCollapsed ? 'w-10 h-10' : 'w-full justify-start')}
+        >
+          <Gear size={20} />
+          {!isCollapsed && <span>Settings</span>}
+        </Button>
+      </div>
     </div>
   )
 }

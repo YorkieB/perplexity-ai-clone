@@ -60,3 +60,27 @@ export interface Workspace {
   customSystemPrompt: string
   createdAt: number
 }
+
+export interface UserSettings {
+  apiKeys: {
+    digitalOcean?: string
+    googleDrive?: string
+    oneDrive?: string
+    github?: string
+  }
+  connectedServices: {
+    googleDrive: boolean
+    oneDrive: boolean
+    github: boolean
+  }
+}
+
+export interface CloudFile {
+  id: string
+  name: string
+  type: string
+  size: number
+  source: 'googledrive' | 'onedrive' | 'github'
+  path: string
+  modifiedAt: number
+}
