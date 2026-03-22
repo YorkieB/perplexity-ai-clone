@@ -4,6 +4,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 
 ## Documentation
 
+- **[Roadmap batches (overnight runs)](docs/ROADMAP-BATCHES.md)** — remaining telescope work in **4 large batches** (`docs/batches/BATCH-07` … `BATCH-10`).
 - **[Telescope analysis (Perplexity reference)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — layer-by-layer product breakdown (reference taxonomy).
 - **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify`, CI expectations before moving on.
 - **[Phase 1 AI prompt](docs/PHASE-01-AI-PROMPT.md)** — copy-paste instructions for the first implementation slice (“Include web” + context routing).
