@@ -10,9 +10,16 @@ Phases **1–5** are in your branch. See `docs/PHASE-01-COMPLETE.md` through `do
 
 ---
 
+## Governance
+
+- **No stubs:** do not ship toggles, settings, or copy that imply behaviour that is not implemented. Placeholder UI violates repository governance and will fail integrity / review expectations.
+- **Ship only what works:** Part A and Part B below are in scope. **Notifications are out of scope for Phase 6** unless you implement the **full** browser notification flow in the same change (permission, denied state, success path, errors) — if that is too large, **omit notifications entirely** and document them for a later phase.
+
+---
+
 ## Role
 
-**Phase 6** implements **General**-style settings from `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` (Layer 3 **Settings**: default model/mode; theme; notifications) — **client-only**, no backend.
+**Phase 6** implements **General**-style settings from `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` (Layer 3 **Settings**: default model/mode; theme) — **client-only**, no backend. This phase covers **default chat model** and **theme** only.
 
 ### Part A — Default chat model
 
@@ -28,15 +35,12 @@ Phases **1–5** are in your branch. See `docs/PHASE-01-COMPLETE.md` through `do
 - **Settings UI:** a **General** tab or section: theme radio/select + short description.
 - **`Sonner`** / toasts already use `useTheme` in `src/components/ui/sonner.tsx` — ensure they still look correct after `ThemeProvider` wraps the tree.
 
-### Part C — Notifications (stub)
-
-- Add **`notificationsEnabled?: boolean`** to **`UserSettings`** (default `false` or `true` per product taste) and a **toggle** in General settings with copy: *“Browser notifications are not implemented yet”* or similar — **no** `Notification.requestPermission` unless you fully implement UX; this is a **placeholder** for roadmap parity.
-
 ---
 
-## Out of scope
+## Out of scope (Phase 6)
 
-- Push notifications backend, email, accounts, billing, Deep Research agent, new LLM providers.
+- **Notifications** — unless fully implemented (see Governance). Otherwise defer to a future phase with a dedicated spec.
+- Push notification backend, email, accounts, billing, Deep Research agent, new LLM providers.
 
 ---
 
@@ -46,7 +50,7 @@ Phases **1–5** are in your branch. See `docs/PHASE-01-COMPLETE.md` through `do
 npm install && npm run verify
 ```
 
-**Manual:** change theme → UI flips light/dark/system; change default model → new tab / refresh → query bar shows new default; toggles persist across reload.
+**Manual:** change theme → UI flips light/dark/system; change default model → new tab / refresh → query bar shows new default; settings persist across reload.
 
 ---
 
@@ -56,4 +60,4 @@ npm install && npm run verify
 
 ---
 
-*Telescope reference: `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` — Settings → General (default model/mode; theme; notifications).*
+*Telescope reference: `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` — Settings → General. Phase 6 implements **default model** and **theme**; **notifications** are deferred unless implemented end-to-end in the same PR.*
