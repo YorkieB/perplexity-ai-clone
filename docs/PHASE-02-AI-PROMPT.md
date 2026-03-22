@@ -1,6 +1,8 @@
 # Phase 2 — AI agent prompt (copy into a new agent)
 
-**Use this entire block as the initial message** when opening a new agent.
+**Status:** Implemented — see **`docs/PHASE-02-COMPLETE.md`** for what shipped (PR [#8](https://github.com/YorkieB/perplexity-ai-clone/pull/8)).
+
+**Use this entire block as the initial message** when opening a new agent (historical / replay).
 
 **Prerequisite:** Phase 1 is merged or your branch includes `includeWebSearch` / `DEFAULT_USER_SETTINGS` / Include web UI (see `docs/PHASE-01-COMPLETE.md`). If those pieces are missing, complete Phase 1 first.
 
