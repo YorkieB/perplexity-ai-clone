@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { Copy, Check } from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
+import { Highlight, themes } from 'prism-react-renderer'
 
 interface MarkdownRendererProps {
   content: string
@@ -14,6 +15,29 @@ interface ParsedContent {
   type: 'text' | 'citation'
   content: string
   citationNumber?: number
+}
+
+const languageColors: Record<string, string> = {
+  javascript: 'oklch(0.82 0.18 85)',
+  typescript: 'oklch(0.65 0.20 245)',
+  python: 'oklch(0.70 0.18 210)',
+  java: 'oklch(0.60 0.22 25)',
+  css: 'oklch(0.75 0.15 280)',
+  html: 'oklch(0.68 0.20 15)',
+  jsx: 'oklch(0.72 0.18 190)',
+  tsx: 'oklch(0.68 0.20 250)',
+  json: 'oklch(0.75 0.12 120)',
+  bash: 'oklch(0.65 0.08 140)',
+  shell: 'oklch(0.65 0.08 140)',
+  sql: 'oklch(0.70 0.18 30)',
+  rust: 'oklch(0.62 0.18 35)',
+  go: 'oklch(0.72 0.18 195)',
+  ruby: 'oklch(0.62 0.20 5)',
+  php: 'oklch(0.68 0.18 265)',
+  swift: 'oklch(0.70 0.22 20)',
+  kotlin: 'oklch(0.65 0.20 270)',
+  cpp: 'oklch(0.65 0.18 210)',
+  c: 'oklch(0.62 0.15 235)',
 }
 
 function CodeBlock({ code, language }: { code: string; language?: string }) {
@@ -30,23 +54,61 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
     }
   }
 
+  const normalizedLanguage = language?.toLowerCase() || 'text'
+  const accentColor = languageColors[normalizedLanguage] || 'oklch(0.75 0.15 195)'
+
   return (
-    <div className="relative group">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={handleCopy}
-        className="absolute top-2 right-2 h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-secondary hover:bg-accent hover:text-accent-foreground"
+    <div className="relative group mb-4">
+      <div 
+        className="flex items-center justify-between px-4 py-2 rounded-t-lg border border-b-0 border-border"
+        style={{ backgroundColor: 'oklch(0.25 0.01 250)' }}
       >
-        {copied ? (
-          <Check className="h-4 w-4 text-accent" />
-        ) : (
-          <Copy className="h-4 w-4" />
+        <span 
+          className="text-xs font-medium uppercase tracking-wider"
+          style={{ color: accentColor }}
+        >
+          {normalizedLanguage}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleCopy}
+          className="h-7 w-7 p-0 hover:bg-accent/20"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5" style={{ color: accentColor }} />
+          ) : (
+            <Copy className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+          )}
+        </Button>
+      </div>
+      <Highlight
+        theme={themes.nightOwl}
+        code={code.trim()}
+        language={normalizedLanguage as any}
+      >
+        {({ className, style, tokens, getLineProps, getTokenProps }) => (
+          <pre
+            className={cn(
+              className,
+              "overflow-x-auto rounded-b-lg border border-border p-4 text-sm"
+            )}
+            style={{
+              ...style,
+              backgroundColor: 'oklch(0.20 0.01 250)',
+              margin: 0,
+            }}
+          >
+            {tokens.map((line, i) => (
+              <div key={i} {...getLineProps({ line })}>
+                {line.map((token, key) => (
+                  <span key={key} {...getTokenProps({ token })} />
+                ))}
+              </div>
+            ))}
+          </pre>
         )}
-      </Button>
-      <pre className="bg-secondary rounded-lg p-4 overflow-x-auto mb-4 border border-border">
-        <code className="text-sm font-mono text-foreground">{code}</code>
-      </pre>
+      </Highlight>
     </div>
   )
 }
