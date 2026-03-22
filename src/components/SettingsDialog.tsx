@@ -25,8 +25,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     oauthClientIds: {},
     oauthClientSecrets: {},
     connectedServices: {
-      googleDrive: false,
-      oneDrive: false,
+      googledrive: false,
+      onedrive: false,
       github: false,
       dropbox: false,
     },
@@ -37,30 +37,30 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   })
 
   const [localClientIds, setLocalClientIds] = useState({
-    googleDrive: settings?.oauthClientIds.googleDrive || '',
-    oneDrive: settings?.oauthClientIds.oneDrive || '',
+    googledrive: settings?.oauthClientIds.googledrive || '',
+    onedrive: settings?.oauthClientIds.onedrive || '',
     github: settings?.oauthClientIds.github || '',
     dropbox: settings?.oauthClientIds.dropbox || '',
   })
 
   const [localClientSecrets, setLocalClientSecrets] = useState({
-    googleDrive: settings?.oauthClientSecrets.googleDrive || '',
-    oneDrive: settings?.oauthClientSecrets.oneDrive || '',
+    googledrive: settings?.oauthClientSecrets.googledrive || '',
+    onedrive: settings?.oauthClientSecrets.onedrive || '',
     github: settings?.oauthClientSecrets.github || '',
     dropbox: settings?.oauthClientSecrets.dropbox || '',
   })
 
   const [showKeys, setShowKeys] = useState({
     digitalOcean: false,
-    googleDrive: false,
-    oneDrive: false,
+    googledrive: false,
+    onedrive: false,
     github: false,
     dropbox: false,
   })
 
   const [showSecrets, setShowSecrets] = useState({
-    googleDrive: false,
-    oneDrive: false,
+    googledrive: false,
+    onedrive: false,
     github: false,
     dropbox: false,
   })
@@ -70,14 +70,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       digitalOcean: settings?.apiKeys.digitalOcean || '',
     })
     setLocalClientIds({
-      googleDrive: settings?.oauthClientIds.googleDrive || '',
-      oneDrive: settings?.oauthClientIds.oneDrive || '',
+      googledrive: settings?.oauthClientIds.googledrive || '',
+      onedrive: settings?.oauthClientIds.onedrive || '',
       github: settings?.oauthClientIds.github || '',
       dropbox: settings?.oauthClientIds.dropbox || '',
     })
     setLocalClientSecrets({
-      googleDrive: settings?.oauthClientSecrets.googleDrive || '',
-      oneDrive: settings?.oauthClientSecrets.oneDrive || '',
+      googledrive: settings?.oauthClientSecrets.googledrive || '',
+      onedrive: settings?.oauthClientSecrets.onedrive || '',
       github: settings?.oauthClientSecrets.github || '',
       dropbox: settings?.oauthClientSecrets.dropbox || '',
     })
@@ -100,7 +100,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     toast.success('OAuth credentials saved securely')
   }
 
-  const handleOAuthConnect = (provider: 'googleDrive' | 'oneDrive' | 'github' | 'dropbox') => {
+  const handleOAuthConnect = (provider: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
     const clientId = localClientIds[provider]
     const clientSecret = localClientSecrets[provider]
 
@@ -128,7 +128,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     }, 500)
   }
 
-  const handleDisconnect = (provider: 'googleDrive' | 'oneDrive' | 'github' | 'dropbox') => {
+  const handleDisconnect = (provider: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
     setSettings((current) => ({
       ...current!,
       connectedServices: {
@@ -143,7 +143,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     toast.info(`${provider} disconnected`)
   }
 
-  const getConnectionStatus = (provider: 'googleDrive' | 'oneDrive' | 'github' | 'dropbox') => {
+  const getConnectionStatus = (provider: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
     const isConnected = settings?.connectedServices?.[provider]
     const token = settings?.oauthTokens?.[provider]
 
@@ -166,7 +166,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const cloudServices = [
     {
-      id: 'googleDrive' as const,
+      id: 'googledrive' as const,
       name: 'Google Drive',
       description: 'Access files from your Google Drive',
       color: 'text-blue-500',
@@ -174,7 +174,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       docsUrl: 'https://console.cloud.google.com/apis/credentials',
     },
     {
-      id: 'oneDrive' as const,
+      id: 'onedrive' as const,
       name: 'OneDrive',
       description: 'Access files from your OneDrive',
       color: 'text-blue-600',

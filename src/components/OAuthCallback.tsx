@@ -13,8 +13,8 @@ export function OAuthCallback() {
     oauthClientIds: {},
     oauthClientSecrets: {},
     connectedServices: {
-      googleDrive: false,
-      oneDrive: false,
+      googledrive: false,
+      onedrive: false,
       github: false,
       dropbox: false,
     },
@@ -55,7 +55,7 @@ export function OAuthCallback() {
 
     setProvider(state.provider)
 
-    const providerKey = state.provider as 'googleDrive' | 'oneDrive' | 'github' | 'dropbox'
+    const providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
     const clientId = settings?.oauthClientIds[providerKey]
     const clientSecret = settings?.oauthClientSecrets[providerKey]
 

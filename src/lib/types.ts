@@ -71,32 +71,32 @@ export interface OAuthToken {
 export interface UserSettings {
   apiKeys: {
     digitalOcean?: string
-    googleDrive?: string
-    oneDrive?: string
+    googledrive?: string
+    onedrive?: string
     github?: string
     dropbox?: string
   }
   oauthTokens: {
-    googleDrive?: OAuthToken
-    oneDrive?: OAuthToken
+    googledrive?: OAuthToken
+    onedrive?: OAuthToken
     github?: OAuthToken
     dropbox?: OAuthToken
   }
   oauthClientIds: {
-    googleDrive?: string
-    oneDrive?: string
+    googledrive?: string
+    onedrive?: string
     github?: string
     dropbox?: string
   }
   oauthClientSecrets: {
-    googleDrive?: string
-    oneDrive?: string
+    googledrive?: string
+    onedrive?: string
     github?: string
     dropbox?: string
   }
   connectedServices: {
-    googleDrive: boolean
-    oneDrive: boolean
+    googledrive: boolean
+    onedrive: boolean
     github: boolean
     dropbox: boolean
   }

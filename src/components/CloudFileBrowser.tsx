@@ -30,8 +30,8 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     oauthClientIds: {},
     oauthClientSecrets: {},
     connectedServices: {
-      googleDrive: false,
-      oneDrive: false,
+      googledrive: false,
+      onedrive: false,
       github: false,
       dropbox: false,
     },
@@ -50,7 +50,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-500',
       bgColor: 'bg-blue-500/10',
-      connected: settings?.connectedServices?.googleDrive || false,
+      connected: settings?.connectedServices?.googledrive || false,
     },
     {
       id: 'onedrive' as const,
@@ -58,7 +58,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-600',
       bgColor: 'bg-blue-600/10',
-      connected: settings?.connectedServices?.oneDrive || false,
+      connected: settings?.connectedServices?.onedrive || false,
     },
     {
       id: 'github' as const,
