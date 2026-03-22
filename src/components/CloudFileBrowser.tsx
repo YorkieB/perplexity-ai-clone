@@ -50,7 +50,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-500',
       bgColor: 'bg-blue-500/10',
-      connected: settings?.connectedServices?.googledrive || false,
+      connected: settings?.connectedServices?.googledrive ?? false,
     },
     {
       id: 'onedrive' as const,
@@ -58,7 +58,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-600',
       bgColor: 'bg-blue-600/10',
-      connected: settings?.connectedServices?.onedrive || false,
+      connected: settings?.connectedServices?.onedrive ?? false,
     },
     {
       id: 'github' as const,
@@ -66,7 +66,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-gray-500',
       bgColor: 'bg-gray-500/10',
-      connected: settings?.connectedServices?.github || false,
+      connected: settings?.connectedServices?.github ?? false,
     },
     {
       id: 'dropbox' as const,
@@ -74,7 +74,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       icon: CloudArrowDown,
       color: 'text-blue-400',
       bgColor: 'bg-blue-400/10',
-      connected: settings?.connectedServices?.dropbox || false,
+      connected: settings?.connectedServices?.dropbox ?? false,
     },
   ]
 
