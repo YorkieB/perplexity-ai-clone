@@ -15,9 +15,11 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **[Phase 4 AI prompt](docs/PHASE-04-AI-PROMPT.md)** — global answer instructions + privacy (clear threads/workspaces).
 - **[Phase 4 complete (summary)](docs/PHASE-04-COMPLETE.md)** — `UserSettings` answer fields, `buildAssistantSystemContent`, Privacy tab (PR #8).
 - **[Phase 5 AI prompt](docs/PHASE-05-AI-PROMPT.md)** — export / copy thread & answers as Markdown (Pages-lite, client-only).
+- **[Phase 5 complete (summary)](docs/PHASE-05-COMPLETE.md)** — `exportMarkdown.ts`, `ThreadExportActions`, download & clipboard (PR #8).
 
 ## 🚀 Features
 
+- **Markdown export**: Download or copy threads and the last answer as `.md` (client-side; sources & model-council blocks included).
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data
 - **AI-Powered Responses**: Advanced language model responses with source attribution
 - **Workspace Organization**: Create custom workspaces with tailored AI behavior via system prompts

@@ -1,6 +1,8 @@
 # Phase 5 — AI agent prompt (share & export — Pages-lite)
 
-**Use this entire block as the initial message** when opening a new agent.
+**Status:** Implemented — see **`docs/PHASE-05-COMPLETE.md`** (PR [#8](https://github.com/YorkieB/perplexity-ai-clone/pull/8), commit `597b89a` on `cursor/include-web-toggle-6a03`).
+
+**Use this entire block as the initial message** when opening a new agent (historical / replay).
 
 ---
 
