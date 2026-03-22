@@ -8,6 +8,8 @@
         "kill": "fuser -k 5000/tcp",
         "build": "tsc -b && vite build",
         "lint": "eslint .",
+        "verify": "npm run lint && npm run build",
+        "verify:install": "npm ci && npm run verify",
         "optimize": "vite optimize",
         "preview": "vite preview"
     },

@@ -24,6 +24,12 @@ When this file refers to documents such as `LAYERING-STANDARDS.md` or
 `WORKFLOW-TEST-ENFORCEMENT.md`, you MUST resolve them from `docs/**`
 first.
 
+### Build verification (mandatory)
+
+Before considering work complete or starting a dependent task, follow
+`docs/AGENT-VERIFICATION.md`: install dependencies, run `npm run verify`
+(lint + production build), and ensure CI passes on the branch.
+
 ---
 
 ## Singleton Path Enforcement
