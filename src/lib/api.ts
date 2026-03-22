@@ -149,9 +149,10 @@ export async function executeModelCouncil(
   query: string,
   contextSection: string,
   fileContext: string,
-  systemPrompt: string
+  systemPrompt: string,
+  selectedModels: string[] = ['gpt-4o', 'gpt-4o-mini']
 ): Promise<ModelCouncilResult> {
-  const models = ['gpt-4o', 'gpt-4o-mini'] as const
+  const models = selectedModels.length > 0 ? selectedModels : ['gpt-4o', 'gpt-4o-mini']
   
   const basePrompt = `You are an advanced AI research assistant.${
     systemPrompt ? ` ${systemPrompt}` : ''

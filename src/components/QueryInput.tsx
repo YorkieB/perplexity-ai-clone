@@ -11,6 +11,7 @@ import { UploadedFile } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
+import { ModelCouncilSelector } from '@/components/ModelCouncilSelector'
 import {
   ArrowRight,
   Lightning,
@@ -38,7 +39,7 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean) => void
+  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -61,6 +62,8 @@ export function QueryInput({
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [useModelCouncil, setUseModelCouncil] = useState(false)
+  const [modelCouncilDialogOpen, setModelCouncilDialogOpen] = useState(false)
+  const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'gpt-4o-mini'])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -71,7 +74,7 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil)
+      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined)
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
@@ -198,8 +201,7 @@ export function QueryInput({
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
                   onClick={() => {
-                    setUseModelCouncil(true)
-                    toast.success('Model Council enabled for next query')
+                    setModelCouncilDialogOpen(true)
                   }}
                 >
                   <Hammer size={18} className="text-muted-foreground" />
@@ -358,6 +360,17 @@ export function QueryInput({
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
+      
+      <ModelCouncilSelector
+        open={modelCouncilDialogOpen}
+        onOpenChange={setModelCouncilDialogOpen}
+        defaultSelected={selectedCouncilModels}
+        onConfirm={(models) => {
+          setSelectedCouncilModels(models)
+          setUseModelCouncil(true)
+          toast.success(`Model Council enabled with ${models.length} models`)
+        }}
+      />
     </div>
   )
 }

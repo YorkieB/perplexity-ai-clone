@@ -76,7 +76,7 @@ function App() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean) => {
+  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => {
     setIsGenerating(true)
 
     const userMessage: MessageType = {
@@ -148,7 +148,7 @@ function App() {
       }
 
       if (useModelCouncil) {
-        const councilResult = await executeModelCouncil(query, contextSection, fileContext, systemPrompt + modeInstruction)
+        const councilResult = await executeModelCouncil(query, contextSection, fileContext, systemPrompt + modeInstruction, selectedModels)
         
         const assistantMessage: MessageType = {
           id: generateId(),

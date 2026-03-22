@@ -1,5 +1,7 @@
 export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
 
+export type AvailableModel = 'gpt-4o' | 'gpt-4o-mini'
+
 export interface Source {
   url: string
   title: string
