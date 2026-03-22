@@ -1,6 +1,9 @@
-import { useMemo, createElement, Fragment } from 'react'
+import { useMemo, createElement, Fragment, useState } from 'react'
 import { marked } from 'marked'
 import { cn } from '@/lib/utils'
+import { Copy, Check } from '@phosphor-icons/react'
+import { Button } from '@/components/ui/button'
+import { toast } from 'sonner'
 
 interface MarkdownRendererProps {
   content: string
@@ -11,6 +14,41 @@ interface ParsedContent {
   type: 'text' | 'citation'
   content: string
   citationNumber?: number
+}
+
+function CodeBlock({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      toast.success('Code copied to clipboard')
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      toast.error('Failed to copy code')
+    }
+  }
+
+  return (
+    <div className="relative group">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleCopy}
+        className="absolute top-2 right-2 h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-secondary hover:bg-accent hover:text-accent-foreground"
+      >
+        {copied ? (
+          <Check className="h-4 w-4 text-accent" />
+        ) : (
+          <Copy className="h-4 w-4" />
+        )}
+      </Button>
+      <pre className="bg-secondary rounded-lg p-4 overflow-x-auto mb-4 border border-border">
+        <code className="text-sm font-mono text-foreground">{code}</code>
+      </pre>
+    </div>
+  )
 }
 
 function parseCitationsInText(text: string): ParsedContent[] {
@@ -84,6 +122,20 @@ function processHTMLWithCitations(
     if (node.nodeType === Node.ELEMENT_NODE) {
       const element = node as HTMLElement
       const tagName = element.tagName.toLowerCase()
+
+      if (tagName === 'pre') {
+        const codeElement = element.querySelector('code')
+        if (codeElement) {
+          const code = codeElement.textContent || ''
+          const language = codeElement.className.match(/language-(\w+)/)?.[1]
+          return createElement(CodeBlock, {
+            key: `code-${index}`,
+            code,
+            language,
+          })
+        }
+      }
+
       const children = Array.from(element.childNodes).map((child, idx) =>
         processNode(child, idx)
       )
