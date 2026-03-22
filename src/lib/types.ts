@@ -100,6 +100,22 @@ export interface UserSettings {
     github: boolean
     dropbox: boolean
   }
+  /** When true (default), run Tavily/web search before answering. When false, skip web search and use workspace prompt, thread context, files, and model knowledge only. */
+  includeWebSearch?: boolean
+}
+
+export const DEFAULT_USER_SETTINGS: UserSettings = {
+  apiKeys: {},
+  oauthTokens: {},
+  oauthClientIds: {},
+  oauthClientSecrets: {},
+  connectedServices: {
+    googledrive: false,
+    onedrive: false,
+    github: false,
+    dropbox: false,
+  },
+  includeWebSearch: true,
 }
 
 export interface CloudFile {

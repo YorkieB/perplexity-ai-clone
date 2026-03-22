@@ -1,7 +1,16 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
+import {
+  Thread,
+  Workspace,
+  Message as MessageType,
+  Source,
+  UploadedFile,
+  FocusMode,
+  UserSettings,
+  DEFAULT_USER_SETTINGS,
+} from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
@@ -30,6 +39,15 @@ function MainApp() {
   const [focusMode, setFocusMode] = useState<FocusMode>('all')
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const [userSettings, setUserSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
+  const includeWebSearch = userSettings?.includeWebSearch !== false
+
+  const handleIncludeWebSearchChange = useCallback((enabled: boolean) => {
+    setUserSettings((current) => ({
+      ...(current ?? DEFAULT_USER_SETTINGS),
+      includeWebSearch: enabled,
+    }))
+  }, [setUserSettings])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
@@ -114,14 +132,16 @@ function MainApp() {
     }
 
     try {
-      const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
-      
+      const shouldSearchWeb = includeWebSearch
       let webSources: Source[] = []
-      
-      if ('error' in searchResult) {
-        toast.error(searchResult.message)
-      } else {
-        webSources = searchResult
+
+      if (shouldSearchWeb) {
+        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
+        if ('error' in searchResult) {
+          toast.error(searchResult.message)
+        } else {
+          webSources = searchResult
+        }
       }
 
       const systemPrompt = activeWorkspace?.customSystemPrompt || ''
@@ -257,6 +277,8 @@ ${
                 placeholder={`Ask a question in ${activeWorkspace.name}...`}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
+                includeWebSearch={includeWebSearch}
+                onIncludeWebSearchChange={handleIncludeWebSearchChange}
               />
             </div>
           </div>
@@ -299,6 +321,8 @@ ${
                 isLoading={isGenerating}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
+                includeWebSearch={includeWebSearch}
+                onIncludeWebSearchChange={handleIncludeWebSearchChange}
               />
             </div>
           </div>
@@ -321,6 +345,8 @@ ${
               isLoading={isGenerating}
               advancedMode={advancedMode}
               onAdvancedModeChange={setAdvancedMode}
+              includeWebSearch={includeWebSearch}
+              onIncludeWebSearchChange={handleIncludeWebSearchChange}
             />
           </div>
         </div>

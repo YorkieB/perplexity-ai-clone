@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { UserSettings } from '@/lib/types'
+import { UserSettings, DEFAULT_USER_SETTINGS } from '@/lib/types'
 import { buildAuthUrl, isTokenExpired } from '@/lib/oauth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,8 +10,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Globe } from '@phosphor-icons/react'
 
 interface SettingsDialogProps {
   open: boolean
@@ -19,18 +20,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
-    apiKeys: {},
-    oauthTokens: {},
-    oauthClientIds: {},
-    oauthClientSecrets: {},
-    connectedServices: {
-      googledrive: false,
-      onedrive: false,
-      github: false,
-      dropbox: false,
-    },
-  })
+  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const [localApiKeys, setLocalApiKeys] = useState({
     digitalOcean: settings?.apiKeys.digitalOcean || '',
@@ -223,6 +213,37 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
           <TabsContent value="api-keys" className="flex-1 overflow-y-auto space-y-6 mt-4">
             <div className="space-y-6">
+              <Card className="p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-accent/10 rounded-lg">
+                    <Globe className="text-accent" size={20} />
+                  </div>
+                  <div className="flex-1 space-y-3">
+                    <div>
+                      <h3 className="font-semibold text-lg">Include web in answers</h3>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        When on, the app runs web search (Tavily) before answering. When off, answers use your workspace instructions, chat history, attached files, and the model&apos;s knowledge only.
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-4 py-3">
+                      <Label htmlFor="settings-include-web" className="cursor-pointer text-sm font-medium">
+                        Include web search
+                      </Label>
+                      <Switch
+                        id="settings-include-web"
+                        checked={settings?.includeWebSearch !== false}
+                        onCheckedChange={(checked) =>
+                          setSettings((current) => ({
+                            ...(current ?? DEFAULT_USER_SETTINGS),
+                            includeWebSearch: checked,
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
               <Card className="p-6 space-y-4">
                 <div className="flex items-start gap-3">
                   <div className="p-2 bg-primary/10 rounded-lg">

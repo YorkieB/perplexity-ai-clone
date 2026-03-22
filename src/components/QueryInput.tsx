@@ -29,6 +29,7 @@ import {
   Microphone,
   Waveform,
   Desktop,
+  Globe,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -44,6 +45,8 @@ interface QueryInputProps {
   placeholder?: string
   advancedMode: boolean
   onAdvancedModeChange: (enabled: boolean) => void
+  includeWebSearch: boolean
+  onIncludeWebSearchChange: (enabled: boolean) => void
 }
 
 export function QueryInput({
@@ -52,6 +55,8 @@ export function QueryInput({
   placeholder = 'Ask anything...',
   advancedMode,
   onAdvancedModeChange,
+  includeWebSearch,
+  onIncludeWebSearchChange,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -380,21 +385,43 @@ export function QueryInput({
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <Switch
-          id="advanced-mode"
-          checked={advancedMode}
-          onCheckedChange={onAdvancedModeChange}
-          disabled={isLoading}
-        />
-        <Label
-          htmlFor="advanced-mode"
-          className="flex items-center gap-2 cursor-pointer text-sm"
-        >
-          <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
-          <span>Enable Advanced Analysis</span>
-        </Label>
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-6 sm:gap-y-2">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="include-web"
+            checked={includeWebSearch}
+            onCheckedChange={onIncludeWebSearchChange}
+            disabled={isLoading}
+          />
+          <Label
+            htmlFor="include-web"
+            className="flex items-center gap-2 cursor-pointer text-sm"
+          >
+            <Globe size={16} weight={includeWebSearch ? 'fill' : 'regular'} className="text-primary" />
+            <span>Include web</span>
+          </Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch
+            id="advanced-mode"
+            checked={advancedMode}
+            onCheckedChange={onAdvancedModeChange}
+            disabled={isLoading}
+          />
+          <Label
+            htmlFor="advanced-mode"
+            className="flex items-center gap-2 cursor-pointer text-sm"
+          >
+            <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
+            <span>Enable Advanced Analysis</span>
+          </Label>
+        </div>
       </div>
+      {!includeWebSearch && (
+        <p className="text-xs text-muted-foreground -mt-1 pl-0.5">
+          Web search is off — answers use workspace context, attachments, chat history, and model knowledge.
+        </p>
+      )}
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
       

@@ -1,24 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { UserSettings } from '@/lib/types'
+import { UserSettings, DEFAULT_USER_SETTINGS } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
 
 export function OAuthCallback() {
-  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
-    apiKeys: {},
-    oauthTokens: {},
-    oauthClientIds: {},
-    oauthClientSecrets: {},
-    connectedServices: {
-      googledrive: false,
-      onedrive: false,
-      github: false,
-      dropbox: false,
-    },
-  })
+  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [message, setMessage] = useState('Processing OAuth callback...')
