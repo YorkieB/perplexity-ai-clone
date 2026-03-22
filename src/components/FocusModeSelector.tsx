@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react'
 import { FocusMode } from '@/lib/types'
 import {
   Select,
@@ -14,7 +15,7 @@ interface FocusModeSelectorProps {
   disabled?: boolean
 }
 
-const focusModes: { value: FocusMode; label: string; icon: JSX.Element }[] = [
+const focusModes: { value: FocusMode; label: string; icon: ReactElement }[] = [
   { value: 'all', label: 'All Sources', icon: <Globe size={16} /> },
   { value: 'academic', label: 'Academic', icon: <GraduationCap size={16} /> },
   { value: 'reddit', label: 'Reddit', icon: <RedditLogo size={16} /> },

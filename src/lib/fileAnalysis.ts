@@ -1,3 +1,4 @@
+import { sparkLlmPrompt } from './sparkLlmPrompt'
 import { UploadedFile } from './types'
 
 export interface FileAnalysisResult {
@@ -32,7 +33,7 @@ function calculateBasicMetrics(content: string) {
 export async function analyzeFile(file: UploadedFile): Promise<FileAnalysisResult> {
   const basicMetrics = calculateBasicMetrics(file.content)
 
-  const prompt = window.spark.llmPrompt`You are an expert file analyzer. Analyze this file and provide detailed feedback.
+  const prompt = sparkLlmPrompt`You are an expert file analyzer. Analyze this file and provide detailed feedback.
 
 File Name: ${file.name}
 File Type: ${file.type}
@@ -77,7 +78,7 @@ export async function analyzeMultipleFiles(files: UploadedFile[]): Promise<strin
     .map((f) => `=== ${f.name} ===\n${f.content.substring(0, 2000)}`)
     .join('\n\n')
 
-  const prompt = window.spark.llmPrompt`Analyze these multiple files as a collection and provide a comprehensive overview:
+  const prompt = sparkLlmPrompt`Analyze these multiple files as a collection and provide a comprehensive overview:
 
 Files:
 ${fileList}

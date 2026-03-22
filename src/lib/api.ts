@@ -1,3 +1,4 @@
+import { sparkLlmPrompt } from './sparkLlmPrompt'
 import { Source, FocusMode } from './types'
 
 export interface TavilySearchResult {
@@ -108,7 +109,7 @@ export async function generateFollowUpQuestions(
   sources: Source[]
 ): Promise<string[]> {
   try {
-    const prompt = window.spark.llmPrompt`Based on this conversation, generate 3 concise follow-up questions that would help the user dig deeper.
+    const prompt = sparkLlmPrompt`Based on this conversation, generate 3 concise follow-up questions that would help the user dig deeper.
 
 User Query: ${query}
 
@@ -198,7 +199,7 @@ ${
     })
   )
 
-  const analysisPrompt = window.spark.llmPrompt`Analyze these responses from different AI models to the same query and identify:
+  const analysisPrompt = sparkLlmPrompt`Analyze these responses from different AI models to the same query and identify:
 1. A convergence score (0-100) indicating how much the models agree
 2. Common themes that appear in all responses
 3. Divergent points where models disagree or take different approaches

@@ -16,10 +16,7 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
-function App() {
-  if (window.location.pathname === '/oauth/callback') {
-    return <OAuthCallback />
-  }
+function MainApp() {
   const [threads, setThreads] = useKV<Thread[]>('threads', [])
   const [workspaces, setWorkspaces] = useKV<Workspace[]>('workspaces', [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -361,6 +358,13 @@ ${
       />
     </div>
   )
+}
+
+function App() {
+  if (window.location.pathname === '/oauth/callback') {
+    return <OAuthCallback />
+  }
+  return <MainApp />
 }
 
 export default App
