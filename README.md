@@ -14,6 +14,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **[Phase 3 complete (summary)](docs/PHASE-03-COMPLETE.md)** — `executeModelCouncil` + priors, shared system/user builders (PR #8).
 - **[Phase 4 AI prompt](docs/PHASE-04-AI-PROMPT.md)** — global answer instructions + privacy (clear threads/workspaces).
 - **[Phase 4 complete (summary)](docs/PHASE-04-COMPLETE.md)** — `UserSettings` answer fields, `buildAssistantSystemContent`, Privacy tab (PR #8).
+- **[Phase 5 AI prompt](docs/PHASE-05-AI-PROMPT.md)** — export / copy thread & answers as Markdown (Pages-lite, client-only).
 
 ## 🚀 Features
 
