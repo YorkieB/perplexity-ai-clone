@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useKV } from '@github/spark/hooks'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source } from '@/lib/types'
+import { Thread, Workspace, Message as MessageType, Source, UploadedFile } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch } from '@/lib/api'
 import { AppSidebar } from '@/components/AppSidebar'
@@ -74,13 +74,14 @@ function App() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean) => {
+  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[]) => {
     setIsGenerating(true)
 
     const userMessage: MessageType = {
       id: generateId(),
       role: 'user',
       content: query,
+      files: files,
       createdAt: Date.now(),
     }
 
@@ -131,15 +132,29 @@ function App() {
           .join('\n')}`
       }
 
+      let fileContext = ''
+      if (files && files.length > 0) {
+        fileContext = `\n\nAttached Files:\n${files
+          .map(
+            (file) =>
+              `File: ${file.name} (${file.type})\nContent: ${
+                file.content.length > 2000 ? file.content.substring(0, 2000) + '...' : file.content
+              }\n`
+          )
+          .join('\n')}`
+      }
+
       const promptText = `You are an advanced AI research assistant.${
         systemPrompt ? ` ${systemPrompt}` : ''
-      }${modeInstruction}${contextSection}
+      }${modeInstruction}${contextSection}${fileContext}
 
 User query: ${query}
 
 ${
   webSources.length > 0
     ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+    : files && files.length > 0
+    ? 'Analyze the provided files and answer the user query based on the file content.'
     : 'Provide a helpful, accurate answer based on your knowledge.'
 }
 `

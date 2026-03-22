@@ -6,6 +6,10 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
+import { toast } from 'sonner'
+import { UploadedFile } from '@/lib/types'
+import { processFile } from '@/lib/helpers'
+import { FileAttachment } from '@/components/FileAttachment'
 import {
   ArrowRight,
   Lightning,
@@ -33,7 +37,7 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean) => void
+  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[]) => void
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -51,13 +55,56 @@ export function QueryInput({
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
   const [moreExpanded, setMoreExpanded] = useState(false)
+  const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
+  const [isUploadingFile, setIsUploadingFile] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleSubmit = () => {
-    if (query.trim() && !isLoading) {
-      onSubmit(query.trim(), advancedMode)
+    if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
+      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined)
       setQuery('')
+      setAttachedFiles([])
     }
+  }
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+
+    setIsUploadingFile(true)
+
+    try {
+      const newFiles: UploadedFile[] = []
+      
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const processedFile = await processFile(files[i])
+          newFiles.push(processedFile)
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : 'Failed to process file')
+        }
+      }
+
+      setAttachedFiles((prev) => [...prev, ...newFiles])
+      
+      if (newFiles.length > 0) {
+        toast.success(`${newFiles.length} file${newFiles.length > 1 ? 's' : ''} uploaded`)
+      }
+    } finally {
+      setIsUploadingFile(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleRemoveFile = (fileId: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId))
+  }
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click()
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -102,11 +149,11 @@ export function QueryInput({
               <div className="space-y-1">
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={handleUploadClick}
+                  disabled={isUploadingFile}
                 >
                   <UploadSimple size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Upload files or images</span>
-                  <Lock size={14} className="text-muted-foreground" />
                 </button>
 
                 <button
@@ -197,6 +244,17 @@ export function QueryInput({
           </Popover>
 
           <div className="flex-1 min-w-0">
+            {attachedFiles.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachedFiles.map((file) => (
+                  <FileAttachment
+                    key={file.id}
+                    file={file}
+                    onRemove={() => handleRemoveFile(file.id)}
+                  />
+                ))}
+              </div>
+            )}
             <Textarea
               ref={textareaRef}
               value={query}
@@ -214,6 +272,16 @@ export function QueryInput({
               </div>
             )}
           </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            accept="text/plain,text/markdown,text/csv,application/json,application/pdf,image/jpeg,image/png,image/gif,image/webp"
+            onChange={handleFileSelect}
+            disabled={isLoading || isUploadingFile}
+          />
 
           <div className="flex items-center gap-1 flex-shrink-0">
             <Select value={selectedModel} onValueChange={setSelectedModel}>
@@ -247,7 +315,7 @@ export function QueryInput({
             <Button
               size="icon"
               onClick={handleSubmit}
-              disabled={!query.trim() || isLoading}
+              disabled={(!query.trim() && attachedFiles.length === 0) || isLoading}
               className="h-8 w-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
             >
               <Waveform size={16} weight="fill" />

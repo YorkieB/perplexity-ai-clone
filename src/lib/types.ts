@@ -4,11 +4,21 @@ export interface Source {
   snippet: string
 }
 
+export interface UploadedFile {
+  id: string
+  name: string
+  type: string
+  size: number
+  content: string
+  uploadedAt: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   sources?: Source[]
+  files?: UploadedFile[]
   createdAt: number
 }
 

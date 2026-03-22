@@ -4,6 +4,7 @@ import { Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { FileAttachment } from './FileAttachment'
 
 interface MessageProps {
   message: MessageType
@@ -34,6 +35,23 @@ export function Message({ message }: MessageProps) {
       </div>
 
       <div className={cn('flex-1 space-y-4', isUser && 'flex flex-col items-end')}>
+        {isUser && message.files && message.files.length > 0 && (
+          <div className="space-y-2 max-w-2xl w-full">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Attached Files
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {message.files.map((file) => (
+                <FileAttachment
+                  key={file.id}
+                  file={file}
+                  showRemove={false}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
