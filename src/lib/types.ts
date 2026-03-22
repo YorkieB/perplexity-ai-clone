@@ -67,11 +67,13 @@ export interface UserSettings {
     googleDrive?: string
     oneDrive?: string
     github?: string
+    dropbox?: string
   }
   connectedServices: {
     googleDrive: boolean
     oneDrive: boolean
     github: boolean
+    dropbox: boolean
   }
 }
 
@@ -80,7 +82,7 @@ export interface CloudFile {
   name: string
   type: string
   size: number
-  source: 'googledrive' | 'onedrive' | 'github'
+  source: 'googledrive' | 'onedrive' | 'github' | 'dropbox'
   path: string
   modifiedAt: number
 }

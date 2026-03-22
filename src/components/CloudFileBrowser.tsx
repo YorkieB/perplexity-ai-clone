@@ -30,10 +30,11 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       googleDrive: false,
       oneDrive: false,
       github: false,
+      dropbox: false,
     },
   })
 
-  const [activeService, setActiveService] = useState<'googledrive' | 'onedrive' | 'github' | null>(null)
+  const [activeService, setActiveService] = useState<'googledrive' | 'onedrive' | 'github' | 'dropbox' | null>(null)
   const [files, setFiles] = useState<CloudFile[]>([])
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState('')
@@ -64,9 +65,17 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       bgColor: 'bg-gray-500/10',
       connected: settings?.connectedServices.github || false,
     },
+    {
+      id: 'dropbox' as const,
+      name: 'Dropbox',
+      icon: CloudArrowDown,
+      color: 'text-blue-400',
+      bgColor: 'bg-blue-400/10',
+      connected: settings?.connectedServices.dropbox || false,
+    },
   ]
 
-  const handleLoadFiles = async (service: 'googledrive' | 'onedrive' | 'github') => {
+  const handleLoadFiles = async (service: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
     setIsLoading(true)
     setActiveService(service)
     
@@ -162,7 +171,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
 
         {!activeService && (
           <div className="py-8">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {connectedServices.map((service) => (
                 <button
                   key={service.id}

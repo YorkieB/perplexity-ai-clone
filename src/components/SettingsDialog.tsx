@@ -24,6 +24,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       googleDrive: false,
       oneDrive: false,
       github: false,
+      dropbox: false,
     },
   })
 
@@ -32,6 +33,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     googleDrive: settings?.apiKeys.googleDrive || '',
     oneDrive: settings?.apiKeys.oneDrive || '',
     github: settings?.apiKeys.github || '',
+    dropbox: settings?.apiKeys.dropbox || '',
   })
 
   const [showKeys, setShowKeys] = useState({
@@ -39,6 +41,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     googleDrive: false,
     oneDrive: false,
     github: false,
+    dropbox: false,
   })
 
   const handleSaveApiKeys = () => {
@@ -49,8 +52,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     toast.success('API keys saved securely')
   }
 
-  const handleTestConnection = async (service: 'googledrive' | 'onedrive' | 'github') => {
-    const apiKey = localApiKeys[service === 'googledrive' ? 'googleDrive' : service === 'onedrive' ? 'oneDrive' : 'github']
+  const handleTestConnection = async (service: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
+    const apiKey = localApiKeys[service === 'googledrive' ? 'googleDrive' : service === 'onedrive' ? 'oneDrive' : service === 'dropbox' ? 'dropbox' : 'github']
     
     if (!apiKey) {
       toast.error(`Please enter ${service} API key first`)
@@ -64,14 +67,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         ...current!,
         connectedServices: {
           ...current!.connectedServices,
-          [service === 'googledrive' ? 'googleDrive' : service === 'onedrive' ? 'oneDrive' : 'github']: true,
+          [service === 'googledrive' ? 'googleDrive' : service === 'onedrive' ? 'oneDrive' : service === 'dropbox' ? 'dropbox' : 'github']: true,
         },
       }))
       toast.success(`${service} connected successfully`)
     }, 1500)
   }
 
-  const handleDisconnect = (service: 'googleDrive' | 'oneDrive' | 'github') => {
+  const handleDisconnect = (service: 'googleDrive' | 'oneDrive' | 'github' | 'dropbox') => {
     setSettings((current) => ({
       ...current!,
       connectedServices: {
@@ -241,6 +244,30 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                       }
                     />
                   </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="dropbox-key">Dropbox Access Token</Label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setShowKeys((prev) => ({ ...prev, dropbox: !prev.dropbox }))
+                        }
+                      >
+                        {showKeys.dropbox ? 'Hide' : 'Show'}
+                      </Button>
+                    </div>
+                    <Input
+                      id="dropbox-key"
+                      type={showKeys.dropbox ? 'text' : 'password'}
+                      placeholder="Enter your Dropbox access token"
+                      value={localApiKeys.dropbox}
+                      onChange={(e) =>
+                        setLocalApiKeys((prev) => ({ ...prev, dropbox: e.target.value }))
+                      }
+                    />
+                  </div>
                 </div>
               </Card>
 
@@ -361,6 +388,44 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         size="sm"
                         onClick={() => handleTestConnection('github')}
                         disabled={!localApiKeys.github}
+                      >
+                        Connect
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </Card>
+
+              <Card className="p-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-400/10 rounded-lg">
+                      <CloudArrowUp className="text-blue-400" size={24} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">Dropbox</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Access files from your Dropbox account
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {settings?.connectedServices.dropbox ? (
+                      <>
+                        <CheckCircle className="text-green-500" size={20} weight="fill" />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDisconnect('dropbox')}
+                        >
+                          Disconnect
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={() => handleTestConnection('dropbox')}
+                        disabled={!localApiKeys.dropbox}
                       >
                         Connect
                       </Button>
