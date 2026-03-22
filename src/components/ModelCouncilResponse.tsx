@@ -6,6 +6,16 @@ import { Badge } from '@/components/ui/badge'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CheckCircle, Warning, ArrowsLeftRight } from '@phosphor-icons/react'
 
+const getModelBadge = (modelId: string): { label: string; color: string } => {
+  if (modelId.includes('gpt-4o-mini')) return { label: 'GPT-4o Mini', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' }
+  if (modelId.includes('gpt-4o')) return { label: 'GPT-4o', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' }
+  if (modelId.includes('claude-3.5-sonnet')) return { label: 'Claude 3.5 Sonnet', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' }
+  if (modelId.includes('claude-3-opus')) return { label: 'Claude 3 Opus', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' }
+  if (modelId.includes('claude-3-haiku')) return { label: 'Claude 3 Haiku', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' }
+  if (modelId.includes('gemini-2.0-flash')) return { label: 'Gemini 2.0 Flash', color: 'bg-teal-500/10 text-teal-500 border-teal-500/20' }
+  return { label: modelId, color: 'bg-muted text-muted-foreground' }
+}
+
 interface ModelCouncilResponseProps {
   modelResponses: ModelResponse[]
   convergenceScore?: number
@@ -59,11 +69,14 @@ export function ModelCouncilResponse({
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="w-full justify-start overflow-x-auto flex-nowrap bg-muted/50">
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          {modelResponses.map((response, index) => (
-            <TabsTrigger key={index} value={response.model}>
-              {response.model}
-            </TabsTrigger>
-          ))}
+          {modelResponses.map((response, index) => {
+            const modelBadge = getModelBadge(response.model)
+            return (
+              <TabsTrigger key={index} value={response.model} className="gap-2">
+                <span>{modelBadge.label}</span>
+              </TabsTrigger>
+            )
+          })}
           {(commonThemes && commonThemes.length > 0) ||
           (divergentPoints && divergentPoints.length > 0) ? (
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
@@ -133,22 +146,30 @@ export function ModelCouncilResponse({
           </div>
         </TabsContent>
 
-        {modelResponses.map((response) => (
-          <TabsContent key={response.model} value={response.model} className="mt-4">
-            <Card className="p-4 bg-card/30">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold">{response.model}</h3>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(response.generatedAt).toLocaleTimeString()}
-                </span>
-              </div>
-              <MarkdownRenderer
-                content={response.content}
-                onCitationHover={onCitationHover || (() => {})}
-              />
-            </Card>
-          </TabsContent>
-        ))}
+        {modelResponses.map((response) => {
+          const modelBadge = getModelBadge(response.model)
+          return (
+            <TabsContent key={response.model} value={response.model} className="mt-4">
+              <Card className="p-4 bg-card/30">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold">{modelBadge.label}</h3>
+                    <Badge variant="outline" className={`text-xs px-1.5 py-0 h-5 ${modelBadge.color}`}>
+                      {response.model}
+                    </Badge>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(response.generatedAt).toLocaleTimeString()}
+                  </span>
+                </div>
+                <MarkdownRenderer
+                  content={response.content}
+                  onCitationHover={onCitationHover || (() => {})}
+                />
+              </Card>
+            </TabsContent>
+          )
+        })}
 
         {(commonThemes && commonThemes.length > 0) ||
         (divergentPoints && divergentPoints.length > 0) ? (

@@ -37,6 +37,34 @@ const availableModels: ModelOption[] = [
     badge: 'Efficient',
     badgeVariant: 'secondary',
   },
+  {
+    id: 'claude-3.5-sonnet',
+    name: 'Claude 3.5 Sonnet',
+    description: 'Anthropic\'s latest model with excellent reasoning and analysis',
+    badge: 'Recommended',
+    badgeVariant: 'default',
+  },
+  {
+    id: 'claude-3-opus',
+    name: 'Claude 3 Opus',
+    description: 'Top-tier Anthropic model for complex tasks',
+    badge: 'Premium',
+    badgeVariant: 'outline',
+  },
+  {
+    id: 'claude-3-haiku',
+    name: 'Claude 3 Haiku',
+    description: 'Fast and efficient Claude model for quick responses',
+    badge: 'Quick',
+    badgeVariant: 'secondary',
+  },
+  {
+    id: 'gemini-2.0-flash',
+    name: 'Gemini 2.0 Flash',
+    description: 'Google\'s fast multimodal model with broad capabilities',
+    badge: 'Multimodal',
+    badgeVariant: 'default',
+  },
 ]
 
 interface ModelCouncilSelectorProps {
@@ -50,7 +78,7 @@ export function ModelCouncilSelector({
   open,
   onOpenChange,
   onConfirm,
-  defaultSelected = ['gpt-4o', 'gpt-4o-mini'],
+  defaultSelected = ['gpt-4o', 'claude-3.5-sonnet'],
 }: ModelCouncilSelectorProps) {
   const [selectedModels, setSelectedModels] = useState<string[]>(defaultSelected)
 

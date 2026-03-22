@@ -63,7 +63,7 @@ export function QueryInput({
   const [previewOpen, setPreviewOpen] = useState(false)
   const [useModelCouncil, setUseModelCouncil] = useState(false)
   const [modelCouncilDialogOpen, setModelCouncilDialogOpen] = useState(false)
-  const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'gpt-4o-mini'])
+  const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'claude-3.5-sonnet'])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -140,6 +140,20 @@ export function QueryInput({
 
   return (
     <div className="space-y-3">
+      {useModelCouncil && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-primary/10 border border-primary/20 rounded-lg">
+          <Hammer size={16} className="text-primary" weight="fill" />
+          <span className="text-sm text-primary font-medium">
+            Model Council Active: {selectedCouncilModels.length} models
+          </span>
+          <button
+            onClick={() => setUseModelCouncil(false)}
+            className="ml-auto text-primary hover:text-primary/80 transition-colors"
+          >
+            <span className="text-xs underline">Disable</span>
+          </button>
+        </div>
+      )}
       <div className="relative bg-card border border-border rounded-xl shadow-sm">
         <div className="flex items-start gap-2 p-3">
           <Popover>

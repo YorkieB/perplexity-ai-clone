@@ -1,6 +1,6 @@
 export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
 
-export type AvailableModel = 'gpt-4o' | 'gpt-4o-mini'
+export type AvailableModel = 'gpt-4o' | 'gpt-4o-mini' | 'claude-3.5-sonnet' | 'claude-3-opus' | 'claude-3-haiku' | 'gemini-2.0-flash'
 
 export interface Source {
   url: string
