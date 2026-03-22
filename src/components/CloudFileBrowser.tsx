@@ -1,10 +1,9 @@
 import { useState } from 'react'
-import { useKV } from '@github/spark/hooks'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings, CloudFile } from '@/lib/types'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
@@ -24,7 +23,7 @@ interface CloudFileBrowserProps {
 }
 
 export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFileBrowserProps) {
-  const [settings] = useKV<UserSettings>('user-settings', {
+  const [settings] = useLocalStorage<UserSettings>('user-settings', {
     apiKeys: {},
     oauthTokens: {},
     oauthClientIds: {},

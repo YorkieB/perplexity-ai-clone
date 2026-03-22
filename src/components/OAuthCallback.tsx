@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useKV } from '@github/spark/hooks'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
 import { Card } from '@/components/ui/card'
@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
 
 export function OAuthCallback() {
-  const [settings, setSettings] = useKV<UserSettings>('user-settings', {
+  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
     apiKeys: {},
     oauthTokens: {},
     oauthClientIds: {},
@@ -22,81 +22,78 @@ export function OAuthCallback() {
 
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [message, setMessage] = useState('Processing OAuth callback...')
-  const [provider, setProvider] = useState<string>('')
 
   useEffect(() => {
-    handleOAuthCallback()
-  }, [])
+    void (async () => {
+      const params = new URLSearchParams(window.location.search)
+      const code = params.get('code')
+      const stateParam = params.get('state')
+      const error = params.get('error')
 
-  const handleOAuthCallback = async () => {
-    const params = new URLSearchParams(window.location.search)
-    const code = params.get('code')
-    const stateParam = params.get('state')
-    const error = params.get('error')
-
-    if (error) {
-      setStatus('error')
-      setMessage(`Authorization failed: ${error}`)
-      return
-    }
-
-    if (!code || !stateParam) {
-      setStatus('error')
-      setMessage('Missing authorization code or state parameter')
-      return
-    }
-
-    const state = validateOAuthState(stateParam)
-    if (!state) {
-      setStatus('error')
-      setMessage('Invalid or expired OAuth state')
-      return
-    }
-
-    setProvider(state.provider)
-
-    const providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
-    const clientId = settings?.oauthClientIds[providerKey]
-    const clientSecret = settings?.oauthClientSecrets[providerKey]
-
-    if (!clientId || !clientSecret) {
-      setStatus('error')
-      setMessage('OAuth credentials not found. Please configure them in settings.')
-      return
-    }
-
-    try {
-      const token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
-
-      if (!token) {
+      if (error) {
         setStatus('error')
-        setMessage('Failed to exchange authorization code for access token')
+        setMessage(`Authorization failed: ${error}`)
         return
       }
 
-      setSettings((current) => ({
-        ...current!,
-        oauthTokens: {
-          ...current!.oauthTokens,
-          [providerKey]: token,
-        },
-        connectedServices: {
-          ...current!.connectedServices,
-          [providerKey]: true,
-        },
-      }))
+      if (!code || !stateParam) {
+        setStatus('error')
+        setMessage('Missing authorization code or state parameter')
+        return
+      }
 
-      setStatus('success')
-      setMessage(`Successfully connected to ${state.provider}!`)
+      const state = validateOAuthState(stateParam)
+      if (!state) {
+        setStatus('error')
+        setMessage('Invalid or expired OAuth state')
+        return
+      }
 
-      setTimeout(() => {
-        window.location.href = state.returnUrl || '/'
-      }, 2000)
-    } catch (error) {
-      setStatus('error')
-      setMessage(`Error during OAuth flow: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    }
-  }
+      const providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
+      const clientId = settings?.oauthClientIds[providerKey]
+      const clientSecret = settings?.oauthClientSecrets[providerKey]
+
+      if (!clientId || !clientSecret) {
+        setStatus('error')
+        setMessage('OAuth credentials not found. Please configure them in settings.')
+        return
+      }
+
+      try {
+        const token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
+
+        if (!token) {
+          setStatus('error')
+          setMessage('Failed to exchange authorization code for access token')
+          return
+        }
+
+        setSettings((current) => ({
+          ...current!,
+          oauthTokens: {
+            ...current!.oauthTokens,
+            [providerKey]: token,
+          },
+          connectedServices: {
+            ...current!.connectedServices,
+            [providerKey]: true,
+          },
+        }))
+
+        setStatus('success')
+        setMessage(`Successfully connected to ${state.provider}!`)
+
+        setTimeout(() => {
+          window.location.href = state.returnUrl || '/'
+        }, 2000)
+      } catch (err) {
+        setStatus('error')
+        setMessage(`Error during OAuth flow: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      }
+    })()
+    // Single exchange on mount; settings come from KV hook initial/hydrated state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-background">

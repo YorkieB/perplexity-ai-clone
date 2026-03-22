@@ -2,6 +2,10 @@
 
 A production-ready, highly responsive AI-powered search engine built with React, TypeScript, and Tailwind CSS. Features real-time web search integration, workspace organization, and persistent conversation threads.
 
+## Documentation
+
+- **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
+
 ## 🚀 Features
 
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data
@@ -17,7 +21,8 @@ A production-ready, highly responsive AI-powered search engine built with React,
 ### Prerequisites
 
 - Node.js and npm installed
-- A Tavily API key (get one at [tavily.com](https://tavily.com))
+- An [OpenAI](https://platform.openai.com/) API key (or any OpenAI-compatible endpoint; set `OPENAI_BASE_URL` if needed)
+- Optional: a [Tavily](https://tavily.com) API key for live web search
 
 ### Installation
 
@@ -30,9 +35,12 @@ npm install
 
 3. Configure your environment variables:
    - Copy `.env.example` to `.env`
-   - Add your Tavily API key to `.env`:
+   - Add at minimum **`OPENAI_API_KEY`** (used only by the local Vite dev/preview proxy at `/api/llm`, not embedded in the client bundle)
+   - Optionally add **`VITE_TAVILY_API_KEY`** for web search
+
 ```bash
-VITE_TAVILY_API_KEY=your_actual_api_key_here
+OPENAI_API_KEY=your_openai_key
+VITE_TAVILY_API_KEY=your_tavily_key
 ```
 
 4. Start the development server:
@@ -42,12 +50,8 @@ npm run dev
 
 ## 🔑 API Configuration
 
-This application requires a Tavily Search API key to function properly. The web search integration:
-
-- Executes advanced depth searches for high-quality results
-- Retrieves up to 6 relevant sources per query
-- Passes real-time web data as context to the language model
-- Gracefully degrades if the API is unavailable (AI continues with base knowledge)
+- **LLM**: Chat completions go to `POST /api/llm` during `npm run dev` and `npm run preview`, which proxies to OpenAI (or `OPENAI_BASE_URL`) using `OPENAI_API_KEY`. For static hosting without Node, you must provide your own backend or serverless route that implements the same proxy.
+- **Search**: With `VITE_TAVILY_API_KEY`, the app calls Tavily for sources; without it, search is disabled but the assistant can still answer from the model and any attached files.
 
 **Important**: Never commit your `.env` file or hardcode API keys in the source code.
 
@@ -64,9 +68,9 @@ This application requires a Tavily Search API key to function properly. The web 
 - **Frontend**: React 19 with TypeScript
 - **Styling**: Tailwind CSS with custom dark theme
 - **UI Components**: shadcn/ui component library
-- **State Management**: React hooks with persistent KV storage
-- **API Integration**: Tavily Search API for real-time web data
-- **AI Integration**: Spark LLM API with GPT-4o-mini
+- **State Management**: React hooks with `localStorage` persistence (threads, workspaces, settings)
+- **API Integration**: Tavily Search API (optional) for real-time web data
+- **AI Integration**: OpenAI-compatible chat completions via the dev/preview `/api/llm` proxy (default model GPT-4o-mini)
 
 ## 📁 Project Structure
 

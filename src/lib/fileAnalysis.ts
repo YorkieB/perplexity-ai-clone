@@ -1,3 +1,4 @@
+import { callLlm, llmPrompt } from './llm'
 import { UploadedFile } from './types'
 
 export interface FileAnalysisResult {
@@ -32,7 +33,7 @@ function calculateBasicMetrics(content: string) {
 export async function analyzeFile(file: UploadedFile): Promise<FileAnalysisResult> {
   const basicMetrics = calculateBasicMetrics(file.content)
 
-  const prompt = window.spark.llmPrompt`You are an expert file analyzer. Analyze this file and provide detailed feedback.
+  const prompt = llmPrompt`You are an expert file analyzer. Analyze this file and provide detailed feedback.
 
 File Name: ${file.name}
 File Type: ${file.type}
@@ -52,7 +53,7 @@ Provide your analysis in the following JSON format:
   "qualityScore": <number between 0-100 based on content quality, structure, clarity>
 }`
 
-  const result = await window.spark.llm(prompt, 'gpt-4o-mini', true)
+  const result = await callLlm(prompt, 'gpt-4o-mini', true)
   const analysis = JSON.parse(result)
 
   return {
@@ -77,7 +78,7 @@ export async function analyzeMultipleFiles(files: UploadedFile[]): Promise<strin
     .map((f) => `=== ${f.name} ===\n${f.content.substring(0, 2000)}`)
     .join('\n\n')
 
-  const prompt = window.spark.llmPrompt`Analyze these multiple files as a collection and provide a comprehensive overview:
+  const prompt = llmPrompt`Analyze these multiple files as a collection and provide a comprehensive overview:
 
 Files:
 ${fileList}
@@ -91,5 +92,5 @@ Provide:
 3. Suggestions for improvement
 4. Any missing pieces or gaps`
 
-  return await window.spark.llm(prompt, 'gpt-4o-mini')
+  return await callLlm(prompt, 'gpt-4o-mini')
 }

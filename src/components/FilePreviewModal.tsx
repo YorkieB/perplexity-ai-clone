@@ -1,7 +1,7 @@
 import { UploadedFile } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { X, DownloadSimple, FileText } from '@phosphor-icons/react'
+import { DownloadSimple, FileText } from '@phosphor-icons/react'
 import { formatFileSize } from '@/lib/helpers'
 
 interface FilePreviewModalProps {

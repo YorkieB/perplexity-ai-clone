@@ -85,7 +85,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
       <Highlight
         theme={themes.nightOwl}
         code={code.trim()}
-        language={normalizedLanguage as any}
+        language={normalizedLanguage}
       >
         {({ className, style, tokens, getLineProps, getTokenProps }) => (
           <pre

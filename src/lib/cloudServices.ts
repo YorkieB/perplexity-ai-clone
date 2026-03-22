@@ -1,6 +1,43 @@
 import { OAuthToken } from './oauth'
 import { CloudFile } from './types'
 
+interface DropboxListEntry {
+  readonly '.tag': string
+  id: string
+  name: string
+  size: number
+  path_display: string
+  server_modified: string
+}
+
+interface GoogleDriveListResponse {
+  files: Array<{
+    id: string
+    name: string
+    mimeType: string
+    size?: string
+    modifiedTime: string
+  }>
+}
+
+interface OneDriveListResponse {
+  value: Array<{
+    id: string
+    name: string
+    size: number
+    file?: { mimeType: string }
+    lastModifiedDateTime: string
+  }>
+}
+
+interface GitHubContentItem {
+  type: string
+  sha: string
+  name: string
+  size: number
+  path: string
+}
+
 export async function fetchDropboxFiles(token: OAuthToken): Promise<CloudFile[]> {
   try {
     const response = await fetch('https://api.dropboxapi.com/2/files/list_folder', {
@@ -22,11 +59,11 @@ export async function fetchDropboxFiles(token: OAuthToken): Promise<CloudFile[]>
       throw new Error(`Dropbox API error: ${response.statusText}`)
     }
 
-    const data = await response.json()
-    
+    const data = (await response.json()) as { entries: DropboxListEntry[] }
+
     return data.entries
-      .filter((entry: any) => entry['.tag'] === 'file')
-      .map((file: any) => ({
+      .filter((entry) => entry['.tag'] === 'file')
+      .map((file) => ({
         id: file.id,
         name: file.name,
         type: getMimeType(file.name),
@@ -61,9 +98,9 @@ export async function fetchGoogleDriveFiles(token: OAuthToken): Promise<CloudFil
       throw new Error(`Google Drive API error: ${response.statusText}`)
     }
 
-    const data = await response.json()
-    
-    return data.files.map((file: any) => ({
+    const data = (await response.json()) as GoogleDriveListResponse
+
+    return data.files.map((file) => ({
       id: file.id,
       name: file.name,
       type: file.mimeType,
@@ -93,14 +130,14 @@ export async function fetchOneDriveFiles(token: OAuthToken): Promise<CloudFile[]
       throw new Error(`OneDrive API error: ${response.statusText}`)
     }
 
-    const data = await response.json()
-    
+    const data = (await response.json()) as OneDriveListResponse
+
     return data.value
-      .filter((item: any) => item.file)
-      .map((file: any) => ({
+      .filter((item) => item.file)
+      .map((file) => ({
         id: file.id,
         name: file.name,
-        type: file.file.mimeType || getMimeType(file.name),
+        type: file.file!.mimeType || getMimeType(file.name),
         size: file.size,
         source: 'onedrive' as const,
         path: `/${file.name}`,
@@ -128,7 +165,7 @@ export async function fetchGitHubFiles(token: OAuthToken): Promise<CloudFile[]> 
       throw new Error(`GitHub API error: ${reposResponse.statusText}`)
     }
 
-    const repos = await reposResponse.json()
+    const repos = (await reposResponse.json()) as Array<{ full_name: string }>
     const files: CloudFile[] = []
 
     for (const repo of repos.slice(0, 5)) {
@@ -144,12 +181,12 @@ export async function fetchGitHubFiles(token: OAuthToken): Promise<CloudFile[]> 
         )
 
         if (contentsResponse.ok) {
-          const contents = await contentsResponse.json()
-          
+          const contents = (await contentsResponse.json()) as GitHubContentItem[]
+
           contents
-            .filter((item: any) => item.type === 'file')
+            .filter((item) => item.type === 'file')
             .slice(0, 10)
-            .forEach((file: any) => {
+            .forEach((file) => {
               files.push({
                 id: file.sha,
                 name: file.name,
