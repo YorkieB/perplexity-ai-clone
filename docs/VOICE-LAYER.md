@@ -1,6 +1,6 @@
 # Voice layer
 
-This document describes the **vendor-neutral** voice surface (`VoiceSession`) and the **OpenAI Realtime** implementation used in dev/preview. Full **UI wiring** (thread integration, controls) is tracked as a later phase.
+This document describes the **vendor-neutral** voice surface (`VoiceSession`), the **OpenAI Realtime** WebRTC client, and how voice is **integrated into the same threads** as text (`useLocalStorage('threads')`).
 
 ---
 
@@ -14,7 +14,7 @@ Vendor-neutral types and a **no-op** session live under `src/lib/voice/`.
 |------|------|
 | `src/lib/voice/types.ts` | `VoiceSessionState`, `VoiceConnectionState`, `VoiceTurn`, `VoiceEventMap` payloads |
 | `src/lib/voice/voiceSession.ts` | `VoiceSession` interface, `NullVoiceSession`, `VoiceSessionStub` alias |
-| `src/lib/voice/index.ts` | Barrel re-exports (see below for Phase 1 additions) |
+| `src/lib/voice/index.ts` | Barrel re-exports |
 
 Imports:
 
@@ -49,13 +49,6 @@ Imports:
 
 No network, no mic; safe default for builds without a provider.
 
-### Messages (`src/lib/types.ts`)
-
-Optional on `Message`:
-
-- `modality?: 'text' | 'voice'`
-- `voiceTurn?: VoiceTurn` (`source: 'voice'`, optional `interrupted`, `startedAt` / `endedAt`)
-
 ---
 
 ## Phase 1 — OpenAI Realtime (WebRTC)
@@ -64,51 +57,68 @@ Optional on `Message`:
 
 | Route | Behavior |
 |-------|------------|
-| `POST /api/llm` | Unchanged: proxies to `{base}/chat/completions` with server `OPENAI_API_KEY`. |
+| `POST /api/llm` | Proxies to `{base}/chat/completions` with server `OPENAI_API_KEY`. |
 | `POST /api/realtime/session` | Proxies to OpenAI `POST {base}/realtime/client_secrets` with the **long-lived** key. Returns upstream JSON (including ephemeral `value`). |
 
-`OPENAI_BASE_URL` / `OPENAI_API_KEY` follow the same rules as chat (see `.env.example`).
-
-**Default session body** (merged with optional JSON from the client request): realtime session, model **`gpt-realtime`**, audio output voice **`marin`**.
-
-The file header documents dev + `vite preview`, ephemeral token + WebRTC, and that **production** still needs an equivalent server route if you deploy static assets only.
+**Default session** (merged with optional client body): model **`gpt-realtime`**, audio output voice **`marin`**, **input transcription** `gpt-4o-mini-transcribe` (so user speech can appear as text in the app). PCM input format is set in defaults.
 
 ### Client: `OpenAIRealtimeVoiceSession` (`src/lib/voice/openaiRealtimeVoiceSession.ts`)
 
-Implements `VoiceSession`:
+1. **`connect()`** — `POST` `/api/realtime/session` → ephemeral `value`.
+2. WebRTC: `getUserMedia`, `RTCPeerConnection`, `POST` **`/v1/realtime/calls`** with SDP + `Authorization: Bearer <ephemeral>`, **`oai-events`** data channel.
 
-1. **`connect()`** — `POST` same-origin `sessionUrl` (default `/api/realtime/session`) → read ephemeral `value`.
-2. Browser flow per OpenAI Realtime (GA): `getUserMedia`, `RTCPeerConnection`, `POST` **`https://api.openai.com/v1/realtime/calls`** with SDP and `Authorization: Bearer <ephemeral>`, **`oai-events`** data channel for GA events.
+**`sendAudioChunk`:** no-op; mic audio goes over WebRTC.
 
-**`sendAudioChunk`:** documented no-op; microphone audio uses WebRTC, not manual chunks.
+**Remote audio:** hidden `<audio autoplay>` for the remote stream.
 
-**Remote audio:** played via a hidden `<audio autoplay>` bound to the remote stream.
+**`abortAssistant()`** — `response.cancel` on the data channel (with `response_id` when known).
 
-**`abortAssistant()`** — sends `response.cancel` on the data channel (includes `response_id` when known).
+**Transcript hooks** (for thread text):
+
+- `onUserTranscriptComplete?(text)` — from `conversation.item.input_audio_transcription.completed` (and fallback type match).
+- `onAssistantTranscriptComplete?(text, { interrupted })` — from `response.output_audio_transcript.delta` / `.done`, with finalization on `response.done` / `response.cancelled` so turns complete even if transcript events differ.
 
 ### Event mapping (GA → `VoiceEventMap`)
 
-Examples include:
-
-- `input_audio_buffer.speech_started` / `speech_stopped` → `user_speech_*`
-- `response.created`, `response.output_audio.delta`, `response.done`, `response.cancelled` → assistant lifecycle / `state_changed` (e.g. interrupted)
-- Errors → `error` + `VoiceSessionState` `error` when appropriate
-
-See `openaiRealtimeVoiceSession.ts` for the full switch and edge cases (e.g. inferring assistant audio when deltas are omitted).
+See `openaiRealtimeVoiceSession.ts` for the full mapping (speech buffer, response lifecycle, errors).
 
 ### Errors (`src/lib/voice/errors.ts`)
 
-`VoiceRealtimeError` with codes such as:
-
-`SESSION_BOOTSTRAP_FAILED` | `WEBRTC_NEGOTIATION_FAILED` | `MISSING_EPHEMERAL_KEY` | `DATA_CHANNEL_FAILED` | `NOT_SUPPORTED` | `USER_MEDIA_DENIED`
-
-### Exports (`src/lib/voice/index.ts`)
-
-Also re-exports: `OpenAIRealtimeVoiceSession`, `OpenAIRealtimeVoiceSessionOptions`, `RealtimeClientSecretPayload`, `VoiceRealtimeError`, `VoiceRealtimeErrorCode`.
+`VoiceRealtimeError` — codes include `SESSION_BOOTSTRAP_FAILED`, `WEBRTC_NEGOTIATION_FAILED`, `MISSING_EPHEMERAL_KEY`, `DATA_CHANNEL_FAILED`, `NOT_SUPPORTED`, `USER_MEDIA_DENIED`.
 
 ### Environment
 
-Realtime shares **`OPENAI_API_KEY`** with chat — **no new secrets**. Browser only receives the **short-lived** client secret from `client_secrets`, never the long-lived key.
+Realtime shares **`OPENAI_API_KEY`** with chat — **no new secrets** for dev.
+
+---
+
+## Phase 2 — Threads + UI
+
+Voice uses the **same** `threads` store and `setThreads` paths as text — **no second store**.
+
+### `App.tsx`
+
+- **`appendVoiceUserMessage`** / **`appendVoiceAssistantMessage`** mirror text flow (`handleQuery`-style updates).
+- If there is **no** active thread, the **first user transcript** creates a thread (`generateThreadTitle` from text), sets `activeThreadId`, and attaches **`workspaceId`** when a workspace is active.
+- **User messages:** `modality: 'voice'`, `source: 'voice'`, `voiceTurn: { source: 'voice' }`.
+- **Assistant messages:** same, plus `voiceTurn.interrupted` when the turn ends in cancellation; **`modelUsed: 'gpt-realtime'`**.
+
+### `Message` (`src/lib/types.ts`)
+
+Optional fields (backward compatible):
+
+- `modality?: 'text' | 'voice'`
+- `source?: 'text' | 'voice'` — channel for the message
+- `voiceTurn?: VoiceTurn`
+
+### UI & accessibility
+
+| Piece | Role |
+|-------|------|
+| `src/contexts/VoiceSessionContext.tsx` | Wraps `MainApp`; owns one **`OpenAIRealtimeVoiceSession`**; **`useVoiceSession()`** — state, **`startVoice`**, **`stopVoice`**. |
+| `src/components/VoiceSessionBar.tsx` | Status: **Voice: &lt;state&gt;** with `role="status"`, `aria-live="polite"`; **End voice** with `aria-label="End voice session"`. |
+| `src/components/QueryInput.tsx` | Mic toggles start/stop; `aria-label`, `aria-pressed`. |
+| `src/components/Message.tsx` | **Voice** chip (mic + label, optional “interrupted”) — not color-only. |
 
 ---
 
@@ -120,16 +130,15 @@ npm run verify
 
 ### Manual (dev)
 
-1. Set `OPENAI_API_KEY` in `.env`.
-2. `npm run dev`
-3. Instantiate `OpenAIRealtimeVoiceSession`, call `connect()`, speak, listen; use **`abortAssistant()`** or interrupt; observe `response.cancelled` / `state_changed` (`interrupted`) and playback stopping per API behavior.
+1. `OPENAI_API_KEY` in `.env`, `npm run dev`.
+2. Open or start a thread; use the **mic** — speak and confirm **user** and **assistant** lines appear with **Voice** labeling.
+3. Refresh: threads in **localStorage** should still contain those messages.
 
-Requires **HTTPS or localhost** for `getUserMedia` / WebRTC as usual.
+Requires **localhost** or **HTTPS** for `getUserMedia` / WebRTC.
 
 ---
 
-## Next (not in Phase 1)
+## Next (polish / future)
 
-- **Thread integration + voice UI** — wire sessions to `App` / `QueryInput`, persist voice turns.
-- **Polish** — push-to-talk, headphones hint, error toasts, rate limits.
+- **Phase 3-style:** push-to-talk, headphones hint, error toasts, rate limits.
 - **Later:** custom STT + LLM + TTS implementing `VoiceSession`.
