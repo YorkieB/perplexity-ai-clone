@@ -1,6 +1,6 @@
 # Agent verification — before moving on
 
-Anyone (including AI agents) making changes to this repository **must** confirm dependencies are installed and the project **lints and builds** before starting new work or ending a session.
+Anyone (including AI agents) making changes to this repository **must** confirm dependencies are installed and the project **lints, tests, and builds** before starting new work or ending a session.
 
 ## Required checks
 
@@ -11,7 +11,10 @@ Anyone (including AI agents) making changes to this repository **must** confirm 
 2. **Lint**
    - `npm run lint` must complete with **exit code 0**.
 
-3. **Production build**
+3. **Unit & component tests**
+   - `npm run test` must complete with **exit code 0** (Vitest + Testing Library; `src/**/*.test.{ts,tsx}`).
+
+4. **Production build**
    - `npm run build` must complete with **exit code 0** (runs `tsc -b` and `vite build`).
 
 ## One command (after install)
@@ -20,7 +23,10 @@ Anyone (including AI agents) making changes to this repository **must** confirm 
 npm run verify
 ```
 
-This runs **lint** then **build**. It does not install packages; run `npm install` first if `node_modules` is missing or stale.
+This runs **lint**, then **test**, then **build**. It does not install packages; run `npm install` first if `node_modules` is missing or stale.
+
+- **`npm run test:watch`** — Vitest in watch mode during development.
+- **`npm run test:coverage`** — coverage report (output under `coverage/`; gitignored).
 
 ## Clean-room check (CI parity)
 

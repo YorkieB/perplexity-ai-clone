@@ -8,7 +8,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 
 - **[Roadmap batches](docs/ROADMAP-BATCHES.md)** — telescope **Batches 7–10** done ([7](docs/BATCH-07-COMPLETE.md), [8](docs/BATCH-08-COMPLETE.md), [9](docs/BATCH-09-COMPLETE.md), [10](docs/BATCH-10-COMPLETE.md)); [prompts](docs/batches/) kept as templates.
 - **[Telescope analysis (Perplexity reference)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer **Perplexity** taxonomy; repo scope and implementation pointers at the top (not a backlog matrix).
-- **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify`, CI expectations before moving on.
+- **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify` (lint + **tests** + build), CI expectations before moving on.
 - **[Phase 1 AI prompt](docs/PHASE-01-AI-PROMPT.md)** — copy-paste instructions for the first implementation slice (“Include web” + context routing).
 - **[Phase 1 complete (summary)](docs/PHASE-01-COMPLETE.md)** — what shipped on PR #8 (`includeWebSearch`, UI, verification).
 - **[Phase 2 AI prompt](docs/PHASE-02-AI-PROMPT.md)** — thread history in LLM + focus mode when web is off.
@@ -92,6 +92,13 @@ npm run dev
 - **State Management**: React hooks with `localStorage` persistence (threads, workspaces, settings)
 - **API Integration**: Tavily Search API (optional) for real-time web data
 - **AI Integration**: OpenAI-compatible chat completions via the dev/preview `/api/llm` proxy (default model GPT-4o-mini)
+
+## Testing
+
+- **`npm run test`** — Vitest unit/component suite (`src/**/*.test.{ts,tsx}`).
+- **`npm run test:watch`** — watch mode while developing.
+- **`npm run test:coverage`** — V8 coverage report (see `coverage/`).
+- **`npm run verify`** — lint + tests + production build (same as CI).
 
 ## 📁 Project Structure
 
