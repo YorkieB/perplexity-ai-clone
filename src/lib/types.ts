@@ -1,3 +1,4 @@
+import type { GeneratedImage, MessageImageGenerationState } from './image/types'
 import type { VoiceTurn } from './voice/types'
 
 export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
@@ -50,6 +51,10 @@ export interface Message {
   source?: 'text' | 'voice'
   /** Voice-specific turn metadata when {@link modality} is `'voice'` or for hybrid threads. */
   voiceTurn?: VoiceTurn
+  /** Inline or remote images produced for this message (optional; image gen Phase 0+). */
+  generatedImages?: GeneratedImage[]
+  /** Lifecycle metadata when image generation is async. */
+  imageGeneration?: MessageImageGenerationState
 }
 
 export interface Thread {
