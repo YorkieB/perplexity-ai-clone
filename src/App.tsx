@@ -65,11 +65,10 @@ function MainApp() {
     () => [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)[0],
     [threads]
   )
-  const usageReferenceMessages = activeThread?.messages || mostRecentThread?.messages || []
-  const localUsageEstimate = useMemo(
-    () => estimateLocalUsage(usageReferenceMessages),
-    [usageReferenceMessages]
-  )
+  const localUsageEstimate = useMemo(() => {
+    const usageMessages = activeThread?.messages || mostRecentThread?.messages || []
+    return estimateLocalUsage(usageMessages)
+  }, [activeThread, mostRecentThread])
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -123,8 +122,7 @@ function MainApp() {
     files?: UploadedFile[],
     useModelCouncil?: boolean,
     selectedModels?: string[],
-    selectedModel: SupportedChatModel = 'gpt-4o-mini',
-    _autoModelEnabled?: boolean
+    selectedModel: SupportedChatModel = 'gpt-4o-mini'
   ) => {
     setIsGenerating(true)
 

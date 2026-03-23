@@ -130,8 +130,7 @@ interface QueryInputProps {
     files?: UploadedFile[],
     useModelCouncil?: boolean,
     selectedModels?: string[],
-    selectedModel?: SupportedChatModel,
-    autoModelEnabled?: boolean
+    selectedModel?: SupportedChatModel
   ) => void
   isLoading?: boolean
   placeholder?: string
@@ -207,8 +206,7 @@ export function QueryInput({
         attachedFiles.length > 0 ? attachedFiles : undefined,
         useModelCouncil,
         useModelCouncil ? selectedCouncilModels : undefined,
-        effectiveModel,
-        autoModelEnabled
+        effectiveModel
       )
       setQuery('')
       setAttachedFiles([])
