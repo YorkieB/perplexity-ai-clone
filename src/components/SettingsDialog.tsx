@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
+import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { buildAuthUrl, isTokenExpired } from '@/lib/oauth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,18 +20,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
-    apiKeys: {},
-    oauthTokens: {},
-    oauthClientIds: {},
-    oauthClientSecrets: {},
-    connectedServices: {
-      googledrive: false,
-      onedrive: false,
-      github: false,
-      dropbox: false,
-    },
-  })
+  const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const [localApiKeys, setLocalApiKeys] = useState({
     digitalOcean: settings?.apiKeys.digitalOcean || '',

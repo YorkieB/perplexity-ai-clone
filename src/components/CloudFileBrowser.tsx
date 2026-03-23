@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings, CloudFile } from '@/lib/types'
+import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -23,18 +24,7 @@ interface CloudFileBrowserProps {
 }
 
 export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFileBrowserProps) {
-  const [settings] = useLocalStorage<UserSettings>('user-settings', {
-    apiKeys: {},
-    oauthTokens: {},
-    oauthClientIds: {},
-    oauthClientSecrets: {},
-    connectedServices: {
-      googledrive: false,
-      onedrive: false,
-      github: false,
-      dropbox: false,
-    },
-  })
+  const [settings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const connectedServicesData = settings?.connectedServices ?? {
     googledrive: false,

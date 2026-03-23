@@ -20,6 +20,15 @@ export interface UploadedFile {
   uploadedAt: number
 }
 
+export interface WorkspaceFile {
+  id: string
+  name: string
+  type: string
+  size: number
+  content: string
+  uploadedAt: number
+}
+
 export interface ModelResponse {
   model: string
   content: string
@@ -58,6 +67,8 @@ export interface Workspace {
   name: string
   description: string
   customSystemPrompt: string
+  includeWebSearch?: boolean
+  workspaceFiles?: WorkspaceFile[]
   createdAt: number
 }
 
@@ -69,6 +80,7 @@ export interface OAuthToken {
 }
 
 export interface UserSettings {
+  includeWebSearch: boolean
   apiKeys: {
     digitalOcean?: string
     googledrive?: string

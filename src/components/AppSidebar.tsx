@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -46,6 +47,11 @@ export function AppSidebar({
   const [workspacesOpen, setWorkspacesOpen] = useState(true)
 
   const sortedThreads = [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)
+  const activeWorkspace = (workspaces || []).find((workspace) => workspace.id === activeWorkspaceId)
+  const visibleThreads = activeWorkspaceId
+    ? sortedThreads.filter((thread) => thread.workspaceId === activeWorkspaceId)
+    : sortedThreads
+  const workspaceNames = new Map((workspaces || []).map((workspace) => [workspace.id, workspace.name]))
 
   return (
     <div
@@ -89,10 +95,17 @@ export function AppSidebar({
                 </Button>
               </div>
               <CollapsibleContent className="mt-2 space-y-1">
-                {sortedThreads.length === 0 ? (
-                  <p className="text-xs text-muted-foreground px-2 py-4">No threads yet</p>
+                {activeWorkspace && (
+                  <p className="text-xs text-muted-foreground px-2 pb-1">
+                    Showing threads in <span className="font-medium text-foreground">{activeWorkspace.name}</span>
+                  </p>
+                )}
+                {visibleThreads.length === 0 ? (
+                  <p className="text-xs text-muted-foreground px-2 py-4">
+                    {activeWorkspace ? 'No threads in this workspace yet' : 'No threads yet'}
+                  </p>
                 ) : (
-                  sortedThreads.map((thread) => (
+                  visibleThreads.map((thread) => (
                     <Button
                       key={thread.id}
                       variant={activeThreadId === thread.id ? 'secondary' : 'ghost'}
@@ -106,9 +119,16 @@ export function AppSidebar({
                       <ChatCircle size={16} className="shrink-0" />
                       <div className="flex-1 min-w-0 text-left">
                         <p className="text-sm truncate">{thread.title}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatTimestamp(thread.updatedAt)}
-                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <p className="text-xs text-muted-foreground">
+                            {formatTimestamp(thread.updatedAt)}
+                          </p>
+                          {!activeWorkspaceId && thread.workspaceId && workspaceNames.get(thread.workspaceId) && (
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                              {workspaceNames.get(thread.workspaceId)}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </Button>
                   ))
