@@ -5,6 +5,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 ## Documentation
 
 - **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
+- **[Dependency health](docs/DEPENDENCY-HEALTH.md)** — npm lockfile policy, verification commands (`npm run verify`), and troubleshooting for ESLint peers and Recharts typings.
 
 ## 🚀 Features
 
