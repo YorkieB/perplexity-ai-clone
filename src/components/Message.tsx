@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
 import { altTextForGeneratedImage, displaySrcForGeneratedImage } from '@/lib/image'
-import { Microphone, Sparkle, User, ImageSquare } from '@phosphor-icons/react'
+import { ImageSquare, Microphone, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -26,6 +26,8 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
     setPreviewFile(file)
     setPreviewOpen(true)
   }
+
+  const imageChipLabel = isUser ? 'Image prompt' : 'Image'
 
   return (
     <div
@@ -62,15 +64,15 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
             ) : null}
           </span>
         )}
-        {message.modality === 'image' && (
+        {(message.modality === 'image' || message.source === 'image') && (
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground',
               isUser ? 'self-end' : 'self-start'
             )}
           >
-            <ImageSquare className="h-3.5 w-3.5 shrink-0" weight="regular" aria-hidden />
-            <span>Image prompt</span>
+            <ImageSquare className="h-3.5 w-3.5 shrink-0" weight="fill" aria-hidden />
+            <span>{imageChipLabel}</span>
           </span>
         )}
         {isUser && message.files && message.files.length > 0 && (
@@ -135,6 +137,14 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
             isUser && 'bg-primary/10 px-4 py-3 rounded-lg max-w-2xl'
           )}
         >
+          {!isUser && message.imageGeneration?.status === 'pending' && (
+            <p className="text-sm text-muted-foreground animate-pulse m-0">Generating image…</p>
+          )}
+          {!isUser && message.imageGeneration?.status === 'failed' && message.imageGeneration.errorMessage && (
+            <p className="text-sm text-destructive m-0" role="alert">
+              {message.imageGeneration.errorMessage}
+            </p>
+          )}
           {isUser ? (
             <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
               {message.content}
@@ -149,7 +159,8 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
               divergentPoints={[]}
               onCitationHover={setHighlightedSource}
             />
-          ) : message.content.trim().length > 0 ? (
+          ) : message.imageGeneration?.status === 'pending' ||
+            message.imageGeneration?.status === 'failed' ? null : message.content.trim().length > 0 ? (
             <MarkdownRenderer
               content={message.content}
               onCitationHover={setHighlightedSource}

@@ -3,29 +3,34 @@
  */
 export type ImageGenerationErrorCode =
   | 'BAD_REQUEST'
-  | 'RATE_LIMIT'
-  | 'MODERATION'
-  | 'UPSTREAM'
+  | 'RATE_LIMITED'
+  | 'MODERATION_BLOCKED'
   | 'NETWORK'
+  | 'NOT_CONFIGURED'
+  | 'REFERENCE_REQUIRED'
+  | 'RIGHTS_NOT_CONFIRMED'
+  | 'UPSTREAM'
   | 'UNKNOWN'
 
 export class ImageGenerationError extends Error {
   readonly code: ImageGenerationErrorCode
-  readonly httpStatus: number
+  readonly status?: number
   /** Raw upstream JSON string when available (for debugging; avoid logging in production). */
   readonly upstreamBody?: string
 
   constructor(
     code: ImageGenerationErrorCode,
     message: string,
-    httpStatus: number,
-    options?: { upstreamBody?: string }
+    options?: { status?: number; upstreamBody?: string; cause?: unknown }
   ) {
     super(message)
     this.name = 'ImageGenerationError'
     this.code = code
-    this.httpStatus = httpStatus
+    this.status = options?.status
     this.upstreamBody = options?.upstreamBody
+    if (options?.cause !== undefined) {
+      ;(this as Error & { cause?: unknown }).cause = options.cause
+    }
   }
 
   /** Map a failed `fetch` response body (OpenAI-style JSON or plain text). */
@@ -34,7 +39,7 @@ export class ImageGenerationError extends Error {
     let code: ImageGenerationErrorCode = 'UNKNOWN'
 
     if (status === 429) {
-      code = 'RATE_LIMIT'
+      code = 'RATE_LIMITED'
       message = 'Rate limited. Try again later.'
     } else if (status === 400) {
       code = 'BAD_REQUEST'
@@ -53,7 +58,13 @@ export class ImageGenerationError extends Error {
       }
       const oc = parsed.error?.code
       if (oc === 'content_policy_violation' || message.toLowerCase().includes('content policy')) {
-        code = 'MODERATION'
+        code = 'MODERATION_BLOCKED'
+      }
+      if (/rights not confirmed/i.test(message)) {
+        code = 'RIGHTS_NOT_CONFIRMED'
+      }
+      if (/reference image required/i.test(message)) {
+        code = 'REFERENCE_REQUIRED'
       }
     } catch {
       /* use defaults */
@@ -63,6 +74,6 @@ export class ImageGenerationError extends Error {
       code = 'BAD_REQUEST'
     }
 
-    return new ImageGenerationError(code, message, status, { upstreamBody: bodyText })
+    return new ImageGenerationError(code, message, { status, upstreamBody: bodyText })
   }
 }

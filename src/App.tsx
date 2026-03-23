@@ -6,8 +6,6 @@ import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusM
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
-import { generateImagesFromText } from '@/lib/image'
-import { ImageGenerationError } from '@/lib/image/errors'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -21,6 +19,9 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { VoiceSessionProvider } from '@/contexts/VoiceSessionContext'
+import type { ImageGenerationPayload } from '@/lib/image/apiTypes'
+import { clearImageGenerationCooldown, generateImagesViaApi } from '@/lib/image/generateImages'
+import { toastBodyForImageError } from '@/lib/image/uxCopy'
 
 function QueryInputWithVoice(props: ComponentProps<typeof QueryInput>) {
   return (
@@ -254,106 +255,125 @@ ${
     }
   }
 
-  const handleImageGeneration = async (prompt: string) => {
-    const trimmed = prompt.trim()
-    if (!trimmed.length) return
-
-    setIsGenerating(true)
-
-    const userMessage: MessageType = {
-      id: generateId(),
-      role: 'user',
-      content: trimmed,
-      createdAt: Date.now(),
-      focusMode,
-      modality: 'image',
-    }
-
-    let thread: Thread
-    if (activeThread) {
-      thread = {
-        ...activeThread,
-        messages: [...activeThread.messages, userMessage],
-        updatedAt: Date.now(),
-      }
-      setThreads((current) => (current || []).map((t) => (t.id === thread.id ? thread : t)))
-    } else {
-      thread = {
+  const handleImageGenerate = useCallback(
+    async (payload: ImageGenerationPayload) => {
+      const userMessage: MessageType = {
         id: generateId(),
-        workspaceId: activeWorkspaceId || undefined,
-        title: generateThreadTitle(trimmed),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        messages: [userMessage],
-      }
-      setThreads((current) => [...(current || []), thread])
-      setActiveThreadId(thread.id)
-    }
-
-    try {
-      const images = await generateImagesFromText(trimmed, {
-        width: 1024,
-        height: 1024,
-        n: 1,
-      })
-
-      const assistantMessage: MessageType = {
-        id: generateId(),
-        role: 'assistant',
-        content: '',
-        createdAt: Date.now(),
-        modelUsed: 'dall-e-2',
-        focusMode,
-        generatedImages: images,
-        imageGeneration: { status: 'complete' },
-      }
-
-      setThreads((current) =>
-        (current || []).map((t) =>
-          t.id === thread.id
-            ? {
-                ...t,
-                messages: [...t.messages, assistantMessage],
-                updatedAt: Date.now(),
-              }
-            : t
-        )
-      )
-    } catch (error) {
-      const messageText =
-        error instanceof ImageGenerationError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : 'Image generation failed.'
-
-      toast.error(messageText)
-
-      const assistantMessage: MessageType = {
-        id: generateId(),
-        role: 'assistant',
-        content: `Could not generate an image. ${messageText}`,
+        role: 'user',
+        content: payload.prompt,
         createdAt: Date.now(),
         focusMode,
-        imageGeneration: { status: 'failed', errorMessage: messageText },
+        modality: 'image',
+        source: 'image',
+      }
+      const assistantId = generateId()
+      const assistantPending: MessageType = {
+        id: assistantId,
+        role: 'assistant',
+        content: payload.photoreal ? 'Generating photoreal image…' : 'Generating image…',
+        createdAt: Date.now(),
+        focusMode,
+        modality: 'image',
+        source: 'image',
+        imageGeneration: { status: 'pending' },
       }
 
-      setThreads((current) =>
-        (current || []).map((t) =>
-          t.id === thread.id
-            ? {
-                ...t,
-                messages: [...t.messages, assistantMessage],
-                updatedAt: Date.now(),
-              }
-            : t
+      let thread: Thread
+      if (activeThread) {
+        thread = {
+          ...activeThread,
+          messages: [...activeThread.messages, userMessage, assistantPending],
+          updatedAt: Date.now(),
+        }
+        setThreads((current) => (current || []).map((t) => (t.id === thread.id ? thread : t)))
+      } else {
+        const newId = generateId()
+        activeThreadIdRef.current = newId
+        thread = {
+          id: newId,
+          workspaceId: activeWorkspaceIdRef.current ?? undefined,
+          title: generateThreadTitle(payload.prompt),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [userMessage, assistantPending],
+        }
+        setThreads((current) => [...(current || []), thread])
+        queueMicrotask(() => setActiveThreadId(newId))
+      }
+
+      setIsGenerating(true)
+
+      try {
+        const images = await generateImagesViaApi({
+          mode: payload.editMode && payload.references.length > 0 ? 'edits' : 'generations',
+          prompt: payload.prompt,
+          size: '1024x1024',
+          quality: payload.photoreal ? 'hd' : 'standard',
+          photoreal: payload.photoreal,
+          references: payload.references.length > 0 ? payload.references : undefined,
+          referenceRightsConfirmed:
+            payload.references.length > 0 ? payload.referenceRightsConfirmed : undefined,
+        })
+
+        const modelUsed =
+          payload.editMode && payload.references.length > 0 ? 'dall-e-2' : 'dall-e-3'
+
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: t.messages.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          content:
+                            images.length > 0
+                              ? 'Here is your generated image.'
+                              : 'No image was returned.',
+                          generatedImages: images,
+                          imageGeneration: { status: 'complete' },
+                          modelUsed,
+                        }
+                      : m
+                  ),
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
         )
-      )
-      console.error(error)
-    } finally {
-      setIsGenerating(false)
-    }
-  }
+      } catch (err) {
+        clearImageGenerationCooldown()
+        const { title, description } = toastBodyForImageError(err)
+        toast.error(title, { description })
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: t.messages.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          content: 'Image generation failed.',
+                          imageGeneration: {
+                            status: 'failed',
+                            errorMessage: err instanceof Error ? err.message : 'Unknown error',
+                          },
+                        }
+                      : m
+                  ),
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
+        )
+      } finally {
+        setIsGenerating(false)
+      }
+    },
+    [activeThread, focusMode, setThreads]
+  )
 
   const appendVoiceUserMessage = useCallback(
     (text: string) => {
@@ -444,7 +464,7 @@ ${
             <div className="pt-4">
               <QueryInputWithVoice
                 onSubmit={handleQuery}
-                onImageGenerate={handleImageGeneration}
+                onImageGenerate={handleImageGenerate}
                 isLoading={isGenerating}
                 placeholder={`Ask a question in ${activeWorkspace.name}...`}
                 advancedMode={advancedMode || false}
@@ -488,7 +508,7 @@ ${
             <div className="max-w-4xl mx-auto px-6 py-4">
               <QueryInputWithVoice
                 onSubmit={handleQuery}
-                onImageGenerate={handleImageGeneration}
+                onImageGenerate={handleImageGenerate}
                 isLoading={isGenerating}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
@@ -511,7 +531,7 @@ ${
           <div className="max-w-2xl mx-auto px-6 py-6">
             <QueryInputWithVoice
               onSubmit={handleQuery}
-              onImageGenerate={handleImageGeneration}
+              onImageGenerate={handleImageGenerate}
               isLoading={isGenerating}
               advancedMode={advancedMode}
               onAdvancedModeChange={setAdvancedMode}

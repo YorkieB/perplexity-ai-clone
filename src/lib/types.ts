@@ -48,7 +48,7 @@ export interface Message {
   /** Present when the message was produced in a voice or image context (optional for backward compatibility). */
   modality?: 'text' | 'voice' | 'image'
   /** Channel for this message; mirrors {@link modality} for voice turns when set. */
-  source?: 'text' | 'voice'
+  source?: 'text' | 'voice' | 'image'
   /** Voice-specific turn metadata when {@link modality} is `'voice'` or for hybrid threads. */
   voiceTurn?: VoiceTurn
   /** Inline or remote images produced for this message (optional; image gen Phase 0+). */

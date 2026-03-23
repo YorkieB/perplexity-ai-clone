@@ -3,22 +3,26 @@
  *
  * Routes:
  * - `POST /api/llm` — chat completions (existing).
+ * - `POST /api/images` — OpenAI `images/generations` or `images/edits` (JSON + multipart)
+ *   using `OPENAI_API_KEY`. Upstream may return **429**; do not log response bodies.
  * - `POST /api/realtime/session` — mints a short-lived Realtime client secret via
  *   `POST https://api.openai.com/v1/realtime/client_secrets` using `OPENAI_API_KEY`.
  *   The browser must **not** receive the long-lived API key; it only gets the returned
  *   `value` (ephemeral key) and uses it with WebRTC per OpenAI’s Realtime docs:
  *   WebRTC offer → `POST /v1/realtime/calls` with `Authorization: Bearer <ephemeral>`.
- * - `POST /api/images` — `POST {base}/images/generations` (OpenAI Images API, `dall-e-2` MVP).
- *   Validates prompt/size/`n`; returns `{ images: GeneratedImage[] }` JSON (no API key to client).
  *
  * No separate Node server is required: this uses Vite’s Connect middleware in dev and
- * preview. Production static hosting still needs an equivalent backend route for each path.
+ * preview. Production static hosting still needs an equivalent backend route.
  */
-import { randomUUID } from 'node:crypto'
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
 import type { ServerResponse } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { mergeRealtimeSessionBody } from '../src/lib/voice/realtimeSessionDefaults'
+
+/** Appended server-side when `photoreal: true` (Phase 7). */
+const IMAGE_PHOTOREAL_SUFFIX =
+  ' Ultra photorealistic detail: natural skin texture with visible pores, individual hair strands, soft natural lighting, shallow depth of field, 85mm lens character, high resolution, avoid plastic or waxy skin.'
 
 function readBody(req: Connect.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -41,23 +45,223 @@ function getOpenAiConfig(env: Record<string, string>): {
   return { key, base }
 }
 
-/** OpenAI `dall-e-2` size presets (width × height strings). */
-const IMAGE_ALLOWED_SIZES = new Set(['256x256', '512x512', '1024x1024'])
-const MAX_IMAGE_PROMPT_LENGTH = 4000
-const MAX_IMAGE_BODY_CHARS = 65536
-const IMAGE_N_MIN = 1
-const IMAGE_N_MAX = 2
-const DEFAULT_IMAGE_MODEL = 'dall-e-2'
+function parseImageSize(size: string): { w: number; h: number } {
+  const m = /^(\d+)x(\d+)$/.exec(size)
+  if (m) {
+    return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) }
+  }
+  return { w: 1024, h: 1024 }
+}
 
-function jsonError(res: ServerResponse, status: number, message: string, code?: string): void {
-  res.statusCode = status
-  res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify({ error: { message, ...(code ? { code } : {}) } }))
+async function handlePostApiImages(
+  req: Connect.IncomingMessage,
+  res: ServerResponse,
+  getEnv: () => Record<string, string>
+): Promise<void> {
+  const env = getEnv()
+  const { key, base } = getOpenAiConfig(env)
+  if (!key) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(
+      JSON.stringify({
+        error: {
+          message:
+            'Missing OPENAI_API_KEY. Add it to .env (used only by the dev/preview proxy, not shipped to the browser).',
+        },
+      })
+    )
+    return
+  }
+
+  let rawBody: string
+  try {
+    rawBody = await readBody(req)
+  } catch {
+    res.statusCode = 400
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Could not read body' } }))
+    return
+  }
+
+  if (rawBody.length > 25_000_000) {
+    res.statusCode = 413
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+    return
+  }
+
+  let body: {
+    mode?: string
+    prompt?: string
+    size?: string
+    quality?: string
+    n?: number
+    photoreal?: boolean
+    references?: Array<{ base64: string; mimeType: string }>
+    referenceRightsConfirmed?: boolean
+  }
+  try {
+    body = JSON.parse(rawBody) as typeof body
+  } catch {
+    res.statusCode = 400
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Invalid JSON' } }))
+    return
+  }
+
+  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+  if (!prompt || prompt.length > 4000) {
+    res.statusCode = 400
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Invalid prompt' } }))
+    return
+  }
+
+  const mode = body.mode === 'edits' ? 'edits' : 'generations'
+  const refs = Array.isArray(body.references) ? body.references : []
+  let finalPrompt = prompt
+  if (body.photoreal) {
+    finalPrompt += IMAGE_PHOTOREAL_SUFFIX
+  }
+
+  try {
+    if (mode === 'generations') {
+      const size = body.size || '1024x1024'
+      const quality = body.quality === 'hd' ? 'hd' : 'standard'
+      const upstream = await fetch(`${base}/images/generations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: 'dall-e-3',
+          prompt: finalPrompt,
+          n: 1,
+          size,
+          quality,
+          response_format: 'b64_json',
+        }),
+      })
+      const text = await upstream.text()
+      if (!upstream.ok) {
+        res.statusCode = upstream.status
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+        res.end(text)
+        return
+      }
+      const parsed = JSON.parse(text) as {
+        data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+      }
+      const { w, h } = parseImageSize(size)
+      const images = (parsed.data || []).map((d) => ({
+        id: randomUUID(),
+        promptSnapshot: d.revised_prompt || finalPrompt,
+        width: w,
+        height: h,
+        mimeType: 'image/png',
+        base64: d.b64_json,
+        url: d.url,
+      }))
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ images }))
+      return
+    }
+
+    if (refs.length === 0) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Reference image required for edit mode' } }))
+      return
+    }
+    if (!body.referenceRightsConfirmed) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Reference rights not confirmed' } }))
+      return
+    }
+    const first = refs[0]
+    if (first.mimeType !== 'image/png') {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Reference must be PNG for edits' } }))
+      return
+    }
+    let buf: Buffer
+    try {
+      buf = Buffer.from(first.base64, 'base64')
+    } catch {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Invalid base64' } }))
+      return
+    }
+    if (buf.length > 3_500_000) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Reference image too large' } }))
+      return
+    }
+
+    const form = new FormData()
+    const blob = new Blob([new Uint8Array(buf)], { type: 'image/png' })
+    form.append('image', blob, 'reference.png')
+    form.append('prompt', finalPrompt)
+    form.append('model', 'dall-e-2')
+    form.append('n', '1')
+    form.append('size', '1024x1024')
+
+    const upstream = await fetch(`${base}/images/edits`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+      },
+      body: form,
+    })
+    const text = await upstream.text()
+    if (!upstream.ok) {
+      res.statusCode = upstream.status
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+      res.end(text)
+      return
+    }
+    const parsed = JSON.parse(text) as {
+      data?: Array<{ b64_json?: string; url?: string }>
+    }
+    const { w, h } = parseImageSize('1024x1024')
+    const images = (parsed.data || []).map((d) => ({
+      id: randomUUID(),
+      promptSnapshot: finalPrompt,
+      width: w,
+      height: h,
+      mimeType: 'image/png',
+      base64: d.b64_json,
+      url: d.url,
+    }))
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ images }))
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(
+      JSON.stringify({
+        error: { message: e instanceof Error ? e.message : 'Proxy error' },
+      })
+    )
+  }
 }
 
 function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.Server) {
   middlewares.use(async (req: Connect.IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => {
     const path = req.url?.split('?')[0]
+
+    if (path === '/api/images' && req.method === 'POST') {
+      await handlePostApiImages(req, res, getEnv)
+      return
+    }
 
     if (path === '/api/realtime/session' && req.method === 'POST') {
       const env = getEnv()
@@ -92,150 +296,6 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.statusCode = upstream.status
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
         res.end(text)
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            error: { message: e instanceof Error ? e.message : 'Proxy error' },
-          })
-        )
-      }
-      return
-    }
-
-    if (path === '/api/images' && req.method === 'POST') {
-      const env = getEnv()
-      const { key, base } = getOpenAiConfig(env)
-      if (!key) {
-        jsonError(
-          res,
-          500,
-          'Missing OPENAI_API_KEY. Add it to .env (used only by the dev/preview proxy, not shipped to the browser).'
-        )
-        return
-      }
-
-      try {
-        const rawBody = await readBody(req)
-        if (rawBody.length > MAX_IMAGE_BODY_CHARS) {
-          jsonError(res, 413, 'Request body too large', 'PAYLOAD_TOO_LARGE')
-          return
-        }
-
-        let body: unknown
-        try {
-          body = rawBody.trim() ? (JSON.parse(rawBody) as unknown) : null
-        } catch {
-          jsonError(res, 400, 'Invalid JSON body', 'BAD_REQUEST')
-          return
-        }
-
-        if (!body || typeof body !== 'object') {
-          jsonError(res, 400, 'Expected JSON object', 'BAD_REQUEST')
-          return
-        }
-
-        const o = body as Record<string, unknown>
-        const prompt = typeof o.prompt === 'string' ? o.prompt.trim() : ''
-        if (!prompt.length) {
-          jsonError(res, 400, 'Missing or empty "prompt"', 'BAD_REQUEST')
-          return
-        }
-        if (prompt.length > MAX_IMAGE_PROMPT_LENGTH) {
-          jsonError(res, 400, `Prompt exceeds ${MAX_IMAGE_PROMPT_LENGTH} characters`, 'BAD_REQUEST')
-          return
-        }
-
-        const w = o.width
-        const h = o.height
-        if (typeof w !== 'number' || typeof h !== 'number' || !Number.isFinite(w) || !Number.isFinite(h)) {
-          jsonError(res, 400, '"width" and "height" must be finite numbers', 'BAD_REQUEST')
-          return
-        }
-        if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
-          jsonError(res, 400, '"width" and "height" must be positive integers', 'BAD_REQUEST')
-          return
-        }
-
-        const sizeStr = `${w}x${h}`
-        if (!IMAGE_ALLOWED_SIZES.has(sizeStr)) {
-          jsonError(
-            res,
-            400,
-            `Unsupported size ${sizeStr}. Allowed: ${[...IMAGE_ALLOWED_SIZES].join(', ')}`,
-            'BAD_REQUEST'
-          )
-          return
-        }
-
-        let n = typeof o.n === 'number' ? Math.floor(o.n) : 1
-        if (!Number.isFinite(n) || n < IMAGE_N_MIN) {
-          n = IMAGE_N_MIN
-        }
-        n = Math.min(n, IMAGE_N_MAX)
-
-        const model = typeof o.model === 'string' && o.model.trim() ? o.model.trim() : DEFAULT_IMAGE_MODEL
-
-        // Request base64 payloads so thread messages in localStorage stay renderable after OpenAI CDN URLs expire.
-        const upstream = await fetch(`${base}/images/generations`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-          },
-          body: JSON.stringify({
-            model,
-            prompt,
-            n,
-            size: sizeStr,
-            response_format: 'b64_json',
-          }),
-        })
-
-        const text = await upstream.text()
-        if (!upstream.ok) {
-          res.statusCode = upstream.status
-          res.setHeader('Content-Type', 'application/json')
-          res.end(text)
-          return
-        }
-
-        let parsed: { data?: Array<{ url?: string; b64_json?: string }> }
-        try {
-          parsed = JSON.parse(text) as { data?: Array<{ url?: string; b64_json?: string }> }
-        } catch {
-          jsonError(res, 502, 'Invalid JSON from image upstream', 'UPSTREAM')
-          return
-        }
-
-        const rows = parsed.data
-        if (!Array.isArray(rows)) {
-          jsonError(res, 502, 'Missing data array from image upstream', 'UPSTREAM')
-          return
-        }
-
-        const images = rows.map((item) => {
-          const id = randomUUID()
-          const baseImage = {
-            id,
-            promptSnapshot: prompt,
-            width: w,
-            height: h,
-            mimeType: 'image/png',
-          }
-          if (typeof item.url === 'string' && item.url.length > 0) {
-            return { ...baseImage, url: item.url }
-          }
-          if (typeof item.b64_json === 'string' && item.b64_json.length > 0) {
-            return { ...baseImage, base64: item.b64_json }
-          }
-          return { ...baseImage }
-        })
-
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ images }))
       } catch (e) {
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
@@ -296,8 +356,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
 
 /**
  * Proxies POST /api/llm → OpenAI-compatible chat completions so the API key stays server-side during dev/preview.
- * Also exposes POST /api/realtime/session → OpenAI `client_secrets` for browser WebRTC Realtime sessions,
- * and POST /api/images → OpenAI `images/generations` (text-only, `dall-e-2` size allowlist).
+ * Also exposes POST /api/realtime/session → OpenAI `client_secrets` for browser WebRTC Realtime sessions.
  */
 export function openaiProxyPlugin(): Plugin {
   return {

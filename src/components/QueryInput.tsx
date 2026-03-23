@@ -39,11 +39,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useVoiceSession } from '@/contexts/VoiceSessionContext'
+import type { ImageGenerationPayload } from '@/lib/image/apiTypes'
+import { IMAGE_MAX_REFERENCE_BYTES, IMAGE_MAX_REFERENCES } from '@/lib/image/limits'
+import { Checkbox } from '@/components/ui/checkbox'
 
 interface QueryInputProps {
   onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
-  /** When set, shows a control to run text-to-image with the current textarea prompt. */
-  onImageGenerate?: (prompt: string) => void | Promise<void>
+  /** When set, Image mode submit calls this instead of chat search (photoreal, edits, references). */
+  onImageGenerate?: (payload: ImageGenerationPayload) => void | Promise<void>
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -75,6 +78,13 @@ export function QueryInput({
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const refImageInputRef = useRef<HTMLInputElement>(null)
+
+  const [imageMode, setImageMode] = useState(false)
+  const [photoreal, setPhotoreal] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [referenceImages, setReferenceImages] = useState<Array<{ base64: string; mimeType: string; name: string }>>([])
+  const [referenceRightsConfirmed, setReferenceRightsConfirmed] = useState(false)
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
@@ -100,13 +110,50 @@ export function QueryInput({
 
   const handleImageGenerateClick = () => {
     if (!onImageGenerate || !query.trim() || isLoading) return
-    const text = query.trim()
-    setQuery('')
-    void onImageGenerate(text)
+    if (!imageMode) {
+      toast.error('Turn on Image mode in the composer first.')
+      return
+    }
+    handleSubmit()
   }
 
   const handleSubmit = () => {
-    if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
+    if (isLoading) return
+
+    if (imageMode && onImageGenerate) {
+      const prompt = query.trim()
+      if (!prompt) {
+        toast.error('Enter a prompt for image generation.')
+        return
+      }
+      if (editMode) {
+        if (referenceImages.length === 0) {
+          toast.error('Add at least one PNG reference image for edit mode.')
+          return
+        }
+        if (!referenceRightsConfirmed) {
+          toast.error('Confirm you have rights to use the reference images.')
+          return
+        }
+      }
+      const payload: ImageGenerationPayload = {
+        prompt,
+        photoreal,
+        editMode,
+        references: referenceImages.map(({ base64, mimeType }) => ({ base64, mimeType })),
+        referenceRightsConfirmed: editMode ? referenceRightsConfirmed : false,
+      }
+      void Promise.resolve(onImageGenerate(payload)).then(() => {
+        setQuery('')
+        if (!editMode) {
+          setReferenceImages([])
+          setReferenceRightsConfirmed(false)
+        }
+      })
+      return
+    }
+
+    if (query.trim() || attachedFiles.length > 0) {
       onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined)
       setQuery('')
       setAttachedFiles([])
@@ -153,6 +200,36 @@ export function QueryInput({
     fileInputRef.current?.click()
   }
 
+  const handleRefImagesSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+    const next: Array<{ base64: string; mimeType: string; name: string }> = []
+    for (let i = 0; i < files.length && next.length < IMAGE_MAX_REFERENCES; i++) {
+      const file = files[i]
+      if (file.type !== 'image/png') {
+        toast.error(`${file.name} is not PNG. Edits require PNG.`)
+        continue
+      }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result as string)
+        r.onerror = () => reject(new Error('read failed'))
+        r.readAsDataURL(file)
+      })
+      const comma = dataUrl.indexOf(',')
+      const mimeType = dataUrl.slice(5, dataUrl.indexOf(';'))
+      const base64 = dataUrl.slice(comma + 1)
+      const approxBytes = Math.floor((base64.length * 3) / 4)
+      if (approxBytes > IMAGE_MAX_REFERENCE_BYTES) {
+        toast.error(`${file.name} is too large.`)
+        continue
+      }
+      next.push({ base64, mimeType, name: file.name })
+    }
+    setReferenceImages((prev) => [...prev, ...next].slice(0, IMAGE_MAX_REFERENCES))
+    if (refImageInputRef.current) refImageInputRef.current.value = ''
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -171,8 +248,101 @@ export function QueryInput({
     }
   }, [query])
 
+  const canSubmit =
+    imageMode && onImageGenerate
+      ? query.trim().length > 0
+      : query.trim().length > 0 || attachedFiles.length > 0
+
+  const effectivePlaceholder =
+    imageMode && onImageGenerate ? 'Describe the image to generate…' : placeholder
+
   return (
     <div className="space-y-3">
+      {onImageGenerate && (
+        <div className="rounded-lg border border-border bg-card/50 px-3 py-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="image-mode"
+                checked={imageMode}
+                onCheckedChange={(v) => {
+                  setImageMode(v)
+                  if (v) setUseModelCouncil(false)
+                }}
+                disabled={isLoading}
+              />
+              <Label htmlFor="image-mode" className="text-sm cursor-pointer">
+                Image generation
+              </Label>
+            </div>
+            {imageMode && (
+              <>
+                <div className="flex items-center gap-2">
+                  <Switch id="photoreal" checked={photoreal} onCheckedChange={setPhotoreal} disabled={isLoading} />
+                  <Label htmlFor="photoreal" className="text-sm cursor-pointer">
+                    Photoreal (HD)
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="edit-mode"
+                    checked={editMode}
+                    onCheckedChange={(v) => {
+                      setEditMode(v)
+                      if (!v) {
+                        setReferenceImages([])
+                        setReferenceRightsConfirmed(false)
+                      }
+                    }}
+                    disabled={isLoading}
+                  />
+                  <Label htmlFor="edit-mode" className="text-sm cursor-pointer">
+                    Reference PNG (edit)
+                  </Label>
+                </div>
+              </>
+            )}
+          </div>
+          {imageMode && editMode && (
+            <div className="space-y-2 border-t border-border pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => refImageInputRef.current?.click()}
+                disabled={isLoading}
+              >
+                Add PNG reference
+              </Button>
+              <input
+                ref={refImageInputRef}
+                type="file"
+                accept="image/png"
+                className="hidden"
+                multiple
+                onChange={handleRefImagesSelected}
+              />
+              {referenceImages.length > 0 && (
+                <ul className="text-xs text-muted-foreground list-disc pl-4">
+                  {referenceImages.map((r) => (
+                    <li key={r.name}>{r.name}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="ref-rights"
+                  checked={referenceRightsConfirmed}
+                  onCheckedChange={(c) => setReferenceRightsConfirmed(c === true)}
+                />
+                <Label htmlFor="ref-rights" className="text-xs leading-snug cursor-pointer">
+                  I have the rights to use these reference images for generation.
+                </Label>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {useModelCouncil && (
         <div className="flex items-center gap-2 px-3 py-2 bg-primary/10 border border-primary/20 rounded-lg">
           <Hammer size={16} className="text-primary" weight="fill" />
@@ -325,7 +495,7 @@ export function QueryInput({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={placeholder}
+              placeholder={effectivePlaceholder}
               className="min-h-[40px] max-h-[200px] resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-base leading-relaxed"
               disabled={isLoading}
               id="query-input"
@@ -408,7 +578,7 @@ export function QueryInput({
             <Button
               size="icon"
               onClick={handleSubmit}
-              disabled={(!query.trim() && attachedFiles.length === 0) || isLoading}
+              disabled={!canSubmit || isLoading}
               className="h-8 w-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
             >
               <Waveform size={16} weight="fill" />

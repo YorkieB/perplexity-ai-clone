@@ -42,16 +42,16 @@ export async function generateImagesFromText(
   try {
     parsed = JSON.parse(text) as unknown
   } catch {
-    throw new ImageGenerationError('UPSTREAM', 'Invalid JSON from image service', res.status)
+    throw new ImageGenerationError('UPSTREAM', 'Invalid JSON from image service', { status: res.status })
   }
 
   if (!parsed || typeof parsed !== 'object' || !('images' in parsed)) {
-    throw new ImageGenerationError('UPSTREAM', 'Missing images array in response', res.status)
+    throw new ImageGenerationError('UPSTREAM', 'Missing images array in response', { status: res.status })
   }
 
   const images = (parsed as GenerateImagesResponse).images
   if (!Array.isArray(images)) {
-    throw new ImageGenerationError('UPSTREAM', 'Invalid images array in response', res.status)
+    throw new ImageGenerationError('UPSTREAM', 'Invalid images array in response', { status: res.status })
   }
 
   return images
