@@ -1,6 +1,6 @@
 # Roadmap — remaining work in overnight batches
 
-This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into **four large batches** (each suitable for one automated coding run). Phases **1–6** are treated as **done** (see links below). **Batch 7** is **complete** — see [BATCH-07-COMPLETE.md](BATCH-07-COMPLETE.md).
+This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into **four large batches** (each suitable for one automated coding run). Phases **1–6** are treated as **done** (see links below). **Batches 7–8** are **complete** — [Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md).
 
 ---
 
@@ -35,6 +35,7 @@ Paste the **entire** batch `.md` as the first message to the coding agent.
 | Batch | Topic | Doc |
 |-------|--------|-----|
 | 7 | Search transparency: dedupe, clustering, step trace, related questions | [BATCH-07-COMPLETE](BATCH-07-COMPLETE.md) |
+| 8 | Deep Research MVP: plan → multi-search → synthesize + progress | [BATCH-08-COMPLETE](BATCH-08-COMPLETE.md) |
 
 ---
 
@@ -53,7 +54,7 @@ Paste the **entire** batch `.md` as the first message to the coding agent.
 
 ## Order
 
-**Batch 7 is done.** Run **8 → 9 → 10** next (each may assume prior work is merged). Historically **7** and **9** were loosely parallelizable; **8** touches search orchestration and **10** touches settings — merge **7** before **8** if both touch `api.ts` heavily.
+**Batches 7–8 are done.** Run **9 → 10** next (each may assume prior work is merged). **10** touches settings and platform polish — merge **8** (and **7**) before **10** if integrating on a shared branch.
 
 ---
 
