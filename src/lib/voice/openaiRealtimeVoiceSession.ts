@@ -27,6 +27,10 @@ export interface OpenAIRealtimeVoiceSessionOptions {
   /** Optional body for `POST sessionUrl` (merged server-side with defaults). */
   sessionRequestBody?: Record<string, unknown>
   rtcConfiguration?: RTCConfiguration
+  /** Fired when user speech is transcribed for a turn (conversation item transcription completed). */
+  onUserTranscriptComplete?: (text: string) => void
+  /** Fired once per assistant spoken turn (transcript done, response done, or cancellation). */
+  onAssistantTranscriptComplete?: (text: string, meta: { interrupted: boolean }) => void
 }
 
 type ListenerMap = {
@@ -65,6 +69,12 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
   private activeResponseId: string | null = null
   private currentSessionState: VoiceSessionState = 'idle'
 
+  private assistantTranscriptBuffer = ''
+  private assistantTranscriptEmitted = false
+
+  private readonly onUserTranscriptComplete?: (text: string) => void
+  private readonly onAssistantTranscriptComplete?: (text: string, meta: { interrupted: boolean }) => void
+
   constructor(options: OpenAIRealtimeVoiceSessionOptions = {}) {
     this.sessionUrl = options.sessionUrl ?? '/api/realtime/session'
     this.realtimeCallsUrl = options.realtimeCallsUrl ?? 'https://api.openai.com/v1/realtime/calls'
@@ -72,6 +82,8 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     this.rtcConfiguration = options.rtcConfiguration ?? {
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     }
+    this.onUserTranscriptComplete = options.onUserTranscriptComplete
+    this.onAssistantTranscriptComplete = options.onAssistantTranscriptComplete
   }
 
   on<E extends VoiceEventName>(event: E, handler: VoiceEventHandler<E>): void {
@@ -315,6 +327,21 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
 
     this.assistantOutputActive = false
     this.activeResponseId = null
+    this.assistantTranscriptBuffer = ''
+    this.assistantTranscriptEmitted = false
+  }
+
+  private finalizeAssistantTurn(interrupted: boolean, explicitText?: string): void {
+    if (this.assistantTranscriptEmitted) {
+      return
+    }
+    this.assistantTranscriptEmitted = true
+    const explicit = explicitText?.trim()
+    const combined =
+      explicit && explicit.length > 0 ? explicit : this.assistantTranscriptBuffer.trim()
+    const text = combined || (interrupted ? '(Interrupted)' : '[Voice reply]')
+    this.onAssistantTranscriptComplete?.(text, { interrupted })
+    this.assistantTranscriptBuffer = ''
   }
 
   sendAudioChunk(chunk: ArrayBuffer | Uint8Array): void {
@@ -369,11 +396,33 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         break
 
       case 'response.created': {
+        this.assistantTranscriptBuffer = ''
+        this.assistantTranscriptEmitted = false
         const rid = (parsed as { response?: { id?: string } }).response?.id
         if (rid) {
           this.activeResponseId = rid
         }
         this.setSessionState('thinking')
+        break
+      }
+
+      case 'conversation.item.input_audio_transcription.completed': {
+        const text = extractUserTranscriptFromServerEvent(parsed)
+        if (text) {
+          this.onUserTranscriptComplete?.(text)
+        }
+        break
+      }
+
+      case 'response.output_audio_transcript.delta': {
+        const delta = (parsed as { delta?: string }).delta ?? ''
+        this.assistantTranscriptBuffer += delta
+        break
+      }
+
+      case 'response.output_audio_transcript.done': {
+        const transcript = (parsed as { transcript?: string }).transcript
+        this.finalizeAssistantTurn(false, transcript)
         break
       }
 
@@ -392,6 +441,9 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         if (wasActive) {
           this.emit('assistant_audio_stopped', { timestamp: now })
         }
+        if (!this.assistantTranscriptEmitted) {
+          this.finalizeAssistantTurn(false)
+        }
         this.setSessionState('listening')
         break
       }
@@ -402,6 +454,9 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         this.activeResponseId = null
         if (wasActive) {
           this.emit('assistant_audio_stopped', { timestamp: now })
+        }
+        if (!this.assistantTranscriptEmitted) {
+          this.finalizeAssistantTurn(true)
         }
         this.setSessionState('interrupted')
         break
@@ -417,7 +472,42 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       }
 
       default:
+        if (type.includes('input_audio_transcription.completed')) {
+          const text = extractUserTranscriptFromServerEvent(parsed)
+          if (text) {
+            this.onUserTranscriptComplete?.(text)
+          }
+        }
         break
     }
   }
+}
+
+function extractUserTranscriptFromServerEvent(parsed: unknown): string {
+  if (!parsed || typeof parsed !== 'object') {
+    return ''
+  }
+  const p = parsed as Record<string, unknown>
+  if (typeof p.transcript === 'string' && p.transcript.trim()) {
+    return p.transcript.trim()
+  }
+  const item = p.item
+  if (item && typeof item === 'object') {
+    const it = item as Record<string, unknown>
+    if (typeof it.transcript === 'string' && it.transcript.trim()) {
+      return it.transcript.trim()
+    }
+    const content = it.content
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part && typeof part === 'object') {
+          const po = part as Record<string, unknown>
+          if (typeof po.transcript === 'string' && po.transcript.trim()) {
+            return po.transcript.trim()
+          }
+        }
+      }
+    }
+  }
+  return ''
 }

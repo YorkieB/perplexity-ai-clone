@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
-import { Sparkle, User } from '@phosphor-icons/react'
+import { Microphone, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -47,6 +47,20 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
       </div>
 
       <div className={cn('flex-1 space-y-4', isUser && 'flex flex-col items-end')}>
+        {(message.modality === 'voice' || message.source === 'voice') && (
+          <span
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground',
+              isUser ? 'self-end' : 'self-start'
+            )}
+          >
+            <Microphone className="h-3.5 w-3.5 shrink-0" weight="fill" aria-hidden />
+            <span>Voice</span>
+            {message.voiceTurn?.interrupted ? (
+              <span className="text-destructive font-medium">(interrupted)</span>
+            ) : null}
+          </span>
+        )}
         {isUser && message.files && message.files.length > 0 && (
           <div className="space-y-2 max-w-2xl w-full">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

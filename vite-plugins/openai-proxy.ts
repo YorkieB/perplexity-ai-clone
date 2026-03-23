@@ -42,6 +42,10 @@ const defaultRealtimeSession = {
     type: 'realtime' as const,
     model: 'gpt-realtime',
     audio: {
+      input: {
+        format: { type: 'audio/pcm', rate: 24000 },
+        transcription: { model: 'gpt-4o-mini-transcribe' },
+      },
       output: { voice: 'marin' },
     },
   },

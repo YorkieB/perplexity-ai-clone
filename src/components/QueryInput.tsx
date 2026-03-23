@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { useVoiceSession } from '@/contexts/VoiceSessionContext'
 
 interface QueryInputProps {
   onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
@@ -53,6 +54,7 @@ export function QueryInput({
   advancedMode,
   onAdvancedModeChange,
 }: QueryInputProps) {
+  const voice = useVoiceSession()
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
@@ -356,12 +358,26 @@ export function QueryInput({
             </Button>
 
             <Button
-              variant="ghost"
+              type="button"
+              variant={voice.isVoiceConnected ? 'secondary' : 'ghost'}
               size="icon"
               className="h-8 w-8 hover:bg-muted"
-              disabled={isLoading}
+              disabled={isLoading || voice.isVoiceConnecting}
+              onClick={() => {
+                if (voice.isVoiceConnected || voice.isVoiceConnecting) {
+                  voice.stopVoice()
+                } else {
+                  void voice.startVoice()
+                }
+              }}
+              aria-label={
+                voice.isVoiceConnected || voice.isVoiceConnecting
+                  ? 'Stop voice session'
+                  : 'Start voice conversation'
+              }
+              aria-pressed={voice.isVoiceConnected}
             >
-              <Microphone size={16} />
+              <Microphone size={16} weight={voice.isVoiceConnected ? 'fill' : 'regular'} />
             </Button>
 
             <Button

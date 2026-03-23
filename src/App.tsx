@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import type { ComponentProps } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
@@ -10,12 +11,23 @@ import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
 import { MessageSkeleton } from '@/components/MessageSkeleton'
 import { QueryInput } from '@/components/QueryInput'
+import { VoiceSessionBar } from '@/components/VoiceSessionBar'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
 import { SettingsDialog } from '@/components/SettingsDialog'
 import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { VoiceSessionProvider } from '@/contexts/VoiceSessionContext'
+
+function QueryInputWithVoice(props: ComponentProps<typeof QueryInput>) {
+  return (
+    <div className="space-y-3 w-full">
+      <VoiceSessionBar />
+      <QueryInput {...props} />
+    </div>
+  )
+}
 
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
@@ -30,6 +42,16 @@ function MainApp() {
   const [focusMode, setFocusMode] = useState<FocusMode>('all')
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const activeThreadIdRef = useRef<string | null>(null)
+  const activeWorkspaceIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId
+  }, [activeThreadId])
+
+  useEffect(() => {
+    activeWorkspaceIdRef.current = activeWorkspaceId
+  }, [activeWorkspaceId])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
@@ -230,6 +252,72 @@ ${
     }
   }
 
+  const appendVoiceUserMessage = useCallback(
+    (text: string) => {
+      const userMessage: MessageType = {
+        id: generateId(),
+        role: 'user',
+        content: text,
+        createdAt: Date.now(),
+        focusMode,
+        modality: 'voice',
+        source: 'voice',
+        voiceTurn: { source: 'voice' },
+      }
+      setThreads((current) => {
+        const list = current || []
+        const tid = activeThreadIdRef.current
+        if (!tid) {
+          const threadId = generateId()
+          activeThreadIdRef.current = threadId
+          const thread: Thread = {
+            id: threadId,
+            workspaceId: activeWorkspaceIdRef.current ?? undefined,
+            title: generateThreadTitle(text),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: [userMessage],
+          }
+          queueMicrotask(() => setActiveThreadId(threadId))
+          return [...list, thread]
+        }
+        return list.map((t) =>
+          t.id === tid ? { ...t, messages: [...t.messages, userMessage], updatedAt: Date.now() } : t
+        )
+      })
+    },
+    [focusMode, setThreads]
+  )
+
+  const appendVoiceAssistantMessage = useCallback(
+    (text: string, meta: { interrupted: boolean }) => {
+      const assistantMessage: MessageType = {
+        id: generateId(),
+        role: 'assistant',
+        content: text,
+        createdAt: Date.now(),
+        modelUsed: 'gpt-realtime',
+        focusMode,
+        modality: 'voice',
+        source: 'voice',
+        voiceTurn: { source: 'voice', interrupted: meta.interrupted },
+      }
+      setThreads((current) => {
+        const list = current || []
+        const tid = activeThreadIdRef.current
+        if (!tid) {
+          return list
+        }
+        return list.map((t) =>
+          t.id === tid
+            ? { ...t, messages: [...t.messages, assistantMessage], updatedAt: Date.now() }
+            : t
+        )
+      })
+    },
+    [focusMode, setThreads]
+  )
+
   const renderMainContent = () => {
     if (activeWorkspace && !activeThread) {
       return (
@@ -251,7 +339,7 @@ ${
               </div>
             </div>
             <div className="pt-4">
-              <QueryInput
+              <QueryInputWithVoice
                 onSubmit={handleQuery}
                 isLoading={isGenerating}
                 placeholder={`Ask a question in ${activeWorkspace.name}...`}
@@ -294,7 +382,7 @@ ${
 
           <div className="border-t border-border bg-background">
             <div className="max-w-4xl mx-auto px-6 py-4">
-              <QueryInput
+              <QueryInputWithVoice
                 onSubmit={handleQuery}
                 isLoading={isGenerating}
                 advancedMode={advancedMode || false}
@@ -316,7 +404,7 @@ ${
         <EmptyState onExampleClick={(query) => handleQuery(query, advancedMode)} />
         <div className="border-t border-border bg-background">
           <div className="max-w-2xl mx-auto px-6 py-6">
-            <QueryInput
+            <QueryInputWithVoice
               onSubmit={handleQuery}
               isLoading={isGenerating}
               advancedMode={advancedMode}
@@ -329,35 +417,40 @@ ${
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Toaster position="top-center" />
-      
-      <AppSidebar
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-        activeThreadId={activeThreadId}
-        activeWorkspaceId={activeWorkspaceId}
-        onThreadSelect={handleThreadSelect}
-        onWorkspaceSelect={handleWorkspaceSelect}
-        onNewThread={handleNewThread}
-        onNewWorkspace={handleNewWorkspace}
-        onOpenSettings={() => setSettingsDialogOpen(true)}
-      />
+    <VoiceSessionProvider
+      onUserTranscript={appendVoiceUserMessage}
+      onAssistantTranscript={appendVoiceAssistantMessage}
+    >
+      <div className="flex h-screen overflow-hidden">
+        <Toaster position="top-center" />
 
-      <main className="flex-1 overflow-hidden">{renderMainContent()}</main>
+        <AppSidebar
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+          activeThreadId={activeThreadId}
+          activeWorkspaceId={activeWorkspaceId}
+          onThreadSelect={handleThreadSelect}
+          onWorkspaceSelect={handleWorkspaceSelect}
+          onNewThread={handleNewThread}
+          onNewWorkspace={handleNewWorkspace}
+          onOpenSettings={() => setSettingsDialogOpen(true)}
+        />
 
-      <WorkspaceDialog
-        open={workspaceDialogOpen}
-        onOpenChange={setWorkspaceDialogOpen}
-        workspace={editingWorkspace}
-        onSave={handleSaveWorkspace}
-      />
+        <main className="flex-1 overflow-hidden">{renderMainContent()}</main>
 
-      <SettingsDialog
-        open={settingsDialogOpen}
-        onOpenChange={setSettingsDialogOpen}
-      />
-    </div>
+        <WorkspaceDialog
+          open={workspaceDialogOpen}
+          onOpenChange={setWorkspaceDialogOpen}
+          workspace={editingWorkspace}
+          onSave={handleSaveWorkspace}
+        />
+
+        <SettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={setSettingsDialogOpen}
+        />
+      </div>
+    </VoiceSessionProvider>
   )
 }
 
