@@ -1,6 +1,8 @@
-# Roadmap — remaining work in overnight batches
+# Roadmap — telescope batches (**plan complete**)
 
-This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into **four large batches** (each suitable for one automated coding run). Phases **1–6** are treated as **done** (see links below). **Batches 7–10** are **complete** — [Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md), [Batch 10](BATCH-10-COMPLETE.md). Batch prompt files under [batches/](batches/) remain as **historical copy-paste** references.
+The **implementation plan** aligned with `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` is **finished**: **Phases 1–6** (see table below) plus **Batches 7–10** ([Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md), [Batch 10](BATCH-10-COMPLETE.md)). Items that were **explicitly out of scope** for batches (e.g. Comet, full Labs, server-side Pages hosting, billing) are **not** part of this plan—see the batch index section below.
+
+Originally this doc split “everything left” into **four overnight batches**; the prompt files under [batches/](batches/) remain as **historical copy-paste** references.
 
 ---
 
