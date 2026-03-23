@@ -85,6 +85,8 @@ Then open the printed local URL and confirm the app loads (HTTP 200 on `/`).
 | `vite.config.ts` | Build options, including `chunkSizeWarningLimit`. |
 | `eslint.config.js` | ESLint flat config. |
 | `src/components/ui/chart.tsx` | Recharts-based chart primitives and typings. |
+| `public/favicon.svg`, `public/favicon.ico` | Tab icons (SVG primary; ICO fallback). Regenerate the binary with `node scripts/generate-favicon-ico.mjs` if you change the ICO pipeline. |
+| `index.html` | Document head, including `<link rel="icon">` entries. |
 
 ## Maintenance checklist (when bumping dependencies)
 
