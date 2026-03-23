@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
+import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, SearchTrace } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
@@ -114,14 +114,19 @@ function MainApp() {
     }
 
     try {
-      const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
-      
       let webSources: Source[] = []
-      
-      if ('error' in searchResult) {
-        toast.error(searchResult.message)
-      } else {
-        webSources = searchResult
+      let searchTrace: SearchTrace | undefined
+      const shouldRunWebSearch = query.trim().length > 0
+
+      if (shouldRunWebSearch) {
+        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
+
+        if ('error' in searchResult) {
+          toast.error(searchResult.message)
+        } else {
+          webSources = searchResult.sources
+          searchTrace = searchResult.trace
+        }
       }
 
       const systemPrompt = activeWorkspace?.customSystemPrompt || ''
@@ -153,14 +158,21 @@ function MainApp() {
 
       if (useModelCouncil) {
         const councilResult = await executeModelCouncil(query, contextSection, fileContext, systemPrompt + modeInstruction, selectedModels)
+        const councilResponseDigest = councilResult.models
+          .map((model) => `[${model.model}] ${model.content}`)
+          .join('\n\n')
+          .slice(0, 5000)
+        const followUpQuestions = await generateFollowUpQuestions(query, councilResponseDigest, webSources)
         
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
           content: 'Model Council Response',
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           focusMode,
+          followUpQuestions,
           isModelCouncil: true,
           modelResponses: councilResult.models.map(m => ({
             ...m,
@@ -204,6 +216,7 @@ ${
           role: 'assistant',
           content: response,
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           modelUsed: 'gpt-4o-mini',
           focusMode,

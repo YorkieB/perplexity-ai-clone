@@ -5,14 +5,31 @@ interface FollowUpQuestionsProps {
   questions: string[]
   onQuestionClick: (question: string) => void
   isLoading?: boolean
+  showEmptyState?: boolean
 }
 
 export function FollowUpQuestions({
   questions,
   onQuestionClick,
   isLoading = false,
+  showEmptyState = false,
 }: FollowUpQuestionsProps) {
-  if (questions.length === 0) return null
+  if (questions.length === 0) {
+    if (!showEmptyState) {
+      return null
+    }
+
+    return (
+      <div className="space-y-1 mt-4">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Follow-up Questions
+        </p>
+        <p className="text-sm text-muted-foreground">
+          No related follow-up questions generated for this response.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-2 mt-4">

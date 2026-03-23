@@ -11,6 +11,15 @@ export interface Source {
   favicon?: string
 }
 
+export interface SearchTrace {
+  query: string
+  focusMode: FocusMode
+  focusModeLabel: string
+  isAdvancedMode: boolean
+  executedAt: number
+  resultCount: number
+}
+
 export interface UploadedFile {
   id: string
   name: string
@@ -34,6 +43,7 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   sources?: Source[]
+  searchTrace?: SearchTrace
   files?: UploadedFile[]
   createdAt: number
   modelUsed?: string

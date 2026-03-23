@@ -1,5 +1,6 @@
 import { callLlm, llmPrompt } from './llm'
-import { Source, FocusMode } from './types'
+import { Source, FocusMode, SearchTrace } from './types'
+import { getRegistrableDomain, normalizeSourceUrl } from './search-utils'
 
 export interface TavilySearchResult {
   url: string
@@ -16,6 +17,11 @@ export interface TavilySearchResponse {
 export interface SearchError {
   error: true
   message: string
+}
+
+export interface WebSearchSuccess {
+  sources: Source[]
+  trace: SearchTrace
 }
 
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
@@ -36,11 +42,29 @@ function getFocusModeSearchModifier(focusMode: FocusMode): string {
   }
 }
 
+function getFocusModeLabel(focusMode: FocusMode): string {
+  switch (focusMode) {
+    case 'academic':
+      return 'Academic'
+    case 'reddit':
+      return 'Reddit'
+    case 'youtube':
+      return 'YouTube'
+    case 'news':
+      return 'News'
+    case 'code':
+      return 'Code'
+    case 'all':
+    default:
+      return 'All Sources'
+  }
+}
+
 export async function executeWebSearch(
   query: string,
   focusMode: FocusMode = 'all',
   isDeepResearch: boolean = false
-): Promise<Source[] | SearchError> {
+): Promise<WebSearchSuccess | SearchError> {
   try {
     const apiKey = import.meta.env.VITE_TAVILY_API_KEY
 
@@ -54,6 +78,17 @@ export async function executeWebSearch(
 
     const focusModifier = getFocusModeSearchModifier(focusMode)
     const enhancedQuery = query + focusModifier
+    const searchDepth = isDeepResearch ? 'advanced' : 'basic'
+    const maxResults = isDeepResearch ? 12 : 6
+
+    if (import.meta.env.DEV) {
+      console.debug('[search] executeWebSearch params', {
+        query: enhancedQuery,
+        focusMode,
+        searchDepth,
+        maxResults,
+      })
+    }
 
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -63,9 +98,9 @@ export async function executeWebSearch(
       body: JSON.stringify({
         api_key: apiKey,
         query: enhancedQuery,
-        search_depth: isDeepResearch ? 'advanced' : 'basic',
+        search_depth: searchDepth,
         include_answer: false,
-        max_results: isDeepResearch ? 12 : 6,
+        max_results: maxResults,
       }),
     })
 
@@ -79,11 +114,11 @@ export async function executeWebSearch(
 
     const data: TavilySearchResponse = await response.json()
 
-    const sources: Source[] = data.results.map((result) => {
-      const url = new URL(result.url)
-      const domain = url.hostname.replace('www.', '')
-      
-      return {
+    const dedupedByUrl = new Map<string, { source: Source; score: number }>()
+    for (const result of data.results || []) {
+      const normalizedUrl = normalizeSourceUrl(result.url)
+      const domain = getRegistrableDomain(result.url)
+      const source: Source = {
         url: result.url,
         title: result.title,
         snippet: result.content,
@@ -91,9 +126,26 @@ export async function executeWebSearch(
         domain,
         favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=32`,
       }
-    })
 
-    return sources
+      const existing = dedupedByUrl.get(normalizedUrl)
+      if (!existing || result.score > existing.score) {
+        dedupedByUrl.set(normalizedUrl, { source, score: result.score })
+      }
+    }
+
+    const sources = Array.from(dedupedByUrl.values()).map((entry) => entry.source)
+
+    return {
+      sources,
+      trace: {
+        query: enhancedQuery,
+        focusMode,
+        focusModeLabel: getFocusModeLabel(focusMode),
+        isAdvancedMode: isDeepResearch,
+        executedAt: Date.now(),
+        resultCount: sources.length,
+      },
+    }
   } catch (error) {
     console.error('Web search error:', error)
     return {
@@ -123,7 +175,24 @@ Return a JSON object only, with this shape: {"questions": ["question1", "questio
     const parsed = JSON.parse(result)
 
     if (parsed.questions && Array.isArray(parsed.questions)) {
-      return parsed.questions.slice(0, 3)
+      const normalizedResponse = response.toLowerCase()
+      const seen = new Set<string>()
+
+      const dedupedQuestions = parsed.questions
+        .filter((question): question is string => typeof question === 'string')
+        .map((question) => question.trim())
+        .filter(Boolean)
+        .filter((question) => {
+          const key = question.toLowerCase()
+          if (seen.has(key)) {
+            return false
+          }
+          seen.add(key)
+          return true
+        })
+        .filter((question) => !normalizedResponse.includes(question.toLowerCase()))
+
+      return dedupedQuestions.slice(0, 3)
     }
     
     return []
