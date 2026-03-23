@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AppSidebar } from './AppSidebar'
@@ -43,9 +43,11 @@ const baseProps = {
 describe('AppSidebar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUseLocalStorage
-      .mockReturnValueOnce([[thread], vi.fn()])
-      .mockReturnValueOnce([[workspace], vi.fn()])
+    mockUseLocalStorage.mockImplementation((key: string) => {
+      if (key === 'threads') return [[thread], vi.fn()]
+      if (key === 'workspaces') return [[workspace], vi.fn()]
+      return [[], vi.fn()]
+    })
   })
 
   it('renders thread and workspace entries', () => {
@@ -61,5 +63,29 @@ describe('AppSidebar', () => {
     const threadButtons = screen.getAllByRole('button', { name: /My thread/i })
     await user.click(threadButtons[0])
     expect(baseProps.onThreadSelect).toHaveBeenCalledWith('t1')
+  })
+
+  it('calls onEditWorkspace when the pencil control is used', () => {
+    const onEditWorkspace = vi.fn()
+    render(<AppSidebar {...baseProps} onEditWorkspace={onEditWorkspace} />)
+    fireEvent.click(screen.getByRole('button', { name: /Edit workspace Space/i }))
+    expect(onEditWorkspace).toHaveBeenCalledWith(workspace)
+  })
+
+  it('uses collapsed rail actions for new thread and workspace', () => {
+    const onNewThread = vi.fn()
+    const onNewWorkspace = vi.fn()
+    render(
+      <AppSidebar
+        {...baseProps}
+        isCollapsed
+        onNewThread={onNewThread}
+        onNewWorkspace={onNewWorkspace}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^New thread$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^New workspace$/i }))
+    expect(onNewThread).toHaveBeenCalled()
+    expect(onNewWorkspace).toHaveBeenCalled()
   })
 })

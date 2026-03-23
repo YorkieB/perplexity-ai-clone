@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { FileAnalysisDialog } from './FileAnalysisDialog'
@@ -86,5 +86,16 @@ describe('FileAnalysisDialog', () => {
   it('describes empty file state', () => {
     render(<FileAnalysisDialog open file={null} onOpenChange={vi.fn()} />)
     expect(screen.getByText(/No file selected/i)).toBeInTheDocument()
+  })
+
+  it('closes from footer when analysis is present', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const onOpenChange = vi.fn()
+    render(<FileAnalysisDialog open file={file} onOpenChange={onOpenChange} />)
+    await user.click(screen.getByRole('button', { name: /Start Analysis/i }))
+    await waitFor(() => screen.getByRole('heading', { name: 'Summary' }))
+    const dialog = screen.getAllByRole('dialog')[0]
+    await user.click(within(dialog).getAllByRole('button', { name: /^Close$/i }).pop()!)
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })

@@ -36,6 +36,21 @@ describe('ModelCouncilSelector', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('toggles models off until fewer than two remain', () => {
+    render(
+      <ModelCouncilSelector
+        open
+        onOpenChange={vi.fn()}
+        onConfirm={vi.fn()}
+        defaultSelected={['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']}
+      />
+    )
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[0])
+    fireEvent.click(checkboxes[1])
+    expect(screen.getByRole('button', { name: /Start Council/i })).toBeDisabled()
+  })
+
   it('does not confirm when fewer than two models are selected', async () => {
     const user = userEvent.setup()
     const onConfirm = vi.fn()

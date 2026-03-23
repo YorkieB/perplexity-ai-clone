@@ -187,6 +187,7 @@ export function AppSidebar({
           <Button
             variant="ghost"
             size="icon"
+            aria-label="New thread"
             onClick={onNewThread}
             className="h-10 w-10"
           >
@@ -196,6 +197,7 @@ export function AppSidebar({
           <Button
             variant="ghost"
             size="icon"
+            aria-label="New workspace"
             onClick={onNewWorkspace}
             className="h-10 w-10"
           >

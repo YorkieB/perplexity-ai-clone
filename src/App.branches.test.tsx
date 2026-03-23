@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { toast } from 'sonner'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const executeWebSearch = vi.fn()
@@ -25,7 +26,7 @@ vi.mock('@/components/QueryInput', () => ({
     onSubmit: (
       q: string,
       adv: boolean,
-      files?: unknown,
+      files?: import('@/lib/types').UploadedFile[],
       council?: boolean,
       models?: string[]
     ) => void
@@ -47,6 +48,33 @@ vi.mock('@/components/QueryInput', () => ({
         onClick={() => onSubmit('branch', false, undefined, false)}
       >
         Run normal
+      </button>
+      <button
+        type="button"
+        data-testid="run-long-file"
+        disabled={isLoading}
+        onClick={() =>
+          onSubmit('branch', false, [
+            {
+              id: 'long',
+              name: 'big.txt',
+              type: 'text/plain',
+              size: 5000,
+              content: 'x'.repeat(2500),
+              uploadedAt: Date.now(),
+            },
+          ], false)
+        }
+      >
+        Run with long file
+      </button>
+      <button
+        type="button"
+        data-testid="run-advanced"
+        disabled={isLoading}
+        onClick={() => onSubmit('branch', true, undefined, false)}
+      >
+        Run advanced
       </button>
     </div>
   ),
@@ -82,12 +110,17 @@ describe('MainApp branches', () => {
 
   it('surfaces errors from the LLM path', async () => {
     const user = userEvent.setup()
+    const toastError = vi.spyOn(toast, 'error').mockReturnValue('')
     callLlm.mockRejectedValueOnce(new Error('fail'))
     render(<MainApp />)
     await user.click(screen.getAllByTestId('run-normal')[0])
     await waitFor(() => {
       expect(executeWebSearch).toHaveBeenCalled()
     })
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled()
+    })
+    toastError.mockRestore()
   })
 
   it('handles search configuration errors from Tavily', async () => {
@@ -101,5 +134,28 @@ describe('MainApp branches', () => {
     await waitFor(() => {
       expect(callLlm).toHaveBeenCalled()
     })
+  })
+
+  it('truncates very long file content in the assembled prompt', async () => {
+    const user = userEvent.setup()
+    render(<MainApp />)
+    await user.click(screen.getAllByTestId('run-long-file')[0])
+    await waitFor(() => {
+      expect(callLlm).toHaveBeenCalled()
+    })
+    const prompt = String(callLlm.mock.calls[0][0])
+    expect(prompt).toContain('Attached Files')
+    expect(prompt).toContain('...')
+  })
+
+  it('adds advanced mode instructions to the prompt', async () => {
+    const user = userEvent.setup()
+    render(<MainApp />)
+    await user.click(screen.getAllByTestId('run-advanced')[0])
+    await waitFor(() => {
+      expect(callLlm).toHaveBeenCalled()
+    })
+    const prompt = String(callLlm.mock.calls[0][0])
+    expect(prompt).toMatch(/comprehensive|in-depth/i)
   })
 })

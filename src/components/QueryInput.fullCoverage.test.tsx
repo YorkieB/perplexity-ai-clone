@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { toast } from 'sonner'
@@ -117,6 +117,36 @@ describe('QueryInput full coverage', () => {
     await user.type(ta, 'a'.repeat(80))
     expect(ta.value.length).toBe(80)
     expect(ta.style.height).toMatch(/px$/)
+  })
+
+  it('opens and closes file preview from an attachment', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const { container } = render(
+      <QueryInput onSubmit={vi.fn()} advancedMode={false} onAdvancedModeChange={vi.fn()} />
+    )
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['x'], 'a.txt', { type: 'text/plain' })] },
+    })
+    await waitFor(() => expect(screen.getByText('t.txt')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /t\.txt/i }))
+    const dlg = screen.getAllByRole('dialog')[0]
+    await user.click(within(dlg).getAllByRole('button', { name: /^Close$/i }).pop()!)
+  })
+
+  it('opens file analysis dialog from analyze control', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const { container } = render(
+      <QueryInput onSubmit={vi.fn()} advancedMode={false} onAdvancedModeChange={vi.fn()} />
+    )
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['x'], 'a.txt', { type: 'text/plain' })] },
+    })
+    await waitFor(() =>
+      expect(screen.getAllByTitle('Analyze with AI').length).toBeGreaterThan(0)
+    )
+    await user.click(screen.getAllByTitle('Analyze with AI')[0])
+    const dlg = screen.getAllByRole('dialog')[0]
+    expect(within(dlg).getByRole('heading', { name: /AI File Analysis/i })).toBeInTheDocument()
   })
 
   it('confirms model council and enables council mode', async () => {

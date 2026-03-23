@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CloudFileBrowser } from './CloudFileBrowser'
@@ -10,6 +10,10 @@ const { mockUseLocalStorage } = vi.hoisted(() => ({
 vi.mock('@/hooks/useLocalStorage', () => ({
   useLocalStorage: mockUseLocalStorage,
 }))
+
+function firstDialog() {
+  return screen.getAllByRole('dialog')[0]
+}
 
 describe('CloudFileBrowser', () => {
   beforeEach(() => {
@@ -102,5 +106,39 @@ describe('CloudFileBrowser', () => {
     await user.click(screen.getByRole('button', { name: /Google Drive/i }))
     await waitFor(() => screen.getByText('Research Notes.txt'), { timeout: 3000 })
     await user.click(screen.getByRole('button', { name: /Import Selected/i }))
+  })
+
+  it('shows loading state then files using fake timers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<CloudFileBrowser open onOpenChange={vi.fn()} onSelectFiles={vi.fn()} />)
+    await user.click(within(firstDialog()).getByRole('button', { name: /Google Drive/i }))
+    expect(within(firstDialog()).getAllByText(/Loading files/i).length).toBeGreaterThan(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    await waitFor(() => {
+      expect(within(firstDialog()).getByText('Research Notes.txt')).toBeInTheDocument()
+    })
+    vi.useRealTimers()
+  })
+
+  it('deselects a file when clicked again', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<CloudFileBrowser open onOpenChange={vi.fn()} onSelectFiles={vi.fn()} />)
+    await user.click(within(firstDialog()).getByRole('button', { name: /Google Drive/i }))
+    await waitFor(() => within(firstDialog()).getByText('Research Notes.txt'), { timeout: 3000 })
+    const row = within(firstDialog()).getByText('Research Notes.txt').closest('button')!
+    await user.click(row)
+    await user.click(row)
+    expect(within(firstDialog()).getAllByText(/0 file\(s\) selected/i).length).toBeGreaterThan(0)
+  })
+
+  it('closes from Cancel in file list', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const onOpenChange = vi.fn()
+    render(<CloudFileBrowser open onOpenChange={onOpenChange} onSelectFiles={vi.fn()} />)
+    await user.click(within(firstDialog()).getByRole('button', { name: /Google Drive/i }))
+    await waitFor(() => within(firstDialog()).getByText('Research Notes.txt'), { timeout: 3000 })
+    await user.click(within(firstDialog()).getByRole('button', { name: /^Cancel$/i }))
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })

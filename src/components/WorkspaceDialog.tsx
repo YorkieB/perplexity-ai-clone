@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,19 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
   const [name, setName] = useState(workspace?.name || '')
   const [description, setDescription] = useState(workspace?.description || '')
   const [customSystemPrompt, setCustomSystemPrompt] = useState(workspace?.customSystemPrompt || '')
+
+  useEffect(() => {
+    if (!open) return
+    if (workspace) {
+      setName(workspace.name)
+      setDescription(workspace.description || '')
+      setCustomSystemPrompt(workspace.customSystemPrompt || '')
+    } else {
+      setName('')
+      setDescription('')
+      setCustomSystemPrompt('')
+    }
+  }, [open, workspace])
 
   const handleSave = () => {
     if (workspace) {

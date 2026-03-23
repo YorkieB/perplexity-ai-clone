@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -117,6 +117,49 @@ describe('MainApp', () => {
     expect(expandToggle).toBeInstanceOf(HTMLButtonElement)
     fireEvent.click(expandToggle as HTMLButtonElement)
     expect(screen.getByRole('heading', { name: /AI Search/i })).toBeInTheDocument()
+  })
+
+  it('hides workspace description when empty', () => {
+    localStorage.setItem(
+      'workspaces',
+      JSON.stringify([
+        {
+          id: 'w1',
+          name: 'NoDesc',
+          description: '',
+          customSystemPrompt: '',
+          createdAt: 1,
+        },
+      ])
+    )
+    render(<MainApp />)
+    fireEvent.click(screen.getAllByRole('button', { name: /^NoDesc$/i })[0])
+    expect(screen.getByRole('heading', { name: 'NoDesc' })).toBeInTheDocument()
+    expect(screen.getAllByText('No custom prompt set').length).toBeGreaterThan(0)
+  })
+
+  it('saves an edited workspace from the sidebar pencil control', () => {
+    localStorage.setItem(
+      'workspaces',
+      JSON.stringify([
+        {
+          id: 'w1',
+          name: 'Original',
+          description: 'd',
+          customSystemPrompt: 'p',
+          createdAt: 1,
+        },
+      ])
+    )
+    render(<MainApp />)
+    fireEvent.click(screen.getAllByRole('button', { name: /Edit workspace Original/i })[0])
+    const dialog = screen.getAllByRole('dialog', { name: /edit workspace/i })[0]
+    fireEvent.change(within(dialog).getByDisplayValue('Original'), {
+      target: { value: 'Renamed' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save Changes/i }))
+    const stored = JSON.parse(localStorage.getItem('workspaces') || '[]')
+    expect(stored[0].name).toBe('Renamed')
   })
 
   it('runs a follow-up question from an existing thread', async () => {
