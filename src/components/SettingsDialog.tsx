@@ -11,12 +11,15 @@ import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, ShieldCheck, DownloadSimple } from '@phosphor-icons/react'
 
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
+
+// Explicit list of app-owned localStorage keys included in export.
+const APP_LOCAL_STORAGE_EXPORT_KEYS = ['threads', 'workspaces', 'user-settings'] as const
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
@@ -164,6 +167,52 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4)
   }
 
+  const handleExportAllData = () => {
+    const confirmed = window.confirm(
+      'This export includes all local app data, including any API keys or OAuth tokens you previously saved in this browser. Continue?'
+    )
+    if (!confirmed) return
+
+    const data = APP_LOCAL_STORAGE_EXPORT_KEYS.reduce<Record<string, unknown>>((acc, key) => {
+      const rawValue = localStorage.getItem(key)
+      if (rawValue === null) {
+        acc[key] = null
+        return acc
+      }
+
+      try {
+        acc[key] = JSON.parse(rawValue)
+      } catch {
+        acc[key] = rawValue
+      }
+
+      return acc
+    }, {})
+
+    const exportPayload = {
+      exportedAt: new Date().toISOString(),
+      formatVersion: 1,
+      warning:
+        'Contains all app data currently stored in this browser, including credentials only if you chose to store them locally.',
+      localStorageKeys: [...APP_LOCAL_STORAGE_EXPORT_KEYS],
+      data,
+    }
+
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+      type: 'application/json',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `ai-search-local-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    toast.success('Local data export downloaded')
+  }
+
   const cloudServices = [
     {
       id: 'googledrive' as const,
@@ -210,7 +259,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </DialogHeader>
 
         <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="api-keys" className="gap-2">
               <Key size={16} />
               API Keys
@@ -218,6 +267,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <TabsTrigger value="oauth" className="gap-2">
               <CloudArrowUp size={16} />
               OAuth Connections
+            </TabsTrigger>
+            <TabsTrigger value="privacy" className="gap-2">
+              <ShieldCheck size={16} />
+              Privacy & Data
             </TabsTrigger>
           </TabsList>
 
@@ -444,6 +497,53 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </p>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="privacy" className="flex-1 overflow-y-auto space-y-6 mt-4">
+            <Card className="p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-primary/10 rounded-lg">
+                  <ShieldCheck className="text-primary" size={20} />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="font-semibold text-lg">Export local data</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Download a JSON file with all app-owned browser data for backup or portability.
+                    This file may include sensitive values if you previously saved them in Settings.
+                  </p>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Included localStorage keys</p>
+                <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                  {APP_LOCAL_STORAGE_EXPORT_KEYS.map((key) => (
+                    <li key={key}>
+                      <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{key}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-start gap-3">
+                <Warning className="text-amber-500 flex-shrink-0 mt-0.5" size={18} />
+                <p className="text-sm text-muted-foreground">
+                  Keep exports private. The app only exports data already stored in your browser.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Close
+                </Button>
+                <Button onClick={handleExportAllData} className="gap-2">
+                  <DownloadSimple size={16} />
+                  Export all local data
+                </Button>
+              </div>
+            </Card>
           </TabsContent>
         </Tabs>
       </DialogContent>

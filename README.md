@@ -13,6 +13,10 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **Workspace Organization**: Create custom workspaces with tailored AI behavior via system prompts
 - **Persistent Threads**: Conversation history saved across sessions
 - **Advanced Analysis Mode**: Toggle for comprehensive, in-depth responses
+- **Voice Input (Browser Support)**: Optional microphone dictation in the query box via the Web Speech API
+- **Auto Model Routing (Optional)**: Local heuristic routes short prompts to GPT-4o Mini and longer/complex prompts to GPT-4o, with manual override
+- **Local Usage Estimate**: Approximate character/token counts from recent messages (local estimate only, not billing data)
+- **Privacy Export**: One-click export of app-owned local data (`threads`, `workspaces`, `user-settings`) as JSON
 - **Dark Mode UI**: Sophisticated, minimalist interface optimized for extended use
 - **Source Citations**: Every AI response includes clickable sources from real web searches
 
@@ -60,8 +64,10 @@ npm run dev
 1. **Start a Search**: Type your query in the main input area and press Enter
 2. **Create Workspaces**: Organize research by topic with custom system prompts
 3. **Enable Advanced Mode**: Toggle for more comprehensive, detailed analysis
-4. **View Sources**: Click on source cards to open the original web pages
-5. **Access History**: All conversations are saved in the Library sidebar
+4. **Use Voice Input**: Click the microphone button in supported browsers (HTTPS/localhost)
+5. **Choose Model Strategy**: Pick a manual model or enable Auto model routing
+6. **View Sources**: Click on source cards to open the original web pages
+7. **Access History**: All conversations are saved in the Library sidebar
 
 ## 🏗️ Architecture
 

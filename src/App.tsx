@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
@@ -17,6 +17,34 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
+type SupportedChatModel = 'gpt-4o' | 'gpt-4o-mini'
+
+const RECENT_USAGE_MESSAGE_LIMIT = 12
+
+function estimateMessageCharacters(message: MessageType): number {
+  const contentChars = message.content.length
+  const fileChars =
+    message.files?.reduce((total, file) => total + file.name.length + file.content.length, 0) || 0
+  return contentChars + fileChars
+}
+
+function estimateLocalUsage(messages: MessageType[]) {
+  const recentMessages = messages.slice(-RECENT_USAGE_MESSAGE_LIMIT)
+  const characters = recentMessages.reduce(
+    (total, message) => total + estimateMessageCharacters(message),
+    0
+  )
+  return {
+    recentMessages: recentMessages.length,
+    characters,
+    tokens: Math.ceil(characters / 4),
+  }
+}
+
+function formatApprox(value: number): string {
+  return value.toLocaleString()
+}
+
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
   const [workspaces, setWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
@@ -33,6 +61,15 @@ function MainApp() {
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
+  const mostRecentThread = useMemo(
+    () => [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)[0],
+    [threads]
+  )
+  const usageReferenceMessages = activeThread?.messages || mostRecentThread?.messages || []
+  const localUsageEstimate = useMemo(
+    () => estimateLocalUsage(usageReferenceMessages),
+    [usageReferenceMessages]
+  )
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -80,7 +117,15 @@ function MainApp() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => {
+  const handleQuery = async (
+    query: string,
+    useAdvancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    selectedModel: SupportedChatModel = 'gpt-4o-mini',
+    _autoModelEnabled?: boolean
+  ) => {
     setIsGenerating(true)
 
     const userMessage: MessageType = {
@@ -90,6 +135,7 @@ function MainApp() {
       files: files,
       createdAt: Date.now(),
       focusMode,
+      modelUsed: useModelCouncil ? 'model-council' : selectedModel,
     }
 
     let thread: Thread
@@ -195,7 +241,7 @@ ${
 }
 `
 
-        const response = await callLlm(promptText, 'gpt-4o-mini')
+        const response = await callLlm(promptText, selectedModel)
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
@@ -205,7 +251,7 @@ ${
           content: response,
           sources: webSources.length > 0 ? webSources : undefined,
           createdAt: Date.now(),
-          modelUsed: 'gpt-4o-mini',
+          modelUsed: selectedModel,
           focusMode,
           followUpQuestions,
         }
@@ -273,6 +319,11 @@ ${
               <span className="text-sm text-muted-foreground">
                 {activeThread.messages.length} message{activeThread.messages.length !== 1 ? 's' : ''}
               </span>
+              <span className="text-xs text-muted-foreground">
+                Usage (local estimate only, last {localUsageEstimate.recentMessages} messages): ~
+                {formatApprox(localUsageEstimate.characters)} chars / ~
+                {formatApprox(localUsageEstimate.tokens)} tokens
+              </span>
             </div>
           </div>
 
@@ -309,8 +360,13 @@ ${
     return (
       <div className="flex flex-col h-screen">
         <div className="border-b border-border bg-background px-6 py-3">
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-2xl mx-auto flex items-center gap-3 flex-wrap">
             <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
+            <span className="text-xs text-muted-foreground">
+              Usage (local estimate only, last {localUsageEstimate.recentMessages} messages): ~
+              {formatApprox(localUsageEstimate.characters)} chars / ~
+              {formatApprox(localUsageEstimate.tokens)} tokens
+            </span>
           </div>
         </div>
         <EmptyState onExampleClick={(query) => handleQuery(query, advancedMode)} />

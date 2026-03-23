@@ -38,8 +38,101 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+type SupportedChatModel = 'gpt-4o' | 'gpt-4o-mini'
+
+type SpeechRecognitionEventLike = Event & {
+  resultIndex: number
+  results: ArrayLike<{
+    isFinal: boolean
+    0: { transcript: string }
+  }>
+}
+
+type SpeechRecognitionErrorEventLike = Event & {
+  error?: string
+}
+
+type SpeechRecognitionLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike
+
+/**
+ * Web Speech API is typically available only on secure contexts (HTTPS)
+ * or localhost during development.
+ */
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  if (typeof window === 'undefined') return null
+  const win = window as Window & {
+    SpeechRecognition?: SpeechRecognitionCtor
+    webkitSpeechRecognition?: SpeechRecognitionCtor
+  }
+  return win.SpeechRecognition ?? win.webkitSpeechRecognition ?? null
+}
+
+/**
+ * Auto model routing is intentionally simple and local-only:
+ * - Attached files -> GPT-4o (more context handling).
+ * - Longer/complex prompts -> GPT-4o.
+ * - Short prompts -> GPT-4o mini for speed.
+ */
+function getAutoModelRecommendation(
+  query: string,
+  files: UploadedFile[]
+): { model: SupportedChatModel; reason: string } {
+  const trimmed = query.trim()
+  const charCount = trimmed.length
+  const wordCount = trimmed ? trimmed.split(/\s+/).length : 0
+  const hasAttachments = files.length > 0
+  const looksComplex =
+    /```|compare|trade[- ]?off|step[- ]by[- ]step|architecture|analy[sz]e/i.test(trimmed) ||
+    trimmed.includes('\n')
+
+  if (hasAttachments) {
+    return {
+      model: 'gpt-4o',
+      reason: 'attachments detected',
+    }
+  }
+
+  if (charCount >= 700 || wordCount >= 120 || looksComplex) {
+    return {
+      model: 'gpt-4o',
+      reason: 'long or complex prompt',
+    }
+  }
+
+  return {
+    model: 'gpt-4o-mini',
+    reason: 'short prompt',
+  }
+}
+
+function appendSpeechTranscript(existingDraft: string, transcript: string): string {
+  const normalized = transcript.trim()
+  if (!normalized) return existingDraft
+  if (!existingDraft.trim()) return normalized
+  return `${existingDraft}${/\s$/.test(existingDraft) ? '' : ' '}${normalized}`
+}
+
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
+  onSubmit: (
+    query: string,
+    advancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    selectedModel?: SupportedChatModel,
+    autoModelEnabled?: boolean
+  ) => void
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -55,7 +148,7 @@ export function QueryInput({
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [selectedModel, setSelectedModel] = useState<SupportedChatModel>('gpt-4o-mini')
   const [moreExpanded, setMoreExpanded] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
   const [isUploadingFile, setIsUploadingFile] = useState(false)
@@ -67,8 +160,22 @@ export function QueryInput({
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false)
   const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
+  const [autoModelEnabled, setAutoModelEnabled] = useState(false)
+  const [autoModelOverride, setAutoModelOverride] = useState<SupportedChatModel | null>(null)
+  const [speechRecognitionSupported, setSpeechRecognitionSupported] = useState(false)
+  const [isListening, setIsListening] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const speechDraftBaseRef = useRef('')
+
+  const autoModelRecommendation = getAutoModelRecommendation(query, attachedFiles)
+  const modelPickerValue =
+    autoModelEnabled && !autoModelOverride ? autoModelRecommendation.model : selectedModel
+  const effectiveModel =
+    autoModelEnabled && !useModelCouncil
+      ? autoModelOverride || autoModelRecommendation.model
+      : selectedModel
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
@@ -94,10 +201,19 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        effectiveModel,
+        autoModelEnabled
+      )
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
+      setAutoModelOverride(null)
     }
   }
 
@@ -140,6 +256,73 @@ export function QueryInput({
     fileInputRef.current?.click()
   }
 
+  const handleModelChange = (value: string) => {
+    if (value !== 'gpt-4o' && value !== 'gpt-4o-mini') return
+    setSelectedModel(value)
+    if (autoModelEnabled) {
+      setAutoModelOverride(value === autoModelRecommendation.model ? null : value)
+    }
+  }
+
+  const handleAutoModelChange = (enabled: boolean) => {
+    setAutoModelEnabled(enabled)
+    if (!enabled) {
+      setAutoModelOverride(null)
+    }
+  }
+
+  const handleVoiceInput = () => {
+    if (isListening) {
+      speechRecognitionRef.current?.stop()
+      return
+    }
+
+    const Ctor = getSpeechRecognitionCtor()
+    if (!Ctor) {
+      toast.error('Voice input is not supported in this browser')
+      return
+    }
+
+    const recognition = new Ctor()
+    speechRecognitionRef.current = recognition
+    speechDraftBaseRef.current = query
+    recognition.continuous = false
+    recognition.interimResults = true
+    recognition.lang = navigator.language || 'en-US'
+
+    recognition.onresult = (event) => {
+      let transcript = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i]?.[0]?.transcript ?? ''
+      }
+      // UX choice: append voice transcript to existing draft instead of replacing text.
+      setQuery(appendSpeechTranscript(speechDraftBaseRef.current, transcript))
+    }
+
+    recognition.onerror = (event) => {
+      setIsListening(false)
+      const errorMessage =
+        event.error === 'not-allowed'
+          ? 'Microphone permission denied'
+          : event.error === 'no-speech'
+          ? 'No speech detected'
+          : 'Voice input failed'
+      toast.error(errorMessage)
+    }
+
+    recognition.onend = () => {
+      setIsListening(false)
+    }
+
+    try {
+      recognition.start()
+      setIsListening(true)
+    } catch {
+      toast.error('Unable to start voice input')
+      setIsListening(false)
+    }
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -157,6 +340,16 @@ export function QueryInput({
       textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
     }
   }, [query])
+
+  useEffect(() => {
+    setSpeechRecognitionSupported(Boolean(getSpeechRecognitionCtor()))
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      speechRecognitionRef.current?.stop()
+    }
+  }, [])
 
   return (
     <div className="space-y-3">
@@ -336,7 +529,7 @@ export function QueryInput({
           />
 
           <div className="flex items-center gap-1 flex-shrink-0">
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <Select value={modelPickerValue} onValueChange={handleModelChange}>
               <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto px-2">
                 <SelectValue />
               </SelectTrigger>
@@ -355,14 +548,30 @@ export function QueryInput({
               <Desktop size={16} />
             </Button>
 
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 hover:bg-muted"
-              disabled={isLoading}
-            >
-              <Microphone size={16} />
-            </Button>
+            {speechRecognitionSupported ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`h-8 w-8 hover:bg-muted ${isListening ? 'bg-accent/20 text-accent' : ''}`}
+                disabled={isLoading}
+                onClick={handleVoiceInput}
+                title={isListening ? 'Stop voice input' : 'Start voice input'}
+                aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+              >
+                <Microphone size={16} weight={isListening ? 'fill' : 'regular'} />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                disabled
+                title="Voice input not supported in this browser"
+                aria-label="Voice input not supported"
+              >
+                <Microphone size={16} />
+              </Button>
+            )}
 
             <Button
               size="icon"
@@ -380,20 +589,55 @@ export function QueryInput({
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <Switch
-          id="advanced-mode"
-          checked={advancedMode}
-          onCheckedChange={onAdvancedModeChange}
-          disabled={isLoading}
-        />
-        <Label
-          htmlFor="advanced-mode"
-          className="flex items-center gap-2 cursor-pointer text-sm"
-        >
-          <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
-          <span>Enable Advanced Analysis</span>
-        </Label>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="advanced-mode"
+              checked={advancedMode}
+              onCheckedChange={onAdvancedModeChange}
+              disabled={isLoading}
+            />
+            <Label
+              htmlFor="advanced-mode"
+              className="flex items-center gap-2 cursor-pointer text-sm"
+            >
+              <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
+              <span>Enable Advanced Analysis</span>
+            </Label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Switch
+              id="auto-model"
+              checked={autoModelEnabled}
+              onCheckedChange={handleAutoModelChange}
+              disabled={isLoading || useModelCouncil}
+            />
+            <Label htmlFor="auto-model" className="cursor-pointer text-sm">
+              Auto model
+            </Label>
+          </div>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          {useModelCouncil
+            ? 'Model Council controls model selection while enabled.'
+            : autoModelEnabled
+            ? autoModelOverride
+              ? `Auto model active with manual override: ${
+                  autoModelOverride === 'gpt-4o' ? 'GPT-4o' : 'GPT-4o Mini'
+                }.`
+              : `Auto model selected ${
+                  autoModelRecommendation.model === 'gpt-4o' ? 'GPT-4o' : 'GPT-4o Mini'
+                } (${autoModelRecommendation.reason}). Local heuristic only.`
+            : `Manual model selected: ${selectedModel === 'gpt-4o' ? 'GPT-4o' : 'GPT-4o Mini'}.`}
+        </p>
+        {!speechRecognitionSupported && (
+          <p className="text-xs text-muted-foreground">
+            Voice input is not supported in this browser.
+          </p>
+        )}
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
