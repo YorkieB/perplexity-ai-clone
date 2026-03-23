@@ -1,6 +1,6 @@
 # Roadmap — remaining work in overnight batches
 
-This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into **four large batches** (each suitable for one automated coding run). Phases **1–6** are treated as **done** (see links below). **Batches 7–9** are **complete** — [Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md).
+This splits **everything left** vs `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` into **four large batches** (each suitable for one automated coding run). Phases **1–6** are treated as **done** (see links below). **Batches 7–10** are **complete** — [Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md), [Batch 10](BATCH-10-COMPLETE.md). Batch prompt files under [batches/](batches/) remain as **historical copy-paste** references.
 
 ---
 
@@ -37,6 +37,7 @@ Paste the **entire** batch `.md` as the first message to the coding agent.
 | 7 | Search transparency: dedupe, clustering, step trace, related questions | [BATCH-07-COMPLETE](BATCH-07-COMPLETE.md) |
 | 8 | Deep Research MVP: plan → multi-search → synthesize + progress | [BATCH-08-COMPLETE](BATCH-08-COMPLETE.md) |
 | 9 | Spaces parity: per-workspace web toggle, files, thread organization | [BATCH-09-COMPLETE](BATCH-09-COMPLETE.md) |
+| 10 | Voice input, export-all-data, auto model heuristic, local usage estimates | [BATCH-10-COMPLETE](BATCH-10-COMPLETE.md) |
 
 ---
 
@@ -55,10 +56,10 @@ Paste the **entire** batch `.md` as the first message to the coding agent.
 
 ## Order
 
-**Batches 7–9 are done.** Run **Batch 10** next ([prompt](batches/BATCH-10-VOICE-AND-PLATFORM.md)). Merge prior batch branches as needed before integrating **10** on a shared line.
+**All listed batches (7–10) are implemented** (see completion docs above). For **new** overnight automation, define the next slice in a new doc or issue; the prompts in [batches/](batches/) stay available as templates.
 
 ---
 
-## Automation hint
+## Automation hint (historical)
 
-For each overnight run: open a new agent, paste the **entire** contents of the batch’s `.md` file as the first message, ensure branch is up to date with `main` / your integration branch, then `npm run verify` at the end.
+For a batch run: paste the **entire** batch `.md` as the first agent message, sync with `main` / your integration branch, then `npm run verify` at the end.
