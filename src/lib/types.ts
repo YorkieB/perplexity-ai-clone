@@ -20,6 +20,15 @@ export interface UploadedFile {
   uploadedAt: number
 }
 
+export interface QueryRequestOptions {
+  advancedMode: boolean
+  includeWebSearch: boolean
+  useDeepResearch: boolean
+  files?: UploadedFile[]
+  useModelCouncil?: boolean
+  selectedModels?: string[]
+}
+
 export interface ModelResponse {
   model: string
   content: string
@@ -27,6 +36,30 @@ export interface ModelResponse {
   convergenceScore?: number
   responseTime?: number
   tokenCount?: number
+}
+
+export interface DeepResearchFailure {
+  subQuery: string
+  reason: string
+}
+
+export interface DeepResearchMeta {
+  plannerModel: string
+  synthesisModel: string
+  subQueries: string[]
+  successfulSubQueries: string[]
+  failedSubQueries: DeepResearchFailure[]
+  timingsMs: {
+    planning: number
+    searching: number
+    synthesis: number
+    total: number
+  }
+  limits: {
+    maxSubQueries: number
+    searchConcurrency: number
+    searchDepth: 'advanced'
+  }
 }
 
 export interface Message {
@@ -39,6 +72,7 @@ export interface Message {
   modelUsed?: string
   focusMode?: FocusMode
   isDeepResearch?: boolean
+  deepResearchMeta?: DeepResearchMeta
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]

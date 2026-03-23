@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
-import { Sparkle, User } from '@phosphor-icons/react'
+import { MagnifyingGlass, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -47,6 +47,18 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
       </div>
 
       <div className={cn('flex-1 space-y-4', isUser && 'flex flex-col items-end')}>
+        {!isUser && message.isDeepResearch && (
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-accent/30 bg-accent/10">
+            <MagnifyingGlass size={12} className="text-accent" />
+            <span className="text-xs font-medium text-accent">
+              Deep Research
+              {message.deepResearchMeta
+                ? ` • ${message.deepResearchMeta.subQueries.length} planned sub-queries`
+                : ''}
+            </span>
+          </div>
+        )}
+
         {isUser && message.files && message.files.length > 0 && (
           <div className="space-y-2 max-w-2xl w-full">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

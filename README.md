@@ -13,6 +13,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **Workspace Organization**: Create custom workspaces with tailored AI behavior via system prompts
 - **Persistent Threads**: Conversation history saved across sessions
 - **Advanced Analysis Mode**: Toggle for comprehensive, in-depth responses
+- **Deep Research Mode**: Multi-step plan → multi-search → synthesis workflow with live progress steps
 - **Dark Mode UI**: Sophisticated, minimalist interface optimized for extended use
 - **Source Citations**: Every AI response includes clickable sources from real web searches
 
@@ -59,9 +60,12 @@ npm run dev
 
 1. **Start a Search**: Type your query in the main input area and press Enter
 2. **Create Workspaces**: Organize research by topic with custom system prompts
-3. **Enable Advanced Mode**: Toggle for more comprehensive, detailed analysis
-4. **View Sources**: Click on source cards to open the original web pages
-5. **Access History**: All conversations are saved in the Library sidebar
+3. **Include Web Sources**: Toggle web retrieval on/off per query
+4. **Choose Analysis Depth**:
+   - **Advanced analysis** = single-pass enriched answer
+   - **Deep research** = planner + multiple web searches + synthesis (requires Include web)
+5. **View Sources**: Click on source cards to open the original web pages
+6. **Access History**: All conversations are saved in the Library sidebar
 
 ## 🏗️ Architecture
 

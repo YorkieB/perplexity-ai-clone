@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode } from '@/lib/types'
+import { Thread, Workspace, Message as MessageType, Source, FocusMode, QueryRequestOptions } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
-import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
+import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil, executeDeepResearch, DeepResearchProgressUpdate } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
 import { MessageSkeleton } from '@/components/MessageSkeleton'
+import { DeepResearchIndicator } from '@/components/DeepResearchIndicator'
 import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
@@ -16,6 +17,10 @@ import { SettingsDialog } from '@/components/SettingsDialog'
 import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+
+interface DeepResearchProgressState extends DeepResearchProgressUpdate {
+  stage: 'planning' | 'searching' | 'synthesizing' | 'complete'
+}
 
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
@@ -27,9 +32,13 @@ function MainApp() {
   const [editingWorkspace, setEditingWorkspace] = useState<Workspace | undefined>()
   const [isGenerating, setIsGenerating] = useState(false)
   const [advancedMode, setAdvancedMode] = useState(false)
+  const [includeWebSearch, setIncludeWebSearch] = useState(true)
+  const [deepResearchMode, setDeepResearchMode] = useState(false)
   const [focusMode, setFocusMode] = useState<FocusMode>('all')
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+  const [deepResearchProgress, setDeepResearchProgress] = useState<DeepResearchProgressState | null>(null)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const isGeneratingRef = useRef(false)
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const activeWorkspace = (workspaces || []).find((w) => w.id === activeWorkspaceId)
@@ -58,6 +67,23 @@ function MainApp() {
     setActiveThreadId(null)
   }
 
+  const handleIncludeWebSearchChange = (enabled: boolean) => {
+    setIncludeWebSearch(enabled)
+
+    if (!enabled && deepResearchMode) {
+      setDeepResearchMode(false)
+      toast.info('Deep Research was disabled because Include web is off.')
+    }
+  }
+
+  const handleDeepResearchModeChange = (enabled: boolean) => {
+    if (enabled && !includeWebSearch) {
+      toast.info('Deep Research requires Include web to be enabled.')
+      return
+    }
+    setDeepResearchMode(enabled)
+  }
+
   const handleNewWorkspace = () => {
     setEditingWorkspace(undefined)
     setWorkspaceDialogOpen(true)
@@ -80,17 +106,39 @@ function MainApp() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => {
+  const handleQuery = async (query: string, options: QueryRequestOptions) => {
+    if (isGeneratingRef.current) {
+      toast.info('Please wait for the current response to finish.')
+      return
+    }
+
+    if (options.useDeepResearch && !options.includeWebSearch) {
+      toast.error('Deep Research requires Include web to be enabled.')
+      return
+    }
+
+    isGeneratingRef.current = true
     setIsGenerating(true)
+
+    const {
+      advancedMode: useAdvancedMode,
+      includeWebSearch: shouldIncludeWebSearch,
+      useDeepResearch,
+      files,
+      useModelCouncil,
+      selectedModels,
+    } = options
 
     const userMessage: MessageType = {
       id: generateId(),
       role: 'user',
       content: query,
-      files: files,
+      files,
       createdAt: Date.now(),
       focusMode,
     }
+
+    let keepProgressUntilTimeout = false
 
     let thread: Thread
     if (activeThread) {
@@ -114,30 +162,14 @@ function MainApp() {
     }
 
     try {
-      const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
-      
-      let webSources: Source[] = []
-      
-      if ('error' in searchResult) {
-        toast.error(searchResult.message)
-      } else {
-        webSources = searchResult
+      if (useDeepResearch && useModelCouncil) {
+        toast.info('Deep Research runs as a single synthesized flow; Model Council is skipped.')
       }
 
       const systemPrompt = activeWorkspace?.customSystemPrompt || ''
       const modeInstruction = useAdvancedMode
         ? ' Provide a comprehensive, in-depth analysis with detailed explanations.'
         : ''
-
-      let contextSection = ''
-      if (webSources.length > 0) {
-        contextSection = `\n\nWeb Search Results:\n${webSources
-          .map(
-            (source, idx) =>
-              `[${idx + 1}] ${source.title}\nURL: ${source.url}\nContent: ${source.snippet}\n`
-          )
-          .join('\n')}`
-      }
 
       let fileContext = ''
       if (files && files.length > 0) {
@@ -147,6 +179,87 @@ function MainApp() {
               `File: ${file.name} (${file.type})\nContent: ${
                 file.content.length > 2000 ? file.content.substring(0, 2000) + '...' : file.content
               }\n`
+          )
+          .join('\n')}`
+      }
+
+      if (useDeepResearch) {
+        setDeepResearchProgress({ stage: 'planning' })
+
+        const deepResearchResult = await executeDeepResearch({
+          query,
+          focusMode,
+          systemPrompt: `${systemPrompt}${modeInstruction}`.trim(),
+          fileContext,
+          onProgress: (update) => {
+            setDeepResearchProgress((current) => ({
+              ...(current || { stage: update.stage }),
+              ...update,
+            }))
+          },
+          onSubSearchError: (failure) => {
+            toast.error(`Deep research sub-search failed: ${failure.subQuery}`)
+          },
+        })
+
+        const followUpQuestions = await generateFollowUpQuestions(
+          query,
+          deepResearchResult.content,
+          deepResearchResult.sources
+        )
+
+        const assistantMessage: MessageType = {
+          id: generateId(),
+          role: 'assistant',
+          content: deepResearchResult.content,
+          sources: deepResearchResult.sources.length > 0 ? deepResearchResult.sources : undefined,
+          createdAt: Date.now(),
+          modelUsed: 'gpt-4o-mini',
+          focusMode,
+          isDeepResearch: true,
+          deepResearchMeta: deepResearchResult.meta,
+          followUpQuestions,
+        }
+
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: [...t.messages, assistantMessage],
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
+        )
+
+        setDeepResearchProgress((current) => ({
+          ...(current || {}),
+          stage: 'complete',
+        }))
+        keepProgressUntilTimeout = true
+        window.setTimeout(() => {
+          setDeepResearchProgress(null)
+        }, 1800)
+        return
+      }
+
+      let webSources: Source[] = []
+      if (shouldIncludeWebSearch) {
+        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
+        if ('error' in searchResult) {
+          toast.error(searchResult.message)
+        } else {
+          webSources = searchResult
+        }
+      }
+
+      let contextSection = ''
+      if (webSources.length > 0) {
+        contextSection = `\n\nWeb Search Results:\n${webSources
+          .map(
+            (source, idx) =>
+              `[${idx + 1}] ${source.title}\nURL: ${source.url}\nContent: ${source.snippet}\n`
           )
           .join('\n')}`
       }
@@ -191,12 +304,13 @@ ${
     ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
     : files && files.length > 0
     ? 'Analyze the provided files and answer the user query based on the file content.'
-    : 'Provide a helpful, accurate answer based on your knowledge.'
+    : shouldIncludeWebSearch
+    ? 'Provide a helpful, accurate answer based on your knowledge.'
+    : 'Web search is disabled. Provide the best possible answer from your internal knowledge and clearly label uncertainty.'
 }
 `
 
         const response = await callLlm(promptText, 'gpt-4o-mini')
-
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
         const assistantMessage: MessageType = {
@@ -225,8 +339,13 @@ ${
     } catch (error) {
       toast.error('Failed to generate response. Please try again.')
       console.error(error)
+      setDeepResearchProgress(null)
     } finally {
+      if (!keepProgressUntilTimeout) {
+        setDeepResearchProgress(null)
+      }
       setIsGenerating(false)
+      isGeneratingRef.current = false
     }
   }
 
@@ -257,6 +376,10 @@ ${
                 placeholder={`Ask a question in ${activeWorkspace.name}...`}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
+                includeWebSearch={includeWebSearch}
+                onIncludeWebSearchChange={handleIncludeWebSearchChange}
+                deepResearchMode={deepResearchMode}
+                onDeepResearchModeChange={handleDeepResearchModeChange}
               />
             </div>
           </div>
@@ -283,10 +406,24 @@ ${
                   <Message
                     key={message.id}
                     message={message}
-                    onFollowUpClick={(q) => handleQuery(q, advancedMode)}
+                    onFollowUpClick={(q) =>
+                      handleQuery(q, {
+                        advancedMode,
+                        includeWebSearch,
+                        useDeepResearch: false,
+                      })
+                    }
                     isGenerating={isGenerating}
                   />
                 ))}
+                {deepResearchProgress && (
+                  <DeepResearchIndicator
+                    stage={deepResearchProgress.stage}
+                    currentSearch={deepResearchProgress.currentSearch}
+                    totalSearches={deepResearchProgress.totalSearches}
+                    currentQuery={deepResearchProgress.subQuery}
+                  />
+                )}
                 {isGenerating && <MessageSkeleton />}
               </div>
             </ScrollArea>
@@ -299,6 +436,10 @@ ${
                 isLoading={isGenerating}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
+                includeWebSearch={includeWebSearch}
+                onIncludeWebSearchChange={handleIncludeWebSearchChange}
+                deepResearchMode={deepResearchMode}
+                onDeepResearchModeChange={handleDeepResearchModeChange}
               />
             </div>
           </div>
@@ -313,7 +454,15 @@ ${
             <FocusModeSelector value={focusMode} onChange={setFocusMode} disabled={isGenerating} />
           </div>
         </div>
-        <EmptyState onExampleClick={(query) => handleQuery(query, advancedMode)} />
+        <EmptyState
+          onExampleClick={(query) =>
+            handleQuery(query, {
+              advancedMode,
+              includeWebSearch,
+              useDeepResearch: false,
+            })
+          }
+        />
         <div className="border-t border-border bg-background">
           <div className="max-w-2xl mx-auto px-6 py-6">
             <QueryInput
@@ -321,6 +470,10 @@ ${
               isLoading={isGenerating}
               advancedMode={advancedMode}
               onAdvancedModeChange={setAdvancedMode}
+              includeWebSearch={includeWebSearch}
+              onIncludeWebSearchChange={handleIncludeWebSearchChange}
+              deepResearchMode={deepResearchMode}
+              onDeepResearchModeChange={handleDeepResearchModeChange}
             />
           </div>
         </div>

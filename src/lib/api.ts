@@ -1,5 +1,5 @@
 import { callLlm, llmPrompt } from './llm'
-import { Source, FocusMode } from './types'
+import { Source, FocusMode, DeepResearchMeta, DeepResearchFailure } from './types'
 
 export interface TavilySearchResult {
   url: string
@@ -18,6 +18,37 @@ export interface SearchError {
   message: string
 }
 
+export const DEEP_RESEARCH_MAX_SUB_QUERIES = 5
+export const DEEP_RESEARCH_MIN_SUB_QUERIES = 3
+export const DEEP_RESEARCH_SEARCH_CONCURRENCY = 1
+
+const DEEP_RESEARCH_PLANNER_MODEL = 'gpt-4o-mini'
+const DEEP_RESEARCH_SYNTHESIS_MODEL = 'gpt-4o-mini'
+const DEEP_RESEARCH_SNIPPET_LIMIT = 700
+
+export interface DeepResearchProgressUpdate {
+  stage: 'planning' | 'searching' | 'synthesizing'
+  currentSearch?: number
+  totalSearches?: number
+  subQuery?: string
+}
+
+export interface DeepResearchResult {
+  content: string
+  sources: Source[]
+  meta: DeepResearchMeta
+  failures: DeepResearchFailure[]
+}
+
+interface ExecuteDeepResearchParams {
+  query: string
+  focusMode: FocusMode
+  systemPrompt?: string
+  fileContext?: string
+  onProgress?: (update: DeepResearchProgressUpdate) => void
+  onSubSearchError?: (error: DeepResearchFailure) => void
+}
+
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
   switch (focusMode) {
     case 'academic':
@@ -34,6 +65,91 @@ function getFocusModeSearchModifier(focusMode: FocusMode): string {
     default:
       return ''
   }
+}
+
+function parsePlannerSubQueries(rawPlannerResponse: string): string[] {
+  const tryParse = (raw: string): string[] | null => {
+    try {
+      const parsed = JSON.parse(raw) as { subQueries?: unknown }
+      if (!Array.isArray(parsed.subQueries)) {
+        return null
+      }
+
+      return parsed.subQueries
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean)
+    } catch {
+      return null
+    }
+  }
+
+  const direct = tryParse(rawPlannerResponse)
+  if (direct) {
+    return direct
+  }
+
+  const jsonMatch = rawPlannerResponse.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) {
+    return []
+  }
+
+  return tryParse(jsonMatch[0]) || []
+}
+
+function buildFallbackSubQueries(query: string): string[] {
+  return [
+    query,
+    `${query} latest developments`,
+    `${query} expert analysis and critique`,
+  ]
+}
+
+function normalizePlannedQueries(query: string, plannedQueries: string[]): string[] {
+  const withFallback = plannedQueries.length > 0 ? plannedQueries : buildFallbackSubQueries(query)
+
+  const deduped = Array.from(
+    new Set(
+      withFallback
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  )
+
+  if (deduped.length < DEEP_RESEARCH_MIN_SUB_QUERIES) {
+    const fallbackQueries = buildFallbackSubQueries(query)
+    for (const fallbackQuery of fallbackQueries) {
+      if (deduped.length >= DEEP_RESEARCH_MIN_SUB_QUERIES) {
+        break
+      }
+      if (!deduped.includes(fallbackQuery)) {
+        deduped.push(fallbackQuery)
+      }
+    }
+  }
+
+  return deduped.slice(0, DEEP_RESEARCH_MAX_SUB_QUERIES)
+}
+
+function dedupeSourcesByUrl(sources: Source[]): Source[] {
+  const seenUrls = new Set<string>()
+  const deduped: Source[] = []
+
+  for (const source of sources) {
+    if (!seenUrls.has(source.url)) {
+      seenUrls.add(source.url)
+      deduped.push(source)
+    }
+  }
+
+  return deduped
+}
+
+function clipSnippet(snippet: string): string {
+  if (snippet.length <= DEEP_RESEARCH_SNIPPET_LIMIT) {
+    return snippet
+  }
+  return `${snippet.slice(0, DEEP_RESEARCH_SNIPPET_LIMIT)}...`
 }
 
 export async function executeWebSearch(
@@ -100,6 +216,183 @@ export async function executeWebSearch(
       error: true,
       message: 'Failed to perform web search. Please check your internet connection.',
     }
+  }
+}
+
+export async function executeDeepResearch({
+  query,
+  focusMode,
+  systemPrompt = '',
+  fileContext = '',
+  onProgress,
+  onSubSearchError,
+}: ExecuteDeepResearchParams): Promise<DeepResearchResult> {
+  const startedAt = Date.now()
+
+  onProgress?.({ stage: 'planning' })
+  const planningStartedAt = Date.now()
+
+  let subQueries = buildFallbackSubQueries(query).slice(0, DEEP_RESEARCH_MAX_SUB_QUERIES)
+  try {
+    const plannerPrompt = llmPrompt`You are a research planner.
+Create a focused research plan for this user question.
+
+User question:
+${query}
+
+Focus mode:
+${focusMode}
+
+Workspace instructions (if any):
+${systemPrompt || 'None'}
+
+Attached file context (if any):
+${fileContext || 'None'}
+
+Return JSON only using this exact shape:
+{
+  "subQueries": ["query 1", "query 2", "query 3"]
+}
+
+Rules:
+- Produce between ${DEEP_RESEARCH_MIN_SUB_QUERIES} and ${DEEP_RESEARCH_MAX_SUB_QUERIES} sub-queries.
+- Each sub-query should target a distinct research angle.
+- Keep each sub-query concise and web-search friendly.
+- Do not include explanations or extra keys.`
+
+    const plannerResponse = await callLlm(plannerPrompt, DEEP_RESEARCH_PLANNER_MODEL, true)
+    const parsedSubQueries = parsePlannerSubQueries(plannerResponse)
+    subQueries = normalizePlannedQueries(query, parsedSubQueries)
+  } catch (error) {
+    console.error('Deep research planner failed, falling back to default sub-queries:', error)
+    subQueries = normalizePlannedQueries(query, [])
+  }
+
+  const planningDuration = Date.now() - planningStartedAt
+
+  const searchingStartedAt = Date.now()
+  const successfulSubQueries: string[] = []
+  const failedSubQueries: DeepResearchFailure[] = []
+  const groupedSources: Array<{ subQuery: string; sources: Source[] }> = []
+
+  for (let index = 0; index < subQueries.length; index++) {
+    const subQuery = subQueries[index]
+
+    onProgress?.({
+      stage: 'searching',
+      currentSearch: index + 1,
+      totalSearches: subQueries.length,
+      subQuery,
+    })
+
+    const searchResult = await executeWebSearch(subQuery, focusMode, true)
+
+    if ('error' in searchResult) {
+      const failure = {
+        subQuery,
+        reason: searchResult.message,
+      }
+      failedSubQueries.push(failure)
+      onSubSearchError?.(failure)
+      continue
+    }
+
+    if (searchResult.length === 0) {
+      const failure = {
+        subQuery,
+        reason: 'No sources returned for this sub-query.',
+      }
+      failedSubQueries.push(failure)
+      onSubSearchError?.(failure)
+      continue
+    }
+
+    groupedSources.push({
+      subQuery,
+      sources: searchResult,
+    })
+    successfulSubQueries.push(subQuery)
+  }
+
+  const searchingDuration = Date.now() - searchingStartedAt
+
+  onProgress?.({ stage: 'synthesizing' })
+  const synthesisStartedAt = Date.now()
+
+  const researchContext = groupedSources.length > 0
+    ? groupedSources
+        .map(
+          (group, groupIndex) => `### Sub-query ${groupIndex + 1}: ${group.subQuery}
+${group.sources
+  .map(
+    (source, sourceIndex) => `[${groupIndex + 1}.${sourceIndex + 1}] ${source.title}
+URL: ${source.url}
+Snippet: ${clipSnippet(source.snippet)}
+`
+  )
+  .join('\n')}`
+        )
+        .join('\n\n')
+    : 'No successful web sources were collected.'
+
+  const failedContext = failedSubQueries.length > 0
+    ? failedSubQueries
+        .map((failure, index) => `${index + 1}. ${failure.subQuery} — ${failure.reason}`)
+        .join('\n')
+    : 'None'
+
+  const synthesisPrompt = llmPrompt`You are an advanced research assistant synthesizing a multi-step web research run.
+${systemPrompt ? `\nWorkspace instructions:\n${systemPrompt}\n` : ''}
+${fileContext ? `\nAttached file context:\n${fileContext}\n` : ''}
+
+User goal:
+${query}
+
+Research packets:
+${researchContext}
+
+Failed sub-searches:
+${failedContext}
+
+Instructions:
+- Synthesize evidence across the successful sources.
+- Be explicit about uncertainties and conflicting evidence.
+- If comparing multiple options or sources, use markdown tables when helpful.
+- If any sub-searches failed, include a short "Coverage gaps" section.
+- Keep the answer practical and structured.`
+
+  const synthesizedContent = await callLlm(synthesisPrompt, DEEP_RESEARCH_SYNTHESIS_MODEL)
+  const synthesisDuration = Date.now() - synthesisStartedAt
+
+  const finalContent = failedSubQueries.length > 0
+    ? `> Deep research note: ${failedSubQueries.length} sub-search${failedSubQueries.length > 1 ? 'es' : ''} failed. Coverage is partial.\n\n${synthesizedContent}`
+    : synthesizedContent
+
+  const sources = dedupeSourcesByUrl(groupedSources.flatMap((group) => group.sources))
+  const totalDuration = Date.now() - startedAt
+
+  return {
+    content: finalContent,
+    sources,
+    failures: failedSubQueries,
+    meta: {
+      plannerModel: DEEP_RESEARCH_PLANNER_MODEL,
+      synthesisModel: DEEP_RESEARCH_SYNTHESIS_MODEL,
+      subQueries,
+      successfulSubQueries,
+      failedSubQueries,
+      timingsMs: {
+        planning: planningDuration,
+        searching: searchingDuration,
+        synthesis: synthesisDuration,
+        total: totalDuration,
+      },
+      limits: {
+        maxSubQueries: DEEP_RESEARCH_MAX_SUB_QUERIES,
+        searchConcurrency: DEEP_RESEARCH_SEARCH_CONCURRENCY,
+        searchDepth: 'advanced',
+      },
+    },
   }
 }
 
