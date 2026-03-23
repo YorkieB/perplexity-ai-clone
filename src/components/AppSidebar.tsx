@@ -76,18 +76,18 @@ export function AppSidebar({
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-4">
             <Collapsible open={libraryOpen} onOpenChange={setLibraryOpen}>
-              <div className="flex w-full items-center gap-1">
+              <div className="grid w-full grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1.5">
                 <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="inline-flex h-8 w-fit shrink-0 gap-2 px-2 -ml-2 justify-start">
-                    {libraryOpen ? <CaretDown size={16} /> : <CaretRight size={16} />}
-                    <span className="text-sm font-medium">Library</span>
+                  <Button variant="ghost" size="sm" className="h-8 min-w-0 justify-start gap-2 px-2 -ml-2">
+                    {libraryOpen ? <CaretDown size={16} className="shrink-0" /> : <CaretRight size={16} className="shrink-0" />}
+                    <span className="truncate text-left text-sm font-medium">Library</span>
                   </Button>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={onNewThread}
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-accent"
+                  className="h-8 w-8 justify-self-end text-muted-foreground hover:text-accent"
                   title="New thread"
                 >
                   <Plus size={18} weight="bold" />
@@ -124,18 +124,18 @@ export function AppSidebar({
             <Separator />
 
             <Collapsible open={workspacesOpen} onOpenChange={setWorkspacesOpen}>
-              <div className="flex w-full items-center gap-1">
+              <div className="grid w-full grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1.5">
                 <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="inline-flex h-8 w-fit shrink-0 gap-2 px-2 -ml-2 justify-start">
-                    {workspacesOpen ? <CaretDown size={16} /> : <CaretRight size={16} />}
-                    <span className="text-sm font-medium">Workspaces</span>
+                  <Button variant="ghost" size="sm" className="h-8 min-w-0 justify-start gap-2 px-2 -ml-2">
+                    {workspacesOpen ? <CaretDown size={16} className="shrink-0" /> : <CaretRight size={16} className="shrink-0" />}
+                    <span className="truncate text-left text-sm font-medium">Workspaces</span>
                   </Button>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={onNewWorkspace}
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-accent"
+                  className="h-8 w-8 justify-self-end text-muted-foreground hover:text-accent"
                   title="New workspace"
                 >
                   <Plus size={18} weight="bold" />
