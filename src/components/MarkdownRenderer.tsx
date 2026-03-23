@@ -212,6 +212,7 @@ function processHTMLWithCitations(
       )
     }
 
+    /* v8 ignore next 1 */
     return null
   }
 

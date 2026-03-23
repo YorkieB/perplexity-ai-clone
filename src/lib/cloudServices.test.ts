@@ -57,6 +57,25 @@ describe('fetchDropboxFiles', () => {
     vi.mocked(fetch).mockRejectedValue(new Error('x'))
     expect(await fetchDropboxFiles(token)).toEqual([])
   })
+
+  it('maps unknown file extensions to application/octet-stream', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        entries: [
+          {
+            '.tag': 'file',
+            id: '9',
+            name: 'blob.unknownext',
+            size: 1,
+            path_display: '/blob.unknownext',
+            server_modified: '2020-01-01',
+          },
+        ],
+      })
+    )
+    const files = await fetchDropboxFiles(token)
+    expect(files[0].type).toBe('application/octet-stream')
+  })
 })
 
 describe('fetchGoogleDriveFiles', () => {

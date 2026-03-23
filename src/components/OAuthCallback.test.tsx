@@ -156,6 +156,60 @@ describe('OAuthCallback', () => {
   })
 
   it('handles successful token exchange and schedules redirect', async () => {
+    const hrefSpy = vi.fn()
+    let scheduled: (() => void) | undefined
+    const realSetTimeout = globalThis.setTimeout.bind(globalThis)
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((fn: TimerHandler, delay?: number, ...args: unknown[]) => {
+        if (delay === 2000 && typeof fn === 'function') {
+          scheduled = fn as () => void
+        }
+        return realSetTimeout(fn as TimerHandler, delay ?? 0, ...(args as []))
+      }) as typeof setTimeout
+    )
+    try {
+      window.location = {
+        ...originalLocation,
+        search: '?code=abc&state=ok',
+        href: 'http://localhost/',
+        assign: vi.fn(),
+        replace: vi.fn(),
+      } as Location
+      Object.defineProperty(window.location, 'href', {
+        configurable: true,
+        set: hrefSpy,
+        get: () => 'http://localhost/',
+      })
+
+      mockValidate.mockReturnValue({
+        provider: 'googledrive',
+        nonce: 'ok',
+        returnUrl: '/dashboard',
+      })
+      mockExchange.mockResolvedValue({
+        accessToken: 't',
+        expiresAt: Date.now() + 10000,
+        tokenType: 'Bearer',
+      })
+
+      const { unmount } = render(<OAuthCallback />)
+      await waitFor(() => {
+        expect(mockExchange).toHaveBeenCalled()
+      })
+      await waitFor(() => {
+        expect(screen.getAllByText(/Authorization Successful/i).length).toBeGreaterThan(0)
+      })
+      const stored = JSON.parse(localStorage.getItem('user-settings') || '{}')
+      expect(stored.oauthTokens?.googledrive?.accessToken).toBe('t')
+      scheduled?.()
+      expect(hrefSpy).toHaveBeenCalledWith('/dashboard')
+      unmount()
+    } finally {
+      setTimeoutSpy.mockRestore()
+    }
+  })
+
+  it('surfaces non-Error failures from token exchange', async () => {
     window.location = {
       ...originalLocation,
       search: '?code=abc&state=ok',
@@ -163,35 +217,20 @@ describe('OAuthCallback', () => {
       assign: vi.fn(),
       replace: vi.fn(),
     } as Location
-
     mockValidate.mockReturnValue({
       provider: 'googledrive',
       nonce: 'ok',
       returnUrl: '/',
     })
-    mockExchange.mockResolvedValue({
-      accessToken: 't',
-      expiresAt: Date.now() + 10000,
-      tokenType: 'Bearer',
-    })
-
-    const { unmount } = render(<OAuthCallback />)
+    mockExchange.mockRejectedValue('network')
+    render(<OAuthCallback />)
     await waitFor(() => {
-      expect(mockExchange).toHaveBeenCalled()
+      expect(screen.getByText(/Unknown error/i)).toBeInTheDocument()
     })
-    await waitFor(() => {
-      expect(screen.getAllByText(/Authorization Successful/i).length).toBeGreaterThan(0)
-    })
-    const stored = JSON.parse(localStorage.getItem('user-settings') || '{}')
-    expect(stored.oauthTokens?.googledrive?.accessToken).toBe('t')
-    vi.useFakeTimers()
-    vi.advanceTimersByTime(2100)
-    vi.useRealTimers()
-    unmount()
   })
 
   it('return button navigates home on error', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
     const hrefSetter = vi.fn()
     window.location = {
       ...originalLocation,

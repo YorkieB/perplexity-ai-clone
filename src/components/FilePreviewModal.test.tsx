@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { FilePreviewModal } from './FilePreviewModal'
@@ -87,5 +87,23 @@ describe('FilePreviewModal', () => {
     appendSpy.mockRestore()
     removeSpy.mockRestore()
     clickSpy.mockRestore()
+  })
+
+  it('closes via footer Close button', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const onOpenChange = vi.fn()
+    const file: UploadedFile = {
+      id: '6',
+      name: 'n.txt',
+      type: 'text/plain',
+      size: 1,
+      content: 'z',
+      uploadedAt: Date.now(),
+    }
+    render(<FilePreviewModal file={file} open onOpenChange={onOpenChange} />)
+    const dialog = screen.getByRole('dialog')
+    const closeBtn = within(dialog).getAllByRole('button', { name: /^Close$/i }).pop()!
+    await user.click(closeBtn)
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })

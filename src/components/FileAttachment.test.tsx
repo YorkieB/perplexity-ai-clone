@@ -33,6 +33,15 @@ describe('FileAttachment', () => {
     expect(container.querySelector('img')).toBeTruthy()
   })
 
+  it('renders default file icon for non-text, non-csv types', () => {
+    render(
+      <FileAttachment
+        file={{ ...base, type: 'application/json', name: 'data.json' }}
+      />
+    )
+    expect(screen.getByText('data.json')).toBeInTheDocument()
+  })
+
   it('renders CSV icon', () => {
     render(
       <FileAttachment

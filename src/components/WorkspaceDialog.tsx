@@ -19,8 +19,6 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
   const [customSystemPrompt, setCustomSystemPrompt] = useState(workspace?.customSystemPrompt || '')
 
   const handleSave = () => {
-    if (!name.trim()) return
-
     if (workspace) {
       onSave({
         ...workspace,

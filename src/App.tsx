@@ -63,6 +63,11 @@ export function MainApp() {
     setWorkspaceDialogOpen(true)
   }
 
+  const handleEditWorkspace = (workspace: Workspace) => {
+    setEditingWorkspace(workspace)
+    setWorkspaceDialogOpen(true)
+  }
+
   const handleSaveWorkspace = (workspaceData: Omit<Workspace, 'id' | 'createdAt'> | Workspace) => {
     if ('id' in workspaceData) {
       setWorkspaces((current) =>
@@ -341,6 +346,7 @@ ${
         onWorkspaceSelect={handleWorkspaceSelect}
         onNewThread={handleNewThread}
         onNewWorkspace={handleNewWorkspace}
+        onEditWorkspace={handleEditWorkspace}
         onOpenSettings={() => setSettingsDialogOpen(true)}
       />
 
@@ -348,7 +354,10 @@ ${
 
       <WorkspaceDialog
         open={workspaceDialogOpen}
-        onOpenChange={setWorkspaceDialogOpen}
+        onOpenChange={(open) => {
+          setWorkspaceDialogOpen(open)
+          if (!open) setEditingWorkspace(undefined)
+        }}
         workspace={editingWorkspace}
         onSave={handleSaveWorkspace}
       />

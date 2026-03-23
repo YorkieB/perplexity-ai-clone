@@ -66,6 +66,10 @@ describe('formatFileSize', () => {
   it('formats MB', () => {
     expect(formatFileSize(2 * 1024 * 1024)).toContain('MB')
   })
+
+  it('formats GB', () => {
+    expect(formatFileSize(3 * 1024 ** 3)).toContain('GB')
+  })
 })
 
 describe('processFile', () => {

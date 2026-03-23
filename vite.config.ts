@@ -44,14 +44,12 @@ export default defineConfig({
         'src/main.tsx',
         'src/ErrorFallback.tsx',
       ],
-      // Combined lib + hooks + feature components + App. shadcn `ui/` excluded. Hitting 100% on
-      // every interactive branch (QueryInput menus, full Settings OAuth matrix, workspace chrome)
-      // needs additional integration/E2E-style tests; thresholds track the current automated floor.
+      // Strict gates on the same include set as above. Raise toward 100% with more component/E2E tests.
       thresholds: {
-        lines: 92,
-        statements: 91,
-        functions: 82,
-        branches: 86,
+        lines: 94,
+        statements: 92,
+        functions: 85,
+        branches: 88,
       },
     },
   },

@@ -21,6 +21,21 @@ describe('ModelCouncilSelector', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('closes and restores defaults on cancel', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const onOpenChange = vi.fn()
+    render(
+      <ModelCouncilSelector
+        open
+        onOpenChange={onOpenChange}
+        onConfirm={vi.fn()}
+        defaultSelected={['gpt-4o', 'gpt-4o-mini']}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: /Cancel/i }))
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
   it('does not confirm when fewer than two models are selected', async () => {
     const user = userEvent.setup()
     const onConfirm = vi.fn()

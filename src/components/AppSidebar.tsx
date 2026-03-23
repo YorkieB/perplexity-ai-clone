@@ -11,7 +11,8 @@ import {
   Folder,
   CaretDown,
   CaretRight,
-  Gear
+  Gear,
+  PencilSimple,
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
@@ -26,6 +27,7 @@ interface AppSidebarProps {
   onWorkspaceSelect: (workspaceId: string) => void
   onNewThread: () => void
   onNewWorkspace: () => void
+  onEditWorkspace?: (workspace: Workspace) => void
   onOpenSettings: () => void
 }
 
@@ -38,6 +40,7 @@ export function AppSidebar({
   onWorkspaceSelect,
   onNewThread,
   onNewWorkspace,
+  onEditWorkspace,
   onOpenSettings,
 }: AppSidebarProps) {
   const [threads] = useLocalStorage<Thread[]>('threads', [])
@@ -140,21 +143,37 @@ export function AppSidebar({
                   <p className="text-xs text-muted-foreground px-2 py-4">No workspaces yet</p>
                 ) : (
                   (workspaces || []).map((workspace) => (
-                    <Button
-                      key={workspace.id}
-                      variant={activeWorkspaceId === workspace.id ? 'secondary' : 'ghost'}
-                      size="sm"
-                      onClick={() => onWorkspaceSelect(workspace.id)}
-                      className={cn(
-                        'w-full justify-start gap-2 h-auto py-2 px-2',
-                        activeWorkspaceId === workspace.id && 'border-l-2 border-accent rounded-l-none'
+                    <div key={workspace.id} className="flex items-stretch gap-1 w-full">
+                      <Button
+                        variant={activeWorkspaceId === workspace.id ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => onWorkspaceSelect(workspace.id)}
+                        className={cn(
+                          'flex-1 min-w-0 justify-start gap-2 h-auto py-2 px-2',
+                          activeWorkspaceId === workspace.id && 'border-l-2 border-accent rounded-l-none'
+                        )}
+                      >
+                        <Folder size={16} className="shrink-0" />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="text-sm truncate">{workspace.name}</p>
+                        </div>
+                      </Button>
+                      {onEditWorkspace && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-auto w-8 shrink-0"
+                          aria-label={`Edit workspace ${workspace.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onEditWorkspace(workspace)
+                          }}
+                        >
+                          <PencilSimple size={16} />
+                        </Button>
                       )}
-                    >
-                      <Folder size={16} className="shrink-0" />
-                      <div className="flex-1 min-w-0 text-left">
-                        <p className="text-sm truncate">{workspace.name}</p>
-                      </div>
-                    </Button>
+                    </div>
                   ))
                 )}
               </CollapsibleContent>

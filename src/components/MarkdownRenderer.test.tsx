@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { toast } from 'sonner'
@@ -17,6 +17,10 @@ describe('MarkdownRenderer', () => {
     const onHover = vi.fn()
     render(<MarkdownRenderer content="See [1] for more." onCitationHover={onHover} />)
     const sup = screen.getByText('1', { selector: 'sup' })
+    fireEvent.mouseEnter(sup)
+    expect(onHover).toHaveBeenCalledWith(1)
+    fireEvent.mouseLeave(sup)
+    expect(onHover).toHaveBeenCalledWith(null)
     await user.click(sup)
     expect(onHover).toHaveBeenCalledWith(1)
   })
@@ -47,5 +51,14 @@ describe('MarkdownRenderer', () => {
       expect(toastError).toHaveBeenCalled()
     })
     toastError.mockRestore()
+  })
+
+  it('uses fallback styling for unknown code fence languages', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const md = '```some-rare-lang\nx\n```'
+    render(<MarkdownRenderer content={md} onCitationHover={vi.fn()} />)
+    await user.click(screen.getAllByRole('button')[0])
+    vi.restoreAllMocks()
   })
 })

@@ -56,4 +56,33 @@ describe('ModelCouncilResponse', () => {
       screen.getAllByRole('button', { name: /Hide Side-by-Side Comparison/i })[0]
     ).toBeInTheDocument()
   })
+
+  it('covers convergence copy tiers and analysis tab', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+    const two = [
+      { model: 'gpt-4o-mini', content: 'a', generatedAt: 1 },
+      { model: 'custom-unknown-model', content: 'b', generatedAt: 1 },
+    ]
+
+    const { rerender } = render(
+      <ModelCouncilResponse modelResponses={two} convergenceScore={85} commonThemes={['t']} divergentPoints={['d']} />
+    )
+    expect(screen.getAllByText(/strong agreement/i).length).toBeGreaterThan(0)
+
+    rerender(
+      <ModelCouncilResponse modelResponses={two} convergenceScore={60} commonThemes={['t']} divergentPoints={['d']} />
+    )
+    expect(screen.getAllByText(/generally agree/i).length).toBeGreaterThan(0)
+
+    rerender(
+      <ModelCouncilResponse modelResponses={two} convergenceScore={40} commonThemes={['t']} divergentPoints={['d']} />
+    )
+    expect(screen.getAllByText(/notably different perspectives/i).length).toBeGreaterThan(0)
+
+    await user.click(screen.getAllByRole('tab', { name: /^Analysis$/i })[0])
+    await user.click(screen.getAllByRole('button', { name: /Export Report/i })[0])
+  })
 })
