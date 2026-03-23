@@ -43,4 +43,48 @@ describe('FileAnalysisDialog', () => {
     })
     expect(analyzeFileMock).toHaveBeenCalledWith(file)
   })
+
+  it('shows full metadata tabs and re-analyze', async () => {
+    const user = userEvent.setup()
+    analyzeFileMock.mockResolvedValue({
+      summary: 'Long summary text',
+      insights: ['a', 'b'],
+      metadata: {
+        wordCount: 100,
+        lineCount: 10,
+        characterCount: 500,
+        estimatedReadTime: '2 min',
+        detectedLanguage: 'en',
+        sentiment: 'neutral' as const,
+      },
+      recommendations: ['do this'],
+      qualityScore: 45,
+    })
+    render(<FileAnalysisDialog open file={file} onOpenChange={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /Start Analysis/i }))
+    await waitFor(() => screen.getByText(/Needs Improvement/i))
+    await user.click(screen.getByRole('tab', { name: /Metadata/i }))
+    expect(screen.getByText('500')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /Suggestions/i }))
+    expect(screen.getByText('do this')).toBeInTheDocument()
+    const callsBefore = analyzeFileMock.mock.calls.length
+    await user.click(screen.getByRole('button', { name: /Re-analyze/i }))
+    expect(analyzeFileMock.mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+
+  it('handles analyze errors', async () => {
+    const user = userEvent.setup()
+    const err = new Error('fail')
+    analyzeFileMock.mockRejectedValueOnce(err)
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(<FileAnalysisDialog open file={file} onOpenChange={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /Start Analysis/i }))
+    await waitFor(() => expect(analyzeFileMock).toHaveBeenCalled())
+    spy.mockRestore()
+  })
+
+  it('describes empty file state', () => {
+    render(<FileAnalysisDialog open file={null} onOpenChange={vi.fn()} />)
+    expect(screen.getByText(/No file selected/i)).toBeInTheDocument()
+  })
 })

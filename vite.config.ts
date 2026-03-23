@@ -48,10 +48,10 @@ export default defineConfig({
       // every interactive branch (QueryInput menus, full Settings OAuth matrix, workspace chrome)
       // needs additional integration/E2E-style tests; thresholds track the current automated floor.
       thresholds: {
-        lines: 88,
-        statements: 86,
-        functions: 73,
-        branches: 79,
+        lines: 92,
+        statements: 91,
+        functions: 82,
+        branches: 86,
       },
     },
   },

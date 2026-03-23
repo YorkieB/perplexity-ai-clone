@@ -13,7 +13,8 @@ vi.mock('./ModelCouncilResponse', () => ({
 }))
 
 vi.mock('./FilePreviewModal', () => ({
-  FilePreviewModal: () => null,
+  FilePreviewModal: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="file-preview-modal">open</div> : null,
 }))
 
 describe('Message', () => {
@@ -57,6 +58,30 @@ describe('Message', () => {
     }
     render(<Message message={message} />)
     expect(screen.getByTestId('council')).toBeInTheDocument()
+  })
+
+  it('renders user attachments and opens file preview', async () => {
+    const user = userEvent.setup()
+    const message: Msg = {
+      id: '5',
+      role: 'user',
+      content: 'See file',
+      createdAt: Date.now(),
+      files: [
+        {
+          id: 'f1',
+          name: 'note.txt',
+          type: 'text/plain',
+          size: 4,
+          content: 'data',
+          uploadedAt: Date.now(),
+        },
+      ],
+    }
+    render(<Message message={message} />)
+    expect(screen.getByText(/Attached Files/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /note\.txt/i }))
+    expect(screen.getByTestId('file-preview-modal')).toBeInTheDocument()
   })
 
   it('shows sources and follow-ups when provided', async () => {

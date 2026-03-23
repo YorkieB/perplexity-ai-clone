@@ -83,6 +83,40 @@ describe('OAuthCallback', () => {
     })
   })
 
+  it('shows error when OAuth client credentials are not configured', async () => {
+    localStorage.setItem(
+      'user-settings',
+      JSON.stringify({
+        apiKeys: {},
+        oauthTokens: {},
+        oauthClientIds: {},
+        oauthClientSecrets: {},
+        connectedServices: {
+          googledrive: false,
+          onedrive: false,
+          github: false,
+          dropbox: false,
+        },
+      })
+    )
+    window.location = {
+      ...originalLocation,
+      search: '?code=abc&state=ok',
+      href: 'http://localhost/',
+      assign: vi.fn(),
+      replace: vi.fn(),
+    } as Location
+    mockValidate.mockReturnValue({
+      provider: 'googledrive',
+      nonce: 'ok',
+      returnUrl: '/',
+    })
+    render(<OAuthCallback />)
+    await waitFor(() => {
+      expect(screen.getByText(/OAuth credentials not found/i)).toBeInTheDocument()
+    })
+  })
+
   it('shows error when state is invalid', async () => {
     window.location = {
       ...originalLocation,
