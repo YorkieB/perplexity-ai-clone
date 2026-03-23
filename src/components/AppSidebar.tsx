@@ -76,9 +76,9 @@ export function AppSidebar({
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-4">
             <Collapsible open={libraryOpen} onOpenChange={setLibraryOpen}>
-              <div className="flex items-center justify-between">
+              <div className="flex w-full items-center gap-1">
                 <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="gap-2 w-full justify-start px-2">
+                  <Button variant="ghost" size="sm" className="inline-flex h-8 w-fit shrink-0 gap-2 px-2 -ml-2 justify-start">
                     {libraryOpen ? <CaretDown size={16} /> : <CaretRight size={16} />}
                     <span className="text-sm font-medium">Library</span>
                   </Button>
@@ -87,9 +87,10 @@ export function AppSidebar({
                   variant="ghost"
                   size="icon"
                   onClick={onNewThread}
-                  className="h-7 w-7"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-accent"
+                  title="New thread"
                 >
-                  <Plus size={16} />
+                  <Plus size={18} weight="bold" />
                 </Button>
               </div>
               <CollapsibleContent className="mt-2 space-y-1">
@@ -123,9 +124,9 @@ export function AppSidebar({
             <Separator />
 
             <Collapsible open={workspacesOpen} onOpenChange={setWorkspacesOpen}>
-              <div className="flex items-center justify-between">
+              <div className="flex w-full items-center gap-1">
                 <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="gap-2 w-full justify-start px-2">
+                  <Button variant="ghost" size="sm" className="inline-flex h-8 w-fit shrink-0 gap-2 px-2 -ml-2 justify-start">
                     {workspacesOpen ? <CaretDown size={16} /> : <CaretRight size={16} />}
                     <span className="text-sm font-medium">Workspaces</span>
                   </Button>
@@ -134,9 +135,10 @@ export function AppSidebar({
                   variant="ghost"
                   size="icon"
                   onClick={onNewWorkspace}
-                  className="h-7 w-7"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-accent"
+                  title="New workspace"
                 >
-                  <Plus size={16} />
+                  <Plus size={18} weight="bold" />
                 </Button>
               </div>
               <CollapsibleContent className="mt-2 space-y-1">
