@@ -22,6 +22,7 @@ interface ModelOption {
   badgeVariant?: 'default' | 'secondary' | 'outline'
 }
 
+/** OpenAI chat models only — requests go through `/api/llm` (OpenAI-compatible API). */
 const availableModels: ModelOption[] = [
   {
     id: 'gpt-4o',
@@ -38,32 +39,11 @@ const availableModels: ModelOption[] = [
     badgeVariant: 'secondary',
   },
   {
-    id: 'claude-3.5-sonnet',
-    name: 'Claude 3.5 Sonnet',
-    description: 'Anthropic\'s latest model with excellent reasoning and analysis',
-    badge: 'Recommended',
-    badgeVariant: 'default',
-  },
-  {
-    id: 'claude-3-opus',
-    name: 'Claude 3 Opus',
-    description: 'Top-tier Anthropic model for complex tasks',
-    badge: 'Premium',
+    id: 'gpt-4-turbo',
+    name: 'GPT-4 Turbo',
+    description: 'Strong general-purpose model with a large context window',
+    badge: 'Capable',
     badgeVariant: 'outline',
-  },
-  {
-    id: 'claude-3-haiku',
-    name: 'Claude 3 Haiku',
-    description: 'Fast and efficient Claude model for quick responses',
-    badge: 'Quick',
-    badgeVariant: 'secondary',
-  },
-  {
-    id: 'gemini-2.0-flash',
-    name: 'Gemini 2.0 Flash',
-    description: 'Google\'s fast multimodal model with broad capabilities',
-    badge: 'Multimodal',
-    badgeVariant: 'default',
   },
 ]
 
@@ -78,7 +58,7 @@ export function ModelCouncilSelector({
   open,
   onOpenChange,
   onConfirm,
-  defaultSelected = ['gpt-4o', 'claude-3.5-sonnet'],
+  defaultSelected = ['gpt-4o', 'gpt-4o-mini'],
 }: ModelCouncilSelectorProps) {
   const [selectedModels, setSelectedModels] = useState<string[]>(defaultSelected)
 

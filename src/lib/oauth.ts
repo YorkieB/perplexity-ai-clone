@@ -27,7 +27,8 @@ const OAUTH_CONFIGS: Record<string, Partial<OAuthProvider>> = {
     tokenUrl: 'https://api.dropboxapi.com/oauth2/token',
     scopes: ['files.metadata.read', 'files.content.read'],
   },
-  googleDrive: {
+  /** Keys must match `UserSettings` / UI provider ids (e.g. SettingsDialog). */
+  googledrive: {
     name: 'Google Drive',
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
@@ -36,7 +37,7 @@ const OAUTH_CONFIGS: Record<string, Partial<OAuthProvider>> = {
       'https://www.googleapis.com/auth/drive.metadata.readonly',
     ],
   },
-  oneDrive: {
+  onedrive: {
     name: 'OneDrive',
     authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
@@ -87,7 +88,7 @@ export function buildAuthUrl(provider: string, clientId: string): string | null 
     access_type: 'offline',
   })
 
-  if (provider === 'googleDrive') {
+  if (provider === 'googledrive') {
     params.append('prompt', 'consent')
   }
 
