@@ -177,6 +177,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
 
         const model = typeof o.model === 'string' && o.model.trim() ? o.model.trim() : DEFAULT_IMAGE_MODEL
 
+        // Request base64 payloads so thread messages in localStorage stay renderable after OpenAI CDN URLs expire.
         const upstream = await fetch(`${base}/images/generations`, {
           method: 'POST',
           headers: {
@@ -188,7 +189,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
             prompt,
             n,
             size: sizeStr,
-            response_format: 'url',
+            response_format: 'b64_json',
           }),
         })
 

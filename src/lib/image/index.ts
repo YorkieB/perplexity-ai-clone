@@ -11,6 +11,8 @@ export { ImageGenerationError } from '@/lib/image/errors'
 export type { GenerateImagesFromTextOptions, GenerateImagesResponse } from '@/lib/image/client'
 export { generateImagesFromText } from '@/lib/image/client'
 
+export { altTextForGeneratedImage, displaySrcForGeneratedImage } from '@/lib/image/display'
+
 export type { ImageGenerationProvider } from '@/lib/image/provider'
 export {
   ImageGenerationNotImplementedError,

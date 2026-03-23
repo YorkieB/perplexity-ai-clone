@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
-import { Microphone, Sparkle, User } from '@phosphor-icons/react'
+import { altTextForGeneratedImage, displaySrcForGeneratedImage } from '@/lib/image'
+import { Microphone, Sparkle, User, ImageSquare } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -61,6 +62,17 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
             ) : null}
           </span>
         )}
+        {message.modality === 'image' && (
+          <span
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground',
+              isUser ? 'self-end' : 'self-start'
+            )}
+          >
+            <ImageSquare className="h-3.5 w-3.5 shrink-0" weight="regular" aria-hidden />
+            <span>Image prompt</span>
+          </span>
+        )}
         {isUser && message.files && message.files.length > 0 && (
           <div className="space-y-2 max-w-2xl w-full">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -97,6 +109,26 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
           </div>
         )}
 
+        {!isUser && message.generatedImages && message.generatedImages.length > 0 && (
+          <div className="space-y-3 max-w-full w-full">
+            {message.generatedImages.map((img) => {
+              const src = displaySrcForGeneratedImage(img)
+              if (!src) return null
+              return (
+                <figure key={img.id} className="m-0 max-w-full sm:max-w-[min(100%,42rem)]">
+                  <img
+                    src={src}
+                    alt={altTextForGeneratedImage(img.promptSnapshot)}
+                    loading="lazy"
+                    decoding="async"
+                    className="rounded-lg border border-border w-full h-auto object-contain max-h-[70vh]"
+                  />
+                </figure>
+              )
+            })}
+          </div>
+        )}
+
         <div
           className={cn(
             'max-w-none',
@@ -117,12 +149,12 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
               divergentPoints={[]}
               onCitationHover={setHighlightedSource}
             />
-          ) : (
+          ) : message.content.trim().length > 0 ? (
             <MarkdownRenderer
               content={message.content}
               onCitationHover={setHighlightedSource}
             />
-          )}
+          ) : null}
         </div>
 
         {!isUser && message.followUpQuestions && message.followUpQuestions.length > 0 && onFollowUpClick && (

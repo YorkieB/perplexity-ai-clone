@@ -29,6 +29,7 @@ import {
   Microphone,
   Waveform,
   Desktop,
+  ImageSquare,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -41,6 +42,8 @@ import { useVoiceSession } from '@/contexts/VoiceSessionContext'
 
 interface QueryInputProps {
   onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
+  /** When set, shows a control to run text-to-image with the current textarea prompt. */
+  onImageGenerate?: (prompt: string) => void | Promise<void>
   isLoading?: boolean
   placeholder?: string
   advancedMode: boolean
@@ -49,6 +52,7 @@ interface QueryInputProps {
 
 export function QueryInput({
   onSubmit,
+  onImageGenerate,
   isLoading = false,
   placeholder = 'Ask anything...',
   advancedMode,
@@ -92,6 +96,13 @@ export function QueryInput({
       uploadedAt: Date.now(),
     }))
     setAttachedFiles((prev) => [...prev, ...processedFiles])
+  }
+
+  const handleImageGenerateClick = () => {
+    if (!onImageGenerate || !query.trim() || isLoading) return
+    const text = query.trim()
+    setQuery('')
+    void onImageGenerate(text)
   }
 
   const handleSubmit = () => {
@@ -356,6 +367,20 @@ export function QueryInput({
             >
               <Desktop size={16} />
             </Button>
+
+            {onImageGenerate ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 hover:bg-muted"
+                disabled={!query.trim() || isLoading}
+                onClick={handleImageGenerateClick}
+                aria-label="Generate image from prompt"
+              >
+                <ImageSquare size={16} weight="regular" />
+              </Button>
+            ) : null}
 
             <Button
               type="button"

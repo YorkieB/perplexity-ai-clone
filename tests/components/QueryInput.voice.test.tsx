@@ -36,6 +36,20 @@ describe('QueryInput voice control', () => {
     expect(screen.getByRole('button', { name: /start voice conversation/i })).toBeTruthy()
   })
 
+  it('exposes generate image control when onImageGenerate is provided', () => {
+    vi.mocked(useVoiceSession).mockReturnValue(idleVoice)
+    render(
+      <QueryInput
+        onSubmit={vi.fn()}
+        onImageGenerate={vi.fn()}
+        isLoading={false}
+        advancedMode={false}
+        onAdvancedModeChange={vi.fn()}
+      />
+    )
+    expect(screen.getByRole('button', { name: /generate image from prompt/i })).toBeTruthy()
+  })
+
   it('shows stop label when voice is active', () => {
     vi.mocked(useVoiceSession).mockReturnValue({
       ...idleVoice,

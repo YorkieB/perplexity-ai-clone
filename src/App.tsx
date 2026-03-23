@@ -6,6 +6,8 @@ import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusM
 import { generateId, generateThreadTitle } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
+import { generateImagesFromText } from '@/lib/image'
+import { ImageGenerationError } from '@/lib/image/errors'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
 import { Message } from '@/components/Message'
@@ -252,6 +254,107 @@ ${
     }
   }
 
+  const handleImageGeneration = async (prompt: string) => {
+    const trimmed = prompt.trim()
+    if (!trimmed.length) return
+
+    setIsGenerating(true)
+
+    const userMessage: MessageType = {
+      id: generateId(),
+      role: 'user',
+      content: trimmed,
+      createdAt: Date.now(),
+      focusMode,
+      modality: 'image',
+    }
+
+    let thread: Thread
+    if (activeThread) {
+      thread = {
+        ...activeThread,
+        messages: [...activeThread.messages, userMessage],
+        updatedAt: Date.now(),
+      }
+      setThreads((current) => (current || []).map((t) => (t.id === thread.id ? thread : t)))
+    } else {
+      thread = {
+        id: generateId(),
+        workspaceId: activeWorkspaceId || undefined,
+        title: generateThreadTitle(trimmed),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [userMessage],
+      }
+      setThreads((current) => [...(current || []), thread])
+      setActiveThreadId(thread.id)
+    }
+
+    try {
+      const images = await generateImagesFromText(trimmed, {
+        width: 1024,
+        height: 1024,
+        n: 1,
+      })
+
+      const assistantMessage: MessageType = {
+        id: generateId(),
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+        modelUsed: 'dall-e-2',
+        focusMode,
+        generatedImages: images,
+        imageGeneration: { status: 'complete' },
+      }
+
+      setThreads((current) =>
+        (current || []).map((t) =>
+          t.id === thread.id
+            ? {
+                ...t,
+                messages: [...t.messages, assistantMessage],
+                updatedAt: Date.now(),
+              }
+            : t
+        )
+      )
+    } catch (error) {
+      const messageText =
+        error instanceof ImageGenerationError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Image generation failed.'
+
+      toast.error(messageText)
+
+      const assistantMessage: MessageType = {
+        id: generateId(),
+        role: 'assistant',
+        content: `Could not generate an image. ${messageText}`,
+        createdAt: Date.now(),
+        focusMode,
+        imageGeneration: { status: 'failed', errorMessage: messageText },
+      }
+
+      setThreads((current) =>
+        (current || []).map((t) =>
+          t.id === thread.id
+            ? {
+                ...t,
+                messages: [...t.messages, assistantMessage],
+                updatedAt: Date.now(),
+              }
+            : t
+        )
+      )
+      console.error(error)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
   const appendVoiceUserMessage = useCallback(
     (text: string) => {
       const userMessage: MessageType = {
@@ -341,6 +444,7 @@ ${
             <div className="pt-4">
               <QueryInputWithVoice
                 onSubmit={handleQuery}
+                onImageGenerate={handleImageGeneration}
                 isLoading={isGenerating}
                 placeholder={`Ask a question in ${activeWorkspace.name}...`}
                 advancedMode={advancedMode || false}
@@ -384,6 +488,7 @@ ${
             <div className="max-w-4xl mx-auto px-6 py-4">
               <QueryInputWithVoice
                 onSubmit={handleQuery}
+                onImageGenerate={handleImageGeneration}
                 isLoading={isGenerating}
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
@@ -406,6 +511,7 @@ ${
           <div className="max-w-2xl mx-auto px-6 py-6">
             <QueryInputWithVoice
               onSubmit={handleQuery}
+              onImageGenerate={handleImageGeneration}
               isLoading={isGenerating}
               advancedMode={advancedMode}
               onAdvancedModeChange={setAdvancedMode}

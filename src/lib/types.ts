@@ -45,8 +45,8 @@ export interface Message {
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]
-  /** Present when the message was produced in a voice context (optional for backward compatibility). */
-  modality?: 'text' | 'voice'
+  /** Present when the message was produced in a voice or image context (optional for backward compatibility). */
+  modality?: 'text' | 'voice' | 'image'
   /** Channel for this message; mirrors {@link modality} for voice turns when set. */
   source?: 'text' | 'voice'
   /** Voice-specific turn metadata when {@link modality} is `'voice'` or for hybrid threads. */
