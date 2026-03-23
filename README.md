@@ -5,6 +5,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 ## Documentation
 
 - **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
+- **[Voice layer (Phase 0)](docs/VOICE-LAYER.md)** — vendor-neutral `VoiceSession` types, events, `NullVoiceSession` stub, optional `Message` fields for voice.
 
 ## 🚀 Features
 
