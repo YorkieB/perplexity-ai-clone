@@ -56,7 +56,7 @@ export function AppSidebar({
     >
       <div className="p-3 flex items-center justify-between border-b border-border">
         {!isCollapsed && (
-          <h1 className="text-lg font-semibold tracking-tight">AI Search</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Nexus</h1>
         )}
         <Button
           variant="ghost"

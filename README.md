@@ -1,6 +1,6 @@
-# AI Search Engine
+# Nexus
 
-A production-ready, highly responsive AI-powered search engine built with React, TypeScript, and Tailwind CSS. Features real-time web search integration, workspace organization, and persistent conversation threads.
+Nexus is a production-ready, highly responsive AI-powered search experience built with React, TypeScript, and Tailwind CSS. Features real-time web search integration, workspace organization, and persistent conversation threads.
 
 ## Documentation
 

@@ -32,7 +32,7 @@ For each service, you'll need to create an OAuth application and obtain:
 2. Click **Create App**
 3. Choose API: **Scoped access**
 4. Choose access type: **Full Dropbox** (or **App folder** for restricted access)
-5. Name your app (e.g., "AI Search Engine Cloud Access")
+5. Name your app (e.g., "Nexus Cloud Access")
 6. Click **Create App**
 
 ### Step 2: Configure OAuth Settings
@@ -108,7 +108,7 @@ For each service, you'll need to create an OAuth application and obtain:
 
 1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
 2. Click **New registration**
-3. Enter application name (e.g., "AI Search Engine")
+3. Enter application name (e.g., "Nexus")
 4. Choose **Supported account types**:
    - **Accounts in any organizational directory and personal Microsoft accounts** (most compatible)
 5. Add **Redirect URI**:
@@ -157,7 +157,7 @@ For each service, you'll need to create an OAuth application and obtain:
 1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
 2. Click **OAuth Apps** → **New OAuth App**
 3. Fill in the application details:
-   - **Application name**: Your app name (e.g., "AI Search Engine")
+   - **Application name**: Your app name (e.g., "Nexus")
    - **Homepage URL**: Your app's homepage
    - **Authorization callback URL**: `https://your-domain.com/oauth/callback` (or `http://localhost:5173/oauth/callback`)
 4. Click **Register application**

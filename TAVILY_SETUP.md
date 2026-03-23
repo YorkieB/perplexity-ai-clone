@@ -1,6 +1,6 @@
 # Tavily API Setup Guide
 
-This guide will walk you through obtaining and configuring your Tavily Search API key for the AI Search Engine application.
+This guide will walk you through obtaining and configuring your Tavily Search API key for Nexus.
 
 ## Step 1: Get Your Tavily API Key
 

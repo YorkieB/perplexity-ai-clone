@@ -2,7 +2,7 @@
 
 This document captures a **full-stack, multi-layer breakdown** of the Perplexity product surface: features, subsystems, behaviours, and configuration. It is a **reference taxonomy** for planning and gap analysis, not an official Perplexity spec.
 
-An **appendix** maps each area to **this repository** (`ai-search-engine` / Perplexity-style clone) so multi-agent work can prioritize realistically.
+An **appendix** maps each area to **this repository** (`nexus` / Perplexity-style clone) so multi-agent work can prioritize realistically.
 
 ---
 

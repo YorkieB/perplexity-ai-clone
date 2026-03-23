@@ -1,6 +1,6 @@
 # Planning Guide
 
-An advanced AI-powered search engine that provides intelligent research capabilities with source attribution, organized through workspaces and persistent conversation threads.
+Nexus is an advanced AI-powered search application that provides intelligent research capabilities with source attribution, organized through workspaces and persistent conversation threads.
 
 **Experience Qualities**:
 1. **Instantaneous** - Every interaction feels immediate with optimistic updates and skeleton loading states that maintain flow without interruption
@@ -40,7 +40,7 @@ This is a multi-view application with sophisticated state management across work
 - **Progression**: User enables toggle → Visual indicator confirms state → Next query includes advanced analysis flag in prompt → AI provides more comprehensive response
 - **Success criteria**: Toggle state persists per workspace, visual feedback is immediate, responses demonstrably differ in depth
 
-### AI Search with Source Attribution
+### Nexus search with source attribution
 - **Functionality**: LLM-powered responses enriched with real-time web search results from Tavily API, including cited sources with URLs, titles, and relevant snippets. Features advanced Markdown rendering with language-specific syntax highlighting for code blocks (supporting 20+ languages including JavaScript, TypeScript, Python, Java, CSS, HTML, JSX, TSX, JSON, Bash, SQL, Rust, Go, Ruby, PHP, Swift, Kotlin, C++, and C), support for tables, lists, and inline citations that interactively highlight corresponding sources.
 - **Purpose**: Provides trustworthy, verifiable, and up-to-date information for research tasks by combining AI reasoning with current web data, with visual citation mapping for immediate fact verification and beautifully formatted code examples.
 - **Trigger**: User submits any query in an active thread
