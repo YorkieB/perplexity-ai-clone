@@ -3,8 +3,9 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    /* happy-dom covers component tests and DOM stubs for OpenAI session bootstrap tests */
+    environment: 'happy-dom',
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     passWithNoTests: false,
   },
   resolve: {

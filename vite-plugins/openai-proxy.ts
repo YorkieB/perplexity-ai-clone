@@ -15,6 +15,7 @@
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
 import type { ServerResponse } from 'node:http'
+import { mergeRealtimeSessionBody } from '../src/lib/voice/realtimeSessionDefaults'
 
 function readBody(req: Connect.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -35,40 +36,6 @@ function getOpenAiConfig(env: Record<string, string>): {
     env.VITE_OPENAI_BASE_URL?.replace(/\/$/, '') ||
     'https://api.openai.com/v1'
   return { key, base }
-}
-
-const defaultRealtimeSession = {
-  session: {
-    type: 'realtime' as const,
-    model: 'gpt-realtime',
-    audio: {
-      input: {
-        format: { type: 'audio/pcm', rate: 24000 },
-        transcription: { model: 'gpt-4o-mini-transcribe' },
-      },
-      output: { voice: 'marin' },
-    },
-  },
-}
-
-function mergeRealtimeSessionBody(raw: string): typeof defaultRealtimeSession {
-  if (!raw.trim()) {
-    return defaultRealtimeSession
-  }
-  try {
-    const parsed = JSON.parse(raw) as { session?: unknown }
-    if (parsed?.session && typeof parsed.session === 'object' && parsed.session !== null) {
-      return {
-        session: {
-          ...defaultRealtimeSession.session,
-          ...(parsed.session as Record<string, unknown>),
-        } as (typeof defaultRealtimeSession)['session'],
-      }
-    }
-  } catch {
-    /* use default */
-  }
-  return defaultRealtimeSession
 }
 
 function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.Server) {

@@ -26,3 +26,8 @@ export type {
 export { OpenAIRealtimeVoiceSession } from '@/lib/voice/openaiRealtimeVoiceSession'
 export { VOICE_MAX_SESSION_MS, VOICE_START_COOLDOWN_MS } from '@/lib/voice/voiceLimits'
 export { toastBodyForVoiceError, voiceCopy } from '@/lib/voice/uxCopy'
+export {
+  defaultRealtimeSessionBody,
+  mergeRealtimeSessionBody,
+  type RealtimeSessionRequestBody,
+} from '@/lib/voice/realtimeSessionDefaults'
