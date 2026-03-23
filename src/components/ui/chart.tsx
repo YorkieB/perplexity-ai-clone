@@ -127,7 +127,7 @@ interface ChartTooltipContentProps extends ComponentProps<"div"> {
     name: string,
     item: ChartTooltipPayloadItem,
     index: number,
-    payload: ChartTooltipPayloadItem["payload"]
+    payload: ChartTooltipPayloadItem["payload"] | undefined
   ) => ReactNode
   color?: string
   nameKey?: string
