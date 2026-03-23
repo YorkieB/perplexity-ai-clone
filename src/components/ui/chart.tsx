@@ -102,6 +102,35 @@ ${colorConfig
 
 const ChartTooltip = RechartsPrimitive.Tooltip
 
+type ChartTooltipPayloadItem = {
+  name?: string
+  value?: number | string
+  color?: string
+  dataKey?: string | number
+  payload?: Record<string, unknown> & { fill?: string }
+}
+
+interface ChartTooltipContentProps extends ComponentProps<"div"> {
+  active?: boolean
+  payload?: ChartTooltipPayloadItem[]
+  label?: ReactNode
+  hideLabel?: boolean
+  hideIndicator?: boolean
+  indicator?: "line" | "dot" | "dashed"
+  labelFormatter?: (value: ReactNode, payload: ChartTooltipPayloadItem[]) => ReactNode
+  formatter?: (
+    value: number | string | undefined,
+    name: string,
+    item: ChartTooltipPayloadItem,
+    index: number,
+    payload: ChartTooltipPayloadItem["payload"]
+  ) => ReactNode
+  color?: string
+  nameKey?: string
+  labelKey?: string
+  labelClassName?: string
+}
+
 function ChartTooltipContent({
   active,
   payload,
@@ -116,14 +145,7 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
-}: ComponentProps<typeof RechartsPrimitive.Tooltip> &
-  ComponentProps<"div"> & {
-    hideLabel?: boolean
-    hideIndicator?: boolean
-    indicator?: "line" | "dot" | "dashed"
-    nameKey?: string
-    labelKey?: string
-  }) {
+}: ChartTooltipContentProps) {
   const { config } = useChart()
 
   const tooltipLabel = useMemo(() => {
@@ -248,17 +270,27 @@ function ChartTooltipContent({
 
 const ChartLegend = RechartsPrimitive.Legend
 
+type ChartLegendPayloadItem = {
+  value?: string
+  dataKey?: string | number
+  color?: string
+  payload?: Record<string, unknown>
+}
+
+interface ChartLegendContentProps extends ComponentProps<"div"> {
+  hideIcon?: boolean
+  payload?: ChartLegendPayloadItem[]
+  verticalAlign?: "top" | "bottom" | "middle"
+  nameKey?: string
+}
+
 function ChartLegendContent({
   className,
   hideIcon = false,
   payload,
   verticalAlign = "bottom",
   nameKey,
-}: ComponentProps<"div"> &
-  Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
-    hideIcon?: boolean
-    nameKey?: string
-  }) {
+}: ChartLegendContentProps) {
   const { config } = useChart()
 
   if (!payload?.length) {

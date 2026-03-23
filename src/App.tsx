@@ -3,7 +3,7 @@ import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, FocusMode, QueryRequestOptions } from '@/lib/types'
 import { generateId, generateThreadTitle } from '@/lib/helpers'
-import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil, executeDeepResearch, DeepResearchProgressUpdate } from '@/lib/api'
+import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil, executeDeepResearch } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
@@ -18,8 +18,11 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
-interface DeepResearchProgressState extends DeepResearchProgressUpdate {
+interface DeepResearchProgressState {
   stage: 'planning' | 'searching' | 'synthesizing' | 'complete'
+  currentSearch?: number
+  totalSearches?: number
+  subQuery?: string
 }
 
 function MainApp() {
