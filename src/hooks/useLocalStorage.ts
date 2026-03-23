@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 const STORAGE_SYNC = 'app-local-storage-sync'
 
 function readStorage<T>(key: string, initial: T): T {
+  /* v8 ignore next 2 — SSR / non-browser; tests run in jsdom */
   if (typeof window === 'undefined') return initial
   try {
     const raw = localStorage.getItem(key)

@@ -97,7 +97,7 @@ npm run dev
 
 - **`npm run test`** — Vitest unit/component suite (`src/**/*.test.{ts,tsx}`).
 - **`npm run test:watch`** — watch mode while developing.
-- **`npm run test:coverage`** — V8 coverage report (see `coverage/`).
+- **`npm run test:coverage`** — V8 coverage report (see `coverage/`). CI enforces **100% line/function coverage** on **`src/lib/**` and `src/hooks/**`** (see `vite.config.ts`; type-only `src/lib/types.ts` is excluded). **Branches** are enforced at **≥96%**; generated **shadcn** UI under `src/components/ui/` is not part of this gate.
 - **`npm run verify`** — lint + tests + production build (same as CI).
 
 ## 📁 Project Structure

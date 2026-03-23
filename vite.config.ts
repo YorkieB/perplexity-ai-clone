@@ -22,13 +22,26 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary'],
+      // Enforce 100% on **logic** under lib + hooks. UI components use targeted tests and
+      // manual/E2E passes; measuring every Radix line is low ROI for this repo.
+      include: ['src/lib/**/*.ts', 'src/hooks/**/*.{ts,tsx}'],
       exclude: [
         'node_modules/**',
         'src/test/**',
         '**/*.d.ts',
+        '**/*.test.{ts,tsx}',
+        '**/*.spec.{ts,tsx}',
         '**/*.config.*',
         '**/dist/**',
+        // Interfaces / types only — no executable statements.
+        'src/lib/types.ts',
       ],
+      thresholds: {
+        lines: 100,
+        statements: 99.6,
+        functions: 100,
+        branches: 96,
+      },
     },
   },
 })

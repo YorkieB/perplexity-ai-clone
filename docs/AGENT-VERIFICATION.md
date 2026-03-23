@@ -26,7 +26,7 @@ npm run verify
 This runs **lint**, then **test**, then **build**. It does not install packages; run `npm install` first if `node_modules` is missing or stale.
 
 - **`npm run test:watch`** — Vitest in watch mode during development.
-- **`npm run test:coverage`** — coverage report (output under `coverage/`; gitignored).
+- **`npm run test:coverage`** — coverage report (output under `coverage/`; gitignored). Thresholds are defined in `vite.config.ts` (full line coverage on `src/lib` + `src/hooks`, excluding `types.ts`; branch floor ≥96%).
 
 ## Clean-room check (CI parity)
 
