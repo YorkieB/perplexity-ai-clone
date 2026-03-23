@@ -1,4 +1,4 @@
-import { VoiceRealtimeError } from '@/lib/voice/errors'
+import { VoiceRealtimeError, type VoiceRealtimeErrorCode } from '@/lib/voice/errors'
 import type {
   VoiceEventHandler,
   VoiceEventMap,
@@ -31,6 +31,10 @@ export interface OpenAIRealtimeVoiceSessionOptions {
   onUserTranscriptComplete?: (text: string) => void
   /** Fired once per assistant spoken turn (transcript done, response done, or cancellation). */
   onAssistantTranscriptComplete?: (text: string, meta: { interrupted: boolean }) => void
+  /**
+   * When true, mic tracks start disabled (push-to-talk). Ignored if overridden in {@link OpenAIRealtimeVoiceSession.connect}.
+   */
+  startWithMicMuted?: boolean
 }
 
 type ListenerMap = {
@@ -72,6 +76,10 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
   private assistantTranscriptBuffer = ''
   private assistantTranscriptEmitted = false
 
+  /** True between successful connect and explicit/expected disconnect. */
+  private sessionLive = false
+
+  private readonly defaultStartMicMuted: boolean
   private readonly onUserTranscriptComplete?: (text: string) => void
   private readonly onAssistantTranscriptComplete?: (text: string, meta: { interrupted: boolean }) => void
 
@@ -84,6 +92,29 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     }
     this.onUserTranscriptComplete = options.onUserTranscriptComplete
     this.onAssistantTranscriptComplete = options.onAssistantTranscriptComplete
+    this.defaultStartMicMuted = options.startWithMicMuted ?? false
+  }
+
+  /** Enable or disable capture on the local microphone tracks (push-to-talk). */
+  setMicrophoneEnabled(enabled: boolean): void {
+    if (!this.localStream) {
+      return
+    }
+    for (const track of this.localStream.getAudioTracks()) {
+      track.enabled = enabled
+    }
+  }
+
+  private notifyTransportFailure(code: VoiceRealtimeErrorCode, message: string): void {
+    if (!this.sessionLive) {
+      return
+    }
+    this.sessionLive = false
+    this.connectGeneration++
+    this.cleanupTracksAndPc()
+    this.emitConnection('failed')
+    this.emit('error', { error: new VoiceRealtimeError(code, message), timestamp: Date.now() })
+    this.setSessionState('error')
   }
 
   on<E extends VoiceEventName>(event: E, handler: VoiceEventHandler<E>): void {
@@ -118,7 +149,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     this.setSessionState('error')
   }
 
-  async connect(): Promise<void> {
+  async connect(connectOptions?: { startWithMicMuted?: boolean }): Promise<void> {
     if (typeof RTCPeerConnection === 'undefined' || typeof navigator?.mediaDevices?.getUserMedia !== 'function') {
       const err = new VoiceRealtimeError(
         'NOT_SUPPORTED',
@@ -143,6 +174,18 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       if (generation !== this.connectGeneration) {
         return
       }
+      if (sessionRes.status === 429) {
+        let msg = 'Too many requests. Try again in a moment.'
+        try {
+          const j = JSON.parse(sessionText) as { error?: { message?: string } }
+          if (j.error?.message) {
+            msg = j.error.message
+          }
+        } catch {
+          /* use default */
+        }
+        throw new VoiceRealtimeError('SESSION_RATE_LIMITED', msg)
+      }
       if (!sessionRes.ok) {
         throw new VoiceRealtimeError(
           'SESSION_BOOTSTRAP_FAILED',
@@ -166,11 +209,11 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       this.pc = pc
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed') {
-          this.emitConnection('failed')
-          this.emitError(
-            new VoiceRealtimeError('WEBRTC_NEGOTIATION_FAILED', `Peer connection ${pc.connectionState}`)
-          )
+        const st = pc.connectionState
+        if (st === 'failed') {
+          this.notifyTransportFailure('WEBRTC_NEGOTIATION_FAILED', `Peer connection ${st}`)
+        } else if (st === 'disconnected' || st === 'closed') {
+          this.notifyTransportFailure('CONNECTION_LOST', 'The voice connection closed unexpectedly.')
         }
       }
 
@@ -214,8 +257,17 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         pc.addTrack(track, localStream)
       }
 
+      const startMuted = connectOptions?.startWithMicMuted ?? this.defaultStartMicMuted
+      this.setMicrophoneEnabled(!startMuted)
+
       const dc = pc.createDataChannel('oai-events')
       this.dc = dc
+
+      dc.onclose = () => {
+        if (this.sessionLive) {
+          this.notifyTransportFailure('CONNECTION_LOST', 'The voice connection closed unexpectedly.')
+        }
+      }
 
       dc.onmessage = (ev) => {
         this.handleServerEvent(ev.data)
@@ -276,6 +328,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         return
       }
 
+      this.sessionLive = true
       this.emitConnection('connected')
       this.setSessionState('listening')
     } catch (e) {
@@ -290,13 +343,16 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
               e instanceof Error ? e.message : 'Voice connection failed',
               { cause: e }
             )
-      this.emitError(err)
+      /* Caller (e.g. VoiceSessionProvider) shows toasts; avoid duplicate with session 'error' listeners. */
+      this.setSessionState('error')
+      this.emitConnection('failed')
       this.cleanupTracksAndPc()
       throw err
     }
   }
 
   disconnect(): void {
+    this.sessionLive = false
     this.connectGeneration++
     this.cleanupTracksAndPc()
     this.emitConnection('disconnected')
@@ -305,6 +361,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
 
   /** Internal: release resources without emitting idle (used before reconnect). */
   private disconnectWithoutNotifyingIdle(): void {
+    this.sessionLive = false
     this.connectGeneration++
     this.cleanupTracksAndPc()
   }

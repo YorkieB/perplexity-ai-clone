@@ -1,10 +1,12 @@
 export type VoiceRealtimeErrorCode =
   | 'SESSION_BOOTSTRAP_FAILED'
+  | 'SESSION_RATE_LIMITED'
   | 'WEBRTC_NEGOTIATION_FAILED'
   | 'MISSING_EPHEMERAL_KEY'
   | 'DATA_CHANNEL_FAILED'
   | 'NOT_SUPPORTED'
   | 'USER_MEDIA_DENIED'
+  | 'CONNECTION_LOST'
 
 /** Typed failure for OpenAI Realtime / WebRTC voice sessions. */
 export class VoiceRealtimeError extends Error {

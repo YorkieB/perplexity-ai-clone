@@ -95,6 +95,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       try {
         const rawBody = await readBody(req)
         const bodyJson = mergeRealtimeSessionBody(rawBody)
+        /* Upstream may return 429 (rate limits / quota). Client maps this in OpenAIRealtimeVoiceSession; do not log request bodies. */
         const upstream = await fetch(`${base}/realtime/client_secrets`, {
           method: 'POST',
           headers: {
