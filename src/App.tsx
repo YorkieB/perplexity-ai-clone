@@ -17,7 +17,7 @@ import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 
-function MainApp() {
+export function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
   const [workspaces, setWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
