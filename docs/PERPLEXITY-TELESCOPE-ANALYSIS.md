@@ -2,6 +2,8 @@
 
 This document captures a **full-stack, multi-layer breakdown** of the Perplexity product surface: features, subsystems, behaviours, and configuration. It is a **reference taxonomy** for planning and gap analysis, not an official Perplexity spec.
 
+**This repository** intentionally does **not** target Comet, a full Labs platform, server-hosted public Pages, or billing—those names appear here only as **Perplexity vocabulary**, not as a backlog for this app.
+
 ---
 
 ## Layer 1 — Galaxy view

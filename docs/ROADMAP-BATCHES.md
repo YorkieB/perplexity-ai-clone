@@ -1,6 +1,6 @@
 # Roadmap — telescope batches (**plan complete**)
 
-The **implementation plan** aligned with `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` is **finished**: **Phases 1–6** (see table below) plus **Batches 7–10** ([Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md), [Batch 10](BATCH-10-COMPLETE.md)). Items that were **explicitly out of scope** for batches (e.g. Comet, full Labs, server-side Pages hosting, billing) are **not** part of this plan—see the batch index section below.
+The **implementation plan** aligned with `docs/PERPLEXITY-TELESCOPE-ANALYSIS.md` is **finished**: **Phases 1–6** (see table below) plus **Batches 7–10** ([Batch 7](BATCH-07-COMPLETE.md), [Batch 8](BATCH-08-COMPLETE.md), [Batch 9](BATCH-09-COMPLETE.md), [Batch 10](BATCH-10-COMPLETE.md)). **This product does not include** Comet-style browsing, a Labs platform, server-hosted public Pages, or billing/accounts—they are **not** on the roadmap.
 
 Originally this doc split “everything left” into **four overnight batches**; the prompt files under [batches/](batches/) remain as **historical copy-paste** references.
 
@@ -52,7 +52,7 @@ Paste the **entire** batch `.md` as the first message to the coding agent.
 | **9** | [batches/BATCH-09-SPACES-KNOWLEDGE.md](batches/BATCH-09-SPACES-KNOWLEDGE.md) | Spaces parity: per-space web toggle, files, thread organization |
 | **10** | [batches/BATCH-10-VOICE-AND-PLATFORM.md](batches/BATCH-10-VOICE-AND-PLATFORM.md) | Voice input, export-all-data, best-model heuristic, quotas display |
 
-**Explicitly out of scope for these batches (product size):** Comet (AI browser), full Labs platform, server-side Pages hosting, billing, accounts — revisit only with a separate product decision.
+**Not in this product:** Comet, full Labs, server-side Pages hosting, billing, accounts (see intro above).
 
 ---
 
