@@ -4,7 +4,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 
 ## Documentation
 
-- **[Roadmap batches (overnight runs)](docs/ROADMAP-BATCHES.md)** — remaining telescope work in **4 large batches** (`docs/batches/BATCH-07` … `BATCH-10`).
+- **[Roadmap batches (overnight runs)](docs/ROADMAP-BATCHES.md)** — telescope work in **batches 7–10**; **Batch 7 complete** — [summary](docs/BATCH-07-COMPLETE.md) (search dedupe, domain grouping, search steps, follow-ups).
 - **[Telescope analysis (Perplexity reference)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — layer-by-layer product breakdown (reference taxonomy).
 - **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify`, CI expectations before moving on.
 - **[Phase 1 AI prompt](docs/PHASE-01-AI-PROMPT.md)** — copy-paste instructions for the first implementation slice (“Include web” + context routing).
@@ -23,6 +23,7 @@ A production-ready, highly responsive AI-powered search engine built with React,
 ## 🚀 Features
 
 - **Markdown export**: Download or copy threads and the last answer as `.md` (client-side; sources & model-council blocks included).
+- **Search transparency (Batch 7)**: Deduplicated sources, domain-grouped citations, collapsible **Search steps** after successful web search, consistent follow-up questions (when merged from `cursor/search-transparency-and-sources-76d9`).
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data
 - **AI-Powered Responses**: Advanced language model responses with source attribution
 - **Workspace Organization**: Create custom workspaces with tailored AI behavior via system prompts
