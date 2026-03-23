@@ -1,3 +1,5 @@
+import type { VoiceTurn } from './voice/types'
+
 export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
 
 export type AvailableModel = 'gpt-4o' | 'gpt-4o-mini' | 'claude-3.5-sonnet' | 'claude-3-opus' | 'claude-3-haiku' | 'gemini-2.0-flash'
@@ -42,6 +44,10 @@ export interface Message {
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]
+  /** Present when the message was produced in a voice context (optional for backward compatibility). */
+  modality?: 'text' | 'voice'
+  /** Voice-specific turn metadata when {@link modality} is `'voice'` or for hybrid threads. */
+  voiceTurn?: VoiceTurn
 }
 
 export interface Thread {
