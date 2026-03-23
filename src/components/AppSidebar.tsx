@@ -15,6 +15,7 @@ import {
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
+import { NexusLogo } from '@/components/NexusLogo'
 import { cn } from '@/lib/utils'
 
 interface AppSidebarProps {
@@ -54,15 +55,18 @@ export function AppSidebar({
         isCollapsed ? 'w-16' : 'w-64'
       )}
     >
-      <div className="p-3 flex items-center justify-between border-b border-border">
-        {!isCollapsed && (
-          <h1 className="text-lg font-semibold tracking-tight">Nexus</h1>
-        )}
+      <div className="p-3 flex items-center justify-between gap-2 border-b border-border">
+        <div className="flex min-w-0 items-center gap-2">
+          <NexusLogo size={isCollapsed ? 26 : 30} className="rounded-md" />
+          {!isCollapsed && (
+            <h1 className="truncate text-lg font-semibold tracking-tight">Nexus</h1>
+          )}
+        </div>
         <Button
           variant="ghost"
           size="icon"
           onClick={onToggleCollapse}
-          className="h-8 w-8"
+          className="h-8 w-8 shrink-0"
         >
           <List size={20} />
         </Button>

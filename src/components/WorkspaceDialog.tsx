@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { NexusLogo } from '@/components/NexusLogo'
 import { Workspace } from '@/lib/types'
 
 interface WorkspaceDialogProps {
@@ -55,12 +56,17 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>{workspace ? 'Edit Workspace' : 'New Workspace'}</DialogTitle>
-          <DialogDescription>
-            {workspace
-              ? 'Update your workspace details and custom AI behavior'
-              : 'Create a new workspace to organize your research with custom AI settings'}
-          </DialogDescription>
+          <div className="flex items-start gap-3">
+            <NexusLogo size={36} className="mt-0.5 shrink-0 rounded-lg" />
+            <div className="min-w-0 space-y-1.5 text-left">
+              <DialogTitle>{workspace ? 'Edit Workspace' : 'New Workspace'}</DialogTitle>
+              <DialogDescription>
+                {workspace
+                  ? 'Update your workspace details and custom AI behavior'
+                  : 'Create a new workspace to organize your research with custom AI settings'}
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
         <div className="space-y-4 py-4">

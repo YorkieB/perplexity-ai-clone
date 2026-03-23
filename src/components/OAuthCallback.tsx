@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
+import { NexusLogo } from '@/components/NexusLogo'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
@@ -96,8 +97,9 @@ export function OAuthCallback() {
   }, [])
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-background">
-      <Card className="max-w-md w-full p-8">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6">
+      <NexusLogo size={44} className="rounded-xl" />
+      <Card className="w-full max-w-md p-8">
         <div className="flex flex-col items-center text-center space-y-6">
           {status === 'processing' && (
             <>

@@ -11,6 +11,7 @@ import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
+import { NexusLogo } from '@/components/NexusLogo'
 import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle } from '@phosphor-icons/react'
 
 interface SettingsDialogProps {
@@ -203,10 +204,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle className="text-2xl font-bold">Settings</DialogTitle>
-          <DialogDescription>
-            Manage your API keys and cloud storage connections
-          </DialogDescription>
+          <div className="flex items-start gap-3">
+            <NexusLogo size={40} className="mt-0.5 shrink-0 rounded-lg" />
+            <div className="min-w-0 space-y-1.5 text-left">
+              <DialogTitle className="text-2xl font-bold">Settings</DialogTitle>
+              <DialogDescription>
+                Manage your API keys and cloud storage connections
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
 
         <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">

@@ -1,4 +1,5 @@
-import { MagnifyingGlass, Sparkle } from '@phosphor-icons/react'
+import { NexusLogo } from '@/components/NexusLogo'
+import { MagnifyingGlass } from '@phosphor-icons/react'
 
 interface EmptyStateProps {
   onExampleClick: (query: string) => void
@@ -16,8 +17,8 @@ export function EmptyState({ onExampleClick }: EmptyStateProps) {
       <div className="max-w-2xl w-full px-6 text-center space-y-8">
         <div className="space-y-4">
           <div className="flex justify-center">
-            <div className="p-4 bg-accent/10 rounded-full">
-              <Sparkle size={48} className="text-accent" weight="duotone" />
+            <div className="rounded-2xl bg-accent/10 p-4 ring-1 ring-accent/20">
+              <NexusLogo size={56} className="rounded-xl" />
             </div>
           </div>
           <h1 className="text-3xl font-bold tracking-tight">
