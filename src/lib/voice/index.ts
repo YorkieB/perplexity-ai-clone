@@ -16,3 +16,11 @@ export type {
 
 export type { VoiceSession } from '@/lib/voice/voiceSession'
 export { NullVoiceSession, VoiceSessionStub } from '@/lib/voice/voiceSession'
+
+export type { VoiceRealtimeErrorCode } from '@/lib/voice/errors'
+export { VoiceRealtimeError } from '@/lib/voice/errors'
+export type {
+  OpenAIRealtimeVoiceSessionOptions,
+  RealtimeClientSecretPayload,
+} from '@/lib/voice/openaiRealtimeVoiceSession'
+export { OpenAIRealtimeVoiceSession } from '@/lib/voice/openaiRealtimeVoiceSession'
