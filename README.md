@@ -52,6 +52,7 @@ npm run dev
 ## 🔑 API Configuration
 
 - **LLM**: Chat completions go to `POST /api/llm` during `npm run dev` and `npm run preview`, which proxies to OpenAI (or `OPENAI_BASE_URL`) using `OPENAI_API_KEY`. For static hosting without Node, you must provide your own backend or serverless route that implements the same proxy.
+- **Voice (OpenAI Realtime)**: With `OPENAI_API_KEY` set, the same Vite middleware exposes `POST /api/realtime/session`, which calls OpenAI’s `POST /v1/realtime/client_secrets` and returns a short-lived client secret (`value`). The browser uses that token only—never the long-lived API key—to complete WebRTC per OpenAI’s Realtime docs (`POST /v1/realtime/calls` with SDP and the `oai-events` data channel). Implementations live under `src/lib/voice/` (`OpenAIRealtimeVoiceSession`). No extra `VITE_*` keys are required for voice.
 - **Search**: With `VITE_TAVILY_API_KEY`, the app calls Tavily for sources; without it, search is disabled but the assistant can still answer from the model and any attached files.
 
 **Important**: Never commit your `.env` file or hardcode API keys in the source code.
