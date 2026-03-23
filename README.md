@@ -2,12 +2,33 @@
 
 A production-ready, highly responsive AI-powered search engine built with React, TypeScript, and Tailwind CSS. Features real-time web search integration, workspace organization, and persistent conversation threads.
 
+**Plan status:** The telescope roadmap is **complete**—**Phases 1–6** and **Batches 7–10** are all documented with completion summaries; see [Roadmap (plan complete)](docs/ROADMAP-BATCHES.md).
+
 ## Documentation
 
-- **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
+- **[Roadmap batches](docs/ROADMAP-BATCHES.md)** — telescope **Batches 7–10** done ([7](docs/BATCH-07-COMPLETE.md), [8](docs/BATCH-08-COMPLETE.md), [9](docs/BATCH-09-COMPLETE.md), [10](docs/BATCH-10-COMPLETE.md)); [prompts](docs/batches/) kept as templates.
+- **[Telescope analysis (Perplexity reference)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer **Perplexity** taxonomy; repo scope and implementation pointers at the top (not a backlog matrix).
+- **[Agent verification checklist](docs/AGENT-VERIFICATION.md)** — install deps, run `npm run verify` (lint + **tests** + build), CI expectations before moving on.
+- **[Phase 1 AI prompt](docs/PHASE-01-AI-PROMPT.md)** — copy-paste instructions for the first implementation slice (“Include web” + context routing).
+- **[Phase 1 complete (summary)](docs/PHASE-01-COMPLETE.md)** — what shipped on PR #8 (`includeWebSearch`, UI, verification).
+- **[Phase 2 AI prompt](docs/PHASE-02-AI-PROMPT.md)** — thread history in LLM + focus mode when web is off.
+- **[Phase 2 complete (summary)](docs/PHASE-02-COMPLETE.md)** — chat `messages`, `threadContext.ts`, focus disabled when web off (PR #8).
+- **[Phase 3 AI prompt](docs/PHASE-03-AI-PROMPT.md)** — Model Council uses same thread history as main chat.
+- **[Phase 3 complete (summary)](docs/PHASE-03-COMPLETE.md)** — `executeModelCouncil` + priors, shared system/user builders (PR #8).
+- **[Phase 4 AI prompt](docs/PHASE-04-AI-PROMPT.md)** — global answer instructions + privacy (clear threads/workspaces).
+- **[Phase 4 complete (summary)](docs/PHASE-04-COMPLETE.md)** — `UserSettings` answer fields, `buildAssistantSystemContent`, Privacy tab (PR #8).
+- **[Phase 5 AI prompt](docs/PHASE-05-AI-PROMPT.md)** — export / copy thread & answers as Markdown (Pages-lite, client-only).
+- **[Phase 5 complete (summary)](docs/PHASE-05-COMPLETE.md)** — `exportMarkdown.ts`, `ThreadExportActions`, download & clipboard (PR #8).
+- **[Phase 6 AI prompt](docs/PHASE-06-AI-PROMPT.md)** — default model, theme (next-themes), **real** desktop notifications (Permission API + notify when tab hidden).
+- **[Phase 6 complete (summary)](docs/PHASE-06-COMPLETE.md)** — defaults, appearance, notifications wiring (governance: no stubs).
 
 ## 🚀 Features
 
+- **Markdown export**: Download or copy threads and the last answer as `.md` (client-side; sources & model-council blocks included).
+- **Search transparency (Batch 7)**: Deduplicated sources, domain-grouped citations, collapsible **Search steps** after successful web search, consistent follow-up questions ([summary](docs/BATCH-07-COMPLETE.md)).
+- **Deep Research (Batch 8)**: Planner → sequential sub-searches → synthesis, progress UI, message metadata; requires **Include web** ([summary](docs/BATCH-08-COMPLETE.md)).
+- **Workspace knowledge (Batch 9)**: Per-workspace **Include web**, **workspace files** in prompts, sidebar filter/badges, shared defaults ([summary](docs/BATCH-09-COMPLETE.md)).
+- **Platform polish (Batch 10)**: **Voice** input (Web Speech API + fallback), **export all local data** (JSON), optional **Auto model** heuristic, **local usage** estimates ([summary](docs/BATCH-10-COMPLETE.md)).
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data
 - **AI-Powered Responses**: Advanced language model responses with source attribution
 - **Workspace Organization**: Create custom workspaces with tailored AI behavior via system prompts
@@ -71,6 +92,13 @@ npm run dev
 - **State Management**: React hooks with `localStorage` persistence (threads, workspaces, settings)
 - **API Integration**: Tavily Search API (optional) for real-time web data
 - **AI Integration**: OpenAI-compatible chat completions via the dev/preview `/api/llm` proxy (default model GPT-4o-mini)
+
+## Testing
+
+- **`npm run test`** — Vitest unit/component suite (`src/**/*.test.{ts,tsx}`).
+- **`npm run test:watch`** — watch mode while developing.
+- **`npm run test:coverage`** — V8 coverage report (see `coverage/`).
+- **`npm run verify`** — lint + tests + production build (same as CI).
 
 ## 📁 Project Structure
 
