@@ -1089,6 +1089,28 @@ async function handleVisionProxy(req, res) {
   }
 }
 
+
+async function handleReliabilityProxy(req, res) {
+  try {
+    const urlPath = req.url?.split('?')[0] || '/';
+    const targetUrl = 'http://localhost:3000' + urlPath;
+    const headers = { 'Content-Type': req.headers['content-type'] || 'application/json' };
+    let body = null;
+    if (req.method === 'POST' || req.method === 'PUT') {
+      body = await readBody(req);
+    }
+    const fetchOpts = { method: req.method || 'GET', headers };
+    if (body) fetchOpts.body = body;
+    const upstream = await fetch(targetUrl, fetchOpts);
+    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' });
+    const data = await upstream.text();
+    res.end(data);
+  } catch (e) {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Reliability proxy error' }));
+  }
+}
+
 function createServer() {
   return http.createServer((req, res) => {
     const urlPath = req.url?.split('?')[0] || '/'
@@ -1151,6 +1173,11 @@ function createServer() {
 
     if (urlPath.startsWith('/api/vision/')) {
       void handleVisionProxy(req, res)
+      return
+    }
+
+    if (urlPath.startsWith('/api/reliability/')) {
+      void handleReliabilityProxy(req, res)
       return
     }
 
