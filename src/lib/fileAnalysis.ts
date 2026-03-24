@@ -1,4 +1,5 @@
 import { callLlm, llmPrompt } from './llm'
+import { getPreferredChatModel } from './chat-preferences'
 import { UploadedFile } from './types'
 
 export interface FileAnalysisResult {
@@ -53,7 +54,7 @@ Provide your analysis in the following JSON format:
   "qualityScore": <number between 0-100 based on content quality, structure, clarity>
 }`
 
-  const result = await callLlm(prompt, 'gpt-4o-mini', true)
+  const result = await callLlm(prompt, getPreferredChatModel(), true)
   const analysis = JSON.parse(result)
 
   return {
@@ -92,5 +93,5 @@ Provide:
 3. Suggestions for improvement
 4. Any missing pieces or gaps`
 
-  return await callLlm(prompt, 'gpt-4o-mini')
+  return await callLlm(prompt, getPreferredChatModel())
 }

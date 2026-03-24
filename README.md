@@ -55,6 +55,8 @@ npm run dev
 - **Voice (OpenAI Realtime)**: With `OPENAI_API_KEY` set, the same Vite middleware exposes `POST /api/realtime/session`, which calls OpenAI’s `POST /v1/realtime/client_secrets` and returns a short-lived client secret (`value`). The browser uses that token only—never the long-lived API key—to complete WebRTC per OpenAI’s Realtime docs (`POST /v1/realtime/calls` with SDP and the `oai-events` data channel). Implementations live under `src/lib/voice/` (`OpenAIRealtimeVoiceSession`). No extra `VITE_*` keys are required for voice.
 - **Search**: With `VITE_TAVILY_API_KEY`, the app calls Tavily for sources; without it, search is disabled but the assistant can still answer from the model and any attached files.
 
+**DigitalOcean inference:** This app does **not** add its own quotas for DigitalOcean. If you use a Gradient / serverless inference key, throughput and throttling are enforced by **that inference service** (you may not see a dedicated “rate limit” panel in the main cloud control panel). A **429** response still means the upstream asked you to slow down or retry—the client may retry automatically (`VITE_LLM_RATE_LIMIT_RETRIES`).
+
 **Important**: Never commit your `.env` file or hardcode API keys in the source code.
 
 ## 📖 Usage

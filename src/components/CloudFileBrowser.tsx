@@ -33,6 +33,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
       onedrive: false,
       github: false,
       dropbox: false,
+      spotify: false,
     },
   })
 
@@ -41,6 +42,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     onedrive: false,
     github: false,
     dropbox: false,
+    spotify: false,
   }
 
   const [activeService, setActiveService] = useState<'googledrive' | 'onedrive' | 'github' | 'dropbox' | null>(null)

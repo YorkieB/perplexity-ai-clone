@@ -36,6 +36,38 @@
     padding: 0 !important;
     display: block;
   }
+
+  [data-slot="scroll-area-viewport"] > div {
+    display: block !important;
+    min-width: 0 !important;
+  }
+
+  @keyframes tunein-marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+
+  .markdown-content {
+    overflow-wrap: break-word;
+    word-break: break-word;
+    overflow: hidden;
+  }
+
+  .markdown-content p,
+  .markdown-content li,
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3,
+  .markdown-content h4,
+  .markdown-content blockquote {
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  .markdown-content pre {
+    overflow-x: auto;
+    max-width: 100%;
+  }
 }
 
 :root {

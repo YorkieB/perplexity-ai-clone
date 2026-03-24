@@ -1,0 +1,6 @@
+# Proxy RadioTime OPML for TuneIn station search (same as Vite / vercel.json).
+[[redirects]]
+  from = "/tunein-opml/*"
+  to = "https://opml.radiotime.com/:splat"
+  status = 200
+  force = true

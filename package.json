@@ -2,7 +2,7 @@
     "name": "ai-search-engine",
     "private": true,
     "version": "0.0.0",
-    "type": "module",
+    "type": "module","main": "electron/main.cjs",
     "scripts": {
         "dev": "vite",
         "kill": "fuser -k 5000/tcp",
@@ -10,7 +10,7 @@
         "lint": "eslint .",
         "verify": "npm run lint && npm run build && npm audit",
         "optimize": "vite optimize",
-        "preview": "vite preview"
+        "preview": "vite preview","desktop": "npm run build && electron ."
     },
     "dependencies": {
         "@heroicons/react": "^2.2.0",

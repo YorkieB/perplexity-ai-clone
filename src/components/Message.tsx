@@ -8,14 +8,26 @@ import { FileAttachment } from './FileAttachment'
 import { FilePreviewModal } from './FilePreviewModal'
 import { FollowUpQuestions } from './FollowUpQuestions'
 import { ModelCouncilResponse } from './ModelCouncilResponse'
+import { QuickAnswer } from './QuickAnswer'
+import { ImageGallery } from './ImageGallery'
+import { VideoRow } from './VideoCard'
+import { A2EMediaResult } from './A2EMediaResult'
+import { MessageActionToolbar } from './MessageActionToolbar'
+import { ThinkingProcessPanel, type ThinkingPhase } from '@/components/ThinkingProcessPanel'
 
 interface MessageProps {
   message: MessageType
   onFollowUpClick?: (question: string) => void
+  onRegenerateAssistant?: (assistantMessageId: string) => void
   isGenerating?: boolean
 }
 
-export function Message({ message, onFollowUpClick, isGenerating = false }: MessageProps) {
+export function Message({
+  message,
+  onFollowUpClick,
+  onRegenerateAssistant,
+  isGenerating = false,
+}: MessageProps) {
   const isUser = message.role === 'user'
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
@@ -24,6 +36,12 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
     setPreviewOpen(true)
+  }
+
+  const hasAnswerPreview = message.content.trim().length > 0
+  let thinkingPhase: ThinkingPhase = 'done'
+  if (message.isStreaming) {
+    thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
   }
 
   return (
@@ -46,7 +64,7 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
         )}
       </div>
 
-      <div className={cn('flex-1 space-y-4', isUser && 'flex flex-col items-end')}>
+      <div className={cn('flex-1 space-y-4', isUser && 'flex flex-col items-end')} style={{ minWidth: 0, overflow: 'hidden' }}>
         {isUser && message.files && message.files.length > 0 && (
           <div className="space-y-2 max-w-2xl w-full">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -64,6 +82,12 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
             </div>
           </div>
         )}
+
+        {!isUser && message.tavilyAnswer && (
+          <QuickAnswer answer={message.tavilyAnswer} isGenerating={isGenerating} />
+        )}
+
+        {!isUser && message.a2eTask && <A2EMediaResult task={message.a2eTask} />}
 
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="space-y-2">
@@ -83,11 +107,20 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
           </div>
         )}
 
+        {!isUser && message.images && message.images.length > 0 && (
+          <ImageGallery images={message.images} />
+        )}
+
+        {!isUser && message.videos && message.videos.length > 0 && (
+          <VideoRow videos={message.videos} />
+        )}
+
         <div
           className={cn(
             'max-w-none',
             isUser && 'bg-primary/10 px-4 py-3 rounded-lg max-w-2xl'
           )}
+          style={{ overflowWrap: 'break-word', wordBreak: 'break-word', overflow: 'hidden' }}
         >
           {isUser ? (
             <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
@@ -104,12 +137,40 @@ export function Message({ message, onFollowUpClick, isGenerating = false }: Mess
               onCitationHover={setHighlightedSource}
             />
           ) : (
-            <MarkdownRenderer
-              content={message.content}
-              onCitationHover={setHighlightedSource}
-            />
+            <>
+              {!isUser && message.reasoning && (
+                <ThinkingProcessPanel
+                  thinking={message.reasoning}
+                  phase={thinkingPhase}
+                  showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
+                />
+              )}
+              <MarkdownRenderer
+                content={message.content}
+                onCitationHover={setHighlightedSource}
+              />
+              {message.isStreaming && (
+                <span
+                  className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
+                  aria-hidden
+                />
+              )}
+            </>
           )}
         </div>
+
+        {!isUser &&
+          !message.isModelCouncil &&
+          message.content &&
+          !message.isStreaming && (
+            <MessageActionToolbar
+              markdownContent={message.content}
+              disabled={Boolean(isGenerating)}
+              onRegenerate={
+                onRegenerateAssistant ? () => onRegenerateAssistant(message.id) : undefined
+              }
+            />
+          )}
 
         {!isUser && message.followUpQuestions && message.followUpQuestions.length > 0 && onFollowUpClick && (
           <FollowUpQuestions

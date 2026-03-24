@@ -12,24 +12,14 @@ interface SourceCardProps {
 export function SourceCard({ source, index, isHighlighted = false }: SourceCardProps) {
   const getDomain = (url: string) => {
     try {
-      const urlObj = new URL(url)
-      return urlObj.hostname.replace('www.', '')
+      return new URL(url).hostname.replace('www.', '')
     } catch {
       return url
     }
   }
 
-  const getFaviconUrl = (url: string) => {
-    try {
-      const urlObj = new URL(url)
-      return `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=32`
-    } catch {
-      return null
-    }
-  }
-
-  const domain = getDomain(source.url)
-  const faviconUrl = getFaviconUrl(source.url)
+  const domain = source.domain || getDomain(source.url)
+  const faviconUrl = source.favicon || `https://www.google.com/s2/favicons?domain=${domain}&sz=32`
 
   return (
     <Card

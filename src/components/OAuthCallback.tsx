@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { UserSettings } from '@/lib/types'
+import type { OAuthToken, UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
+import { exchangeSpotifyCodeForToken } from '@/lib/spotify-oauth'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
@@ -17,6 +18,7 @@ export function OAuthCallback() {
       onedrive: false,
       github: false,
       dropbox: false,
+      spotify: false,
     },
   })
 
@@ -49,18 +51,32 @@ export function OAuthCallback() {
         return
       }
 
-      const providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
-      const clientId = settings?.oauthClientIds[providerKey]
-      const clientSecret = settings?.oauthClientSecrets[providerKey]
-
-      if (!clientId || !clientSecret) {
-        setStatus('error')
-        setMessage('OAuth credentials not found. Please configure them in settings.')
-        return
-      }
-
       try {
-        const token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
+        let token: OAuthToken | null = null
+        let providerKey: 'googledrive' | 'onedrive' | 'github' | 'dropbox' | 'spotify'
+
+        if (state.provider === 'spotify') {
+          providerKey = 'spotify'
+          const clientId = settings?.oauthClientIds.spotify?.trim()
+          if (!clientId) {
+            setStatus('error')
+            setMessage('Spotify Client ID not found. Add it in Settings → OAuth, then connect again.')
+            return
+          }
+          token = await exchangeSpotifyCodeForToken(code, clientId)
+        } else {
+          providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
+          const clientId = settings?.oauthClientIds[providerKey]
+          const clientSecret = settings?.oauthClientSecrets[providerKey]
+
+          if (!clientId || !clientSecret) {
+            setStatus('error')
+            setMessage('OAuth credentials not found. Please configure them in settings.')
+            return
+          }
+
+          token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
+        }
 
         if (!token) {
           setStatus('error')

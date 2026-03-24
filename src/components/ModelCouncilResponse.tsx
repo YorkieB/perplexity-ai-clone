@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ModelResponse } from '@/lib/types'
+import { getModelDisplayName } from '@/lib/model-names'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -15,6 +16,7 @@ import {
   FileArrowDown,
   CaretDown,
   Columns,
+  ChatsCircle,
 } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 
@@ -52,7 +54,7 @@ export function ModelCouncilResponse({
   divergentPoints,
   onCitationHover,
 }: ModelCouncilResponseProps) {
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useState('conversation')
   const [comparisonOpen, setComparisonOpen] = useState(false)
 
   const getConvergenceColor = (score: number) => {
@@ -162,6 +164,10 @@ export function ModelCouncilResponse({
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="w-full justify-start overflow-x-auto flex-nowrap bg-muted/50">
+          <TabsTrigger value="conversation" className="gap-1.5">
+            <ChatsCircle size={14} />
+            Conversation
+          </TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           {modelResponses.map((response, index) => {
             const modelBadge = getModelBadge(response.model)
@@ -178,6 +184,52 @@ export function ModelCouncilResponse({
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
           ) : null}
         </TabsList>
+
+        <TabsContent value="conversation" className="mt-4">
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground mb-4">
+              The council consulted {modelResponses.length} models. Here is what each one contributed.
+            </p>
+            {modelResponses.map((response) => {
+              const displayName = getModelDisplayName(response.model)
+              const modelBadge = getModelBadge(response.model)
+              return (
+                <div
+                  key={response.model}
+                  className="flex gap-3 group"
+                >
+                  <div className="shrink-0 flex flex-col items-center">
+                    <div
+                      className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ${modelBadge.color} border`}
+                    >
+                      {displayName.charAt(0)}
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground mt-1 truncate max-w-[4rem]">
+                      {displayName}
+                    </span>
+                  </div>
+                  <Card className="flex-1 p-4 bg-card/30 min-w-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="font-medium text-sm">{displayName}</span>
+                      <Badge variant="outline" className={`text-xs ${modelBadge.color}`}>
+                        {modelBadge.label}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {formatResponseTime(response.responseTime)}
+                      </span>
+                    </div>
+                    <div className="text-sm prose prose-sm max-w-none">
+                      <MarkdownRenderer
+                        content={response.content}
+                        onCitationHover={onCitationHover || (() => {})}
+                      />
+                    </div>
+                  </Card>
+                </div>
+              )
+            })}
+          </div>
+        </TabsContent>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
           <Card className="p-4 bg-card/50">

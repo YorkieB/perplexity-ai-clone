@@ -1,6 +1,8 @@
 import type { VoiceTurn } from './voice/types'
 
-export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code'
+export type FocusMode = 'all' | 'academic' | 'reddit' | 'youtube' | 'news' | 'code' | 'finance' | 'chat'
+
+export type TimeRange = 'any' | 'day' | 'week' | 'month' | 'year'
 
 export type AvailableModel = 'gpt-4o' | 'gpt-4o-mini' | 'claude-3.5-sonnet' | 'claude-3-opus' | 'claude-3-haiku' | 'gemini-2.0-flash'
 
@@ -8,9 +10,22 @@ export interface Source {
   url: string
   title: string
   snippet: string
+  rawContent?: string
   confidence?: number
   domain?: string
   favicon?: string
+}
+
+export interface SearchImage {
+  url: string
+  description?: string
+}
+
+export interface SearchVideo {
+  url: string
+  videoId: string
+  title: string
+  thumbnail: string
 }
 
 export interface UploadedFile {
@@ -31,11 +46,44 @@ export interface ModelResponse {
   tokenCount?: number
 }
 
+export type A2EModelId =
+  | 'a2e-text-to-image'
+  | 'a2e-nano-banana'
+  | 'a2e-image-to-video'
+  | 'a2e-talking-photo'
+  | 'a2e-talking-video'
+  | 'a2e-avatar-video'
+  | 'a2e-tts'
+  | 'a2e-voice-clone'
+  | 'a2e-caption-removal'
+  | 'a2e-dubbing'
+  | 'a2e-live-stream'
+  | 'a2e-virtual-try-on'
+  | 'a2e-motion-transfer'
+  | 'a2e-face-swap'
+  | 'a2e-watermark'
+  | 'a2e-custom-avatar'
+
+export type A2EMediaType = 'image' | 'video' | 'audio' | 'info'
+
+export interface A2ETask {
+  id: string
+  modelId: A2EModelId
+  status: 'completed' | 'failed'
+  mediaType: A2EMediaType
+  resultUrls: string[]
+  error?: string
+  detail?: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   sources?: Source[]
+  images?: SearchImage[]
+  videos?: SearchVideo[]
+  tavilyAnswer?: string
   files?: UploadedFile[]
   createdAt: number
   modelUsed?: string
@@ -44,10 +92,11 @@ export interface Message {
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]
-  /** Present when the message was produced in a voice context (optional for backward compatibility). */
   modality?: 'text' | 'voice'
-  /** Voice-specific turn metadata when {@link modality} is `'voice'` or for hybrid threads. */
   voiceTurn?: VoiceTurn
+  a2eTask?: A2ETask
+  isStreaming?: boolean
+  reasoning?: string
 }
 
 export interface Thread {
@@ -65,6 +114,19 @@ export interface Workspace {
   description: string
   customSystemPrompt: string
   createdAt: number
+  includeWebSearch?: boolean
+  workspaceFiles?: WorkspaceFile[]
+}
+
+export interface WorkspaceFile {
+  id: string
+  name: string
+  content: string
+  type: string
+  size: number
+  mimeType?: string
+  addedAt?: number
+  uploadedAt: number
 }
 
 export interface OAuthToken {
@@ -76,23 +138,36 @@ export interface OAuthToken {
 
 export interface UserSettings {
   apiKeys: {
+    /** OpenAI API key (sk-…) for chat + TTS via /api/llm and /api/tts when not using .env only. */
+    openai?: string
     digitalOcean?: string
+    /** ElevenLabs API key when `ttsProvider` is `elevenlabs` (or set `ELEVENLABS_API_KEY` in .env for server-only). */
+    elevenLabs?: string
+    /** ElevenLabs voice id from the dashboard (per voice). */
+    elevenLabsVoiceId?: string
     googledrive?: string
     onedrive?: string
     github?: string
     dropbox?: string
   }
+  /** Read-aloud / voice chat TTS backend. Default OpenAI. */
+  ttsProvider?: 'openai' | 'elevenlabs'
+  includeWebSearch?: boolean
   oauthTokens: {
     googledrive?: OAuthToken
     onedrive?: OAuthToken
     github?: OAuthToken
     dropbox?: OAuthToken
+    /** Spotify Web API (PKCE); used for “My playlists” + embed. */
+    spotify?: OAuthToken
   }
   oauthClientIds: {
     googledrive?: string
     onedrive?: string
     github?: string
     dropbox?: string
+    /** Spotify Dashboard “Client ID” (PKCE — no secret stored). */
+    spotify?: string
   }
   oauthClientSecrets: {
     googledrive?: string
@@ -105,6 +180,7 @@ export interface UserSettings {
     onedrive: boolean
     github: boolean
     dropbox: boolean
+    spotify: boolean
   }
 }
 

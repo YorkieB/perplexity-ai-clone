@@ -28,7 +28,7 @@ export function FollowUpQuestions({
             onClick={() => onQuestionClick(question)}
             disabled={isLoading}
           >
-            <span className="flex-1 text-sm leading-relaxed">{question}</span>
+            <span className="flex-1 text-sm leading-relaxed" style={{ whiteSpace: 'normal', overflowWrap: 'break-word' }}>{question}</span>
             <ArrowRight
               size={16}
               className="ml-2 text-muted-foreground group-hover:text-accent transition-colors flex-shrink-0"

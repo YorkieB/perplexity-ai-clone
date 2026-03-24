@@ -75,7 +75,17 @@ export async function processFile(file: File): Promise<UploadedFile> {
   } else if (file.type.startsWith('image/')) {
     content = await readFileAsDataURL(file)
   } else if (file.type === 'application/pdf') {
-    content = `[PDF: ${file.name}]`
+    const buf = await file.arrayBuffer()
+    const { extractTextFromPdfArrayBuffer } = await import('@/lib/pdf-text')
+    try {
+      const extracted = await extractTextFromPdfArrayBuffer(buf)
+      content =
+        extracted.length > 0
+          ? extracted
+          : `[PDF: ${file.name} — no extractable text (try OCR or export as text)]`
+    } catch {
+      content = `[PDF: ${file.name} — could not read text from this file]`
+    }
   }
   
   return {

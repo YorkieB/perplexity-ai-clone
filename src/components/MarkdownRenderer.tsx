@@ -263,7 +263,7 @@ export function MarkdownRenderer({ content, onCitationHover }: MarkdownRendererP
   }, [content, onCitationHover])
 
   return (
-    <div className="prose prose-invert max-w-none markdown-content">
+    <div className="prose prose-invert max-w-none markdown-content" style={{ overflowWrap: 'break-word', wordBreak: 'break-word', overflow: 'hidden' }}>
       {renderedContent}
     </div>
   )

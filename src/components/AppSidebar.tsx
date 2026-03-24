@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -11,7 +12,12 @@ import {
   Folder,
   CaretDown,
   CaretRight,
-  Gear
+  Gear,
+  Microphone,
+  GlobeSimple,
+  Robot,
+  FilmSlate,
+  Trash
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
@@ -27,6 +33,14 @@ interface AppSidebarProps {
   onNewThread: () => void
   onNewWorkspace: () => void
   onOpenSettings: () => void
+  threads?: Thread[]
+  workspaces?: Workspace[]
+  onDeleteThread?: (id: string) => void
+  onDeleteWorkspace?: (id: string) => void
+  onOpenA2eStudio?: () => void
+  onOpenWebBrowser?: () => void
+  onOpenAgentBrowser?: () => void
+  onOpenVoice?: () => void
 }
 
 export function AppSidebar({
@@ -39,13 +53,28 @@ export function AppSidebar({
   onNewThread,
   onNewWorkspace,
   onOpenSettings,
+  threads: threadsProp,
+  workspaces: workspacesProp,
+  onDeleteThread,
+  onDeleteWorkspace,
+  onOpenA2eStudio,
+  onOpenWebBrowser,
+  onOpenAgentBrowser,
+  onOpenVoice,
 }: AppSidebarProps) {
-  const [threads] = useLocalStorage<Thread[]>('threads', [])
-  const [workspaces] = useLocalStorage<Workspace[]>('workspaces', [])
+  const [storedThreads] = useLocalStorage<Thread[]>('threads', [])
+  const [storedWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
+  const threads = threadsProp ?? storedThreads
+  const workspaces = workspacesProp ?? storedWorkspaces
   const [libraryOpen, setLibraryOpen] = useState(true)
   const [workspacesOpen, setWorkspacesOpen] = useState(true)
 
   const sortedThreads = [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)
+  const activeWorkspace = (workspaces || []).find((workspace) => workspace.id === activeWorkspaceId)
+  const visibleThreads = activeWorkspaceId
+    ? sortedThreads.filter((thread) => thread.workspaceId === activeWorkspaceId)
+    : sortedThreads
+  const workspaceNames = new Map((workspaces || []).map((workspace) => [workspace.id, workspace.name]))
 
   return (
     <div
@@ -89,10 +118,17 @@ export function AppSidebar({
                 </Button>
               </div>
               <CollapsibleContent className="mt-2 space-y-1">
-                {sortedThreads.length === 0 ? (
-                  <p className="text-xs text-muted-foreground px-2 py-4">No threads yet</p>
+                {activeWorkspace && (
+                  <p className="text-xs text-muted-foreground px-2 pb-1">
+                    Showing threads in <span className="font-medium text-foreground">{activeWorkspace.name}</span>
+                  </p>
+                )}
+                {visibleThreads.length === 0 ? (
+                  <p className="text-xs text-muted-foreground px-2 py-4">
+                    {activeWorkspace ? 'No threads in this workspace yet' : 'No threads yet'}
+                  </p>
                 ) : (
-                  sortedThreads.map((thread) => (
+                  visibleThreads.map((thread) => (
                     <Button
                       key={thread.id}
                       variant={activeThreadId === thread.id ? 'secondary' : 'ghost'}
@@ -106,9 +142,16 @@ export function AppSidebar({
                       <ChatCircle size={16} className="shrink-0" />
                       <div className="flex-1 min-w-0 text-left">
                         <p className="text-sm truncate">{thread.title}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatTimestamp(thread.updatedAt)}
-                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <p className="text-xs text-muted-foreground">
+                            {formatTimestamp(thread.updatedAt)}
+                          </p>
+                          {!activeWorkspaceId && thread.workspaceId && workspaceNames.get(thread.workspaceId) && (
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                              {workspaceNames.get(thread.workspaceId)}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </Button>
                   ))
@@ -182,6 +225,38 @@ export function AppSidebar({
           >
             <Folder size={20} />
           </Button>
+        </div>
+      )}
+
+
+      {!isCollapsed && (
+        <div className="px-3 pb-2 space-y-1">
+          <Separator className="mb-2" />
+          <p className="text-xs text-muted-foreground px-2 pb-1 font-medium">Tools</p>
+          {onOpenVoice && (
+            <Button variant="ghost" size="sm" onClick={onOpenVoice} className="w-full justify-start gap-2 px-2">
+              <Microphone size={16} />
+              <span className="text-sm">Voice Mode</span>
+            </Button>
+          )}
+          {onOpenA2eStudio && (
+            <Button variant="ghost" size="sm" onClick={onOpenA2eStudio} className="w-full justify-start gap-2 px-2">
+              <FilmSlate size={16} />
+              <span className="text-sm">A2E Studio</span>
+            </Button>
+          )}
+          {onOpenWebBrowser && (
+            <Button variant="ghost" size="sm" onClick={onOpenWebBrowser} className="w-full justify-start gap-2 px-2">
+              <GlobeSimple size={16} />
+              <span className="text-sm">Web Browser</span>
+            </Button>
+          )}
+          {onOpenAgentBrowser && (
+            <Button variant="ghost" size="sm" onClick={onOpenAgentBrowser} className="w-full justify-start gap-2 px-2">
+              <Robot size={16} />
+              <span className="text-sm">Agent Browser</span>
+            </Button>
+          )}
         </div>
       )}
 

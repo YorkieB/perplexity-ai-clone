@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/tunein-opml/:path*",
+      "destination": "https://opml.radiotime.com/:path*"
+    }
+  ]
+}

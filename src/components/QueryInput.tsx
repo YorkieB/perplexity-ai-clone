@@ -44,6 +44,7 @@ interface QueryInputProps {
   placeholder?: string
   advancedMode: boolean
   onAdvancedModeChange: (enabled: boolean) => void
+  onVoiceOpen?: () => void
 }
 
 export function QueryInput({
@@ -52,6 +53,7 @@ export function QueryInput({
   placeholder = 'Ask anything...',
   advancedMode,
   onAdvancedModeChange,
+  onVoiceOpen,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -140,6 +142,11 @@ export function QueryInput({
     fileInputRef.current?.click()
   }
 
+  const handleVoiceOpen = () => {
+    if (onVoiceOpen) onVoiceOpen()
+    else toast.info('Voice mode is not available in this view.')
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -175,7 +182,7 @@ export function QueryInput({
         </div>
       )}
       <div className="relative bg-card border border-border rounded-xl shadow-sm">
-        <div className="flex items-start gap-2 p-3">
+        <div className="flex flex-wrap items-start gap-2 p-3">
           <Popover>
             <PopoverTrigger asChild>
               <Button
@@ -293,7 +300,7 @@ export function QueryInput({
             </PopoverContent>
           </Popover>
 
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 min-h-[40px]">
             {attachedFiles.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachedFiles.map((file) => (
@@ -335,9 +342,9 @@ export function QueryInput({
             disabled={isLoading || isUploadingFile}
           />
 
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0 min-w-0 sm:ml-auto">
             <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto px-2">
+              <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto max-w-[9rem] px-2">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -349,19 +356,10 @@ export function QueryInput({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 hover:bg-muted"
+              className="h-8 w-8 hover:bg-muted shrink-0"
               disabled={isLoading}
             >
               <Desktop size={16} />
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 hover:bg-muted"
-              disabled={isLoading}
-            >
-              <Microphone size={16} />
             </Button>
 
             <Button
@@ -375,8 +373,23 @@ export function QueryInput({
           </div>
         </div>
 
-        <div className="px-3 pb-2 flex items-center gap-2 text-xs text-muted-foreground border-t border-border pt-2 mt-1">
-          <span>Type / for search modes and shortcuts</span>
+        <div className="px-3 pb-2 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 mt-1">
+          <span className="text-xs text-muted-foreground">
+            Type / for search modes and shortcuts
+          </span>
+          <button
+            type="button"
+            id="query-input-voice"
+            data-testid="voice-mode-button"
+            disabled={isLoading}
+            onClick={handleVoiceOpen}
+            title="Voice mode — speak to the assistant"
+            aria-label="Open voice mode"
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border-2 border-primary bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Microphone size={16} weight="fill" className="text-primary-foreground" aria-hidden />
+            <span>Voice</span>
+          </button>
         </div>
       </div>
 

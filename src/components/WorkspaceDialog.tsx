@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,30 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
   const [name, setName] = useState(workspace?.name || '')
   const [description, setDescription] = useState(workspace?.description || '')
   const [customSystemPrompt, setCustomSystemPrompt] = useState(workspace?.customSystemPrompt || '')
+
+  /** Keep fields in sync when opening or switching create vs edit (Radix may not remount the dialog). */
+  useEffect(() => {
+    if (!open) return
+    setName(workspace?.name ?? '')
+    setDescription(workspace?.description ?? '')
+    setCustomSystemPrompt(workspace?.customSystemPrompt ?? '')
+  }, [open, workspace?.id])
+
+  /**
+   * Radix calls `onOpenChange(true)` when opening and `onOpenChange(false)` when closing.
+   * The previous handler ignored the argument and always called `onOpenChange(false)`, so the dialog
+   * closed immediately whenever it tried to open — workspaces could not be created.
+   */
+  const handleDialogOpenChange = (next: boolean) => {
+    if (!next) {
+      if (!workspace) {
+        setName('')
+        setDescription('')
+        setCustomSystemPrompt('')
+      }
+    }
+    onOpenChange(next)
+  }
 
   const handleSave = () => {
     if (!name.trim()) return
@@ -42,17 +66,8 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
     onOpenChange(false)
   }
 
-  const handleClose = () => {
-    if (!workspace) {
-      setName('')
-      setDescription('')
-      setCustomSystemPrompt('')
-    }
-    onOpenChange(false)
-  }
-
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
+    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>{workspace ? 'Edit Workspace' : 'New Workspace'}</DialogTitle>
@@ -102,10 +117,10 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={handleClose}>
+          <Button type="button" variant="ghost" onClick={() => handleDialogOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={!name.trim()}>
+          <Button type="button" onClick={handleSave} disabled={!name.trim()}>
             {workspace ? 'Save Changes' : 'Create Workspace'}
           </Button>
         </DialogFooter>

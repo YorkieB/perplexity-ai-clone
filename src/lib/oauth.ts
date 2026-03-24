@@ -28,12 +28,13 @@ const OAUTH_CONFIGS: Record<string, Partial<OAuthProvider>> = {
     scopes: ['files.metadata.read', 'files.content.read'],
   },
   googleDrive: {
-    name: 'Google Drive',
+    name: 'Google (Drive & Calendar)',
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     scopes: [
       'https://www.googleapis.com/auth/drive.readonly',
       'https://www.googleapis.com/auth/drive.metadata.readonly',
+      'https://www.googleapis.com/auth/calendar.readonly',
     ],
   },
   oneDrive: {
