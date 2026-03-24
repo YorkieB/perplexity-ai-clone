@@ -535,18 +535,26 @@ Assistant: ${ai || ''}`
           const query = args.query || ''
           if (query && callId) {
             setS('thinking')
-            fetch('/api/llm', {
+            fetch('/api/search', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: `Search the web for: ${query}. Return a concise summary of the top results.` }],
-                temperature: 0.3,
-              }),
+              body: JSON.stringify({ query, maxResults: 5 }),
             })
               .then(r => r.json())
               .then(data => {
-                const content = data?.choices?.[0]?.message?.content || 'No search results found.'
+                let content = ''
+                if (data.answer) {
+                  content = data.answer + '\n\n'
+                }
+                if (Array.isArray(data.results) && data.results.length > 0) {
+                  const summaries = data.results
+                    .slice(0, 5)
+                    .map((r, i) =>
+                      `${i + 1}. ${r.title || 'Untitled'}: ${(r.content || '').slice(0, 300)}${r.url ? ' (' + r.url + ')' : ''}`)
+                    .join('\n')
+                  content += 'Search results:\n' + summaries
+                }
+                if (!content) content = 'No search results found for: ' + query
                 const ws = wsRef.current
                 if (ws?.readyState === WebSocket.OPEN) {
                   ws.send(JSON.stringify({
