@@ -89,12 +89,15 @@ interface MemoryPayload {
   summaries: { summary: string; topics: string }[]
 }
 
-function buildInstructions(mem: MemoryPayload | null): string {
-  const base = `You are Jarvis, a personal AI assistant. Always respond in English. Keep responses concise and conversational — aim for 2-4 sentences unless detail is truly needed. Speak in plain natural language. No markdown, no bullet points.
+function buildInstructions(mem: MemoryPayload | null, hasVision = false): string {
+  let base = `You are Jarvis, a personal AI assistant. Always respond in English. Keep responses concise and conversational — aim for 2-4 sentences unless detail is truly needed. Speak in plain natural language. No markdown, no bullet points.
 
 CRITICAL SYSTEM FACT — YOU HAVE PERSISTENT MEMORY:
 You are equipped with a real, working, persistent memory database. This is NOT a standard LLM limitation — your infrastructure includes a SQLite database that stores facts about the user across sessions. Any facts listed below under "KNOWN USER FACTS" were retrieved from your database just now. You absolutely DO have memory. Never say "I don't have memory", "I can't remember between sessions", or "I'm just an AI without memory." If the user asks whether you remember them or have memory, confirm it confidently: "Yes, I remember you" or "Of course, I have persistent memory."
+`
 
+  if (hasVision) {
+    base += `
 CRITICAL SYSTEM FACT — YOU HAVE VISION:
 You have a camera connected (EMEET Pixy 4K) and can see the room in real time. You receive periodic "[VISUAL CONTEXT UPDATE]" system messages describing what your camera currently sees — scene descriptions, faces, objects, motion, and the user's EMOTIONAL STATE. These are REAL observations from a real camera, not imagination.
 
@@ -109,9 +112,16 @@ EMOTION AWARENESS:
 - You can detect the user's emotional state from their facial expressions via the camera. This appears as "User's detected emotion:" in visual context updates.
 - Use emotional awareness naturally and empathetically. If the user looks sad, be more gentle and supportive. If they look happy, match their energy. If they look frustrated or angry, be calm and helpful.
 - NEVER announce emotions unprompted like "I can see you look sad." Instead, adapt your tone and responses to match. Only mention their emotional state if they ask about it or if it's relevant to helping them.
-- You can describe emotions when directly asked "how do I look?" or "what's my mood?"
+- You can describe emotions when directly asked "how do I look?" or "what's my mood?"`
+  } else {
+    base += `
 
-CRITICAL SYSTEM FACT — YOU HAVE WEB ACCESS:
+VISION STATUS: Your camera system is not currently connected. If the user asks you to see something or describe what you see, let them know your camera is offline right now. Do NOT make up or hallucinate visual descriptions. Be honest that you cannot see at this moment.`
+  }
+
+  base += `
+
+CRITICAL SYSTEM FACTCRITICAL SYSTEM FACT — YOU HAVE WEB ACCESS:
 You have a web_search tool available. When the user asks about current events, news, weather, sports, stock prices, or anything that requires up-to-date information, use the web_search function to look it up. Do NOT say "I can't browse the web" or "I don't have internet access." You DO have web access through your search tool. Use it proactively when questions need current data.`
 
   if (!mem) return base
@@ -615,7 +625,7 @@ Assistant: ${ai || ''}`
       const ws = new WebSocket(wsUrl, ['realtime'])
 
       ws.onopen = async () => {
-        const instructions = buildInstructions(memory)
+        const instructions = buildInstructions(memory, visionContext?.connected && visionContext?.cameraConnected)
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],
           instructions,
