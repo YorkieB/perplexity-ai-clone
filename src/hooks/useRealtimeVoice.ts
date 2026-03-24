@@ -627,13 +627,24 @@ Assistant: ${ai || ''}`
       console.warn('[memory] Failed to load memory, proceeding without it:', e)
     }
 
+    let visionAvailable = visionContext?.connected && visionContext?.cameraConnected
+    if (!visionAvailable) {
+      try {
+        const vRes = await fetch('/api/vision/context')
+        if (vRes.ok) {
+          const vData = await vRes.json()
+          visionAvailable = !!(vData.camera_connected ?? vData.cameraConnected)
+        }
+      } catch { /* vision engine offline */ }
+    }
+
     try {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${proto}//${location.host}/ws/realtime?model=${encodeURIComponent(model)}`
       const ws = new WebSocket(wsUrl, ['realtime'])
 
       ws.onopen = async () => {
-        const instructions = buildInstructions(memory, visionContext?.connected && visionContext?.cameraConnected)
+        const instructions = buildInstructions(memory, visionAvailable)
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],
           instructions,
