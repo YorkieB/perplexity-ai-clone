@@ -6,7 +6,7 @@ const { mkdirSync, existsSync } = require('node:fs')
 let _db = null
 
 function dbPath(projectRoot) {
-  const root = projectRoot || process.cwd()
+  const root = projectRoot || resolve(dirname(__filename), '..')
   return resolve(root, 'data', 'jarvis.db')
 }
 

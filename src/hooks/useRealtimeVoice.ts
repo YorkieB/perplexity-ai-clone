@@ -612,7 +612,7 @@ Assistant: ${ai || ''}`
     try {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${proto}//${location.host}/ws/realtime?model=${encodeURIComponent(model)}`
-      const ws = new WebSocket(wsUrl)
+      const ws = new WebSocket(wsUrl, ['realtime'])
 
       ws.onopen = async () => {
         const instructions = buildInstructions(memory)

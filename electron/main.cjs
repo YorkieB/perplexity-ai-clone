@@ -917,6 +917,15 @@ async function handleJarvisMemoryPost(req, res) {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
     const { conversationId, messages } = body
+    // Handle direct fact saving: { facts: [...] }
+    if (Array.isArray(body.facts) && body.facts.length > 0) {
+      jarvisDb.addFacts(body.facts)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true, saved: body.facts.length }))
+      return
+    }
+
     if (!conversationId || !Array.isArray(messages)) {
       res.statusCode = 400
       res.setHeader('Content-Type', 'application/json')
@@ -1233,7 +1242,7 @@ function startLocalServer() {
           'Sec-WebSocket-Version': req.headers['sec-websocket-version'] || '13',
           'Sec-WebSocket-Key': req.headers['sec-websocket-key'] || '',
           'Sec-WebSocket-Extensions': req.headers['sec-websocket-extensions'] || '',
-          'Sec-WebSocket-Protocol': req.headers['sec-websocket-protocol'] || '',
+          ...(req.headers['sec-websocket-protocol'] ? { 'Sec-WebSocket-Protocol': req.headers['sec-websocket-protocol'] } : {}),
           Host: 'api.openai.com',
           Authorization: `Bearer ${openaiKey}`,
           'OpenAI-Beta': 'realtime=v1',
@@ -1243,7 +1252,9 @@ function startLocalServer() {
       upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
         let responseHead = 'HTTP/1.1 101 Switching Protocols\r\n'
         const h = upstreamRes.headers
+        const clientRequestedProtocol = !!req.headers['sec-websocket-protocol']
         for (const key of Object.keys(h)) {
+          if (key.toLowerCase() === 'sec-websocket-protocol' && !clientRequestedProtocol) continue
           const val = h[key]
           if (Array.isArray(val)) {
             val.forEach(v => { responseHead += `${key}: ${v}\r\n` })
