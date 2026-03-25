@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+praat-parselmouth>=0.4.4
+librosa>=0.10
+webrtcvad>=2.0.10
+soundfile>=0.12

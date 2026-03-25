@@ -18,7 +18,9 @@ import {
   Robot,
   FilmSlate,
   Trash,
-  PaintBrush
+  PaintBrush,
+  Code,
+  MusicNotes,
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
@@ -43,6 +45,8 @@ interface AppSidebarProps {
   onOpenWebBrowser?: () => void
   onOpenAgentBrowser?: () => void
   onOpenMediaCanvas?: () => void
+  onOpenCodeEditor?: () => void
+  onOpenMusicPlayer?: () => void
   onOpenVoice?: () => void
   wakeWordEnabled?: boolean
   wakeWordSupported?: boolean
@@ -68,6 +72,8 @@ export function AppSidebar({
   onOpenWebBrowser,
   onOpenAgentBrowser,
   onOpenMediaCanvas,
+  onOpenCodeEditor,
+  onOpenMusicPlayer,
   onOpenVoice,
   wakeWordEnabled,
   wakeWordSupported,
@@ -333,6 +339,18 @@ export function AppSidebar({
             <Button variant="ghost" size="sm" onClick={onOpenMediaCanvas} className="w-full justify-start gap-2 px-2">
               <PaintBrush size={16} />
               <span className="text-sm">Media Canvas</span>
+            </Button>
+          )}
+          {onOpenCodeEditor && (
+            <Button variant="ghost" size="sm" onClick={onOpenCodeEditor} className="w-full justify-start gap-2 px-2">
+              <Code size={16} />
+              <span className="text-sm">Code Editor</span>
+            </Button>
+          )}
+          {onOpenMusicPlayer && (
+            <Button variant="ghost" size="sm" onClick={onOpenMusicPlayer} className="w-full justify-start gap-2 px-2">
+              <MusicNotes size={16} />
+              <span className="text-sm">Music Player</span>
             </Button>
           )}
         </div>

@@ -9,11 +9,13 @@ import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star } from '@phosphor-icons/react'
 import type { VoiceProfile } from '@/lib/voice-registry'
+import { PlaidLinkButton } from '@/components/PlaidLinkButton'
 
 interface SettingsDialogProps {
   open: boolean
@@ -25,6 +27,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const [localApiKeys, setLocalApiKeys] = useState({
     digitalOcean: settings?.apiKeys.digitalOcean || '',
+    suno: settings?.apiKeys.suno || '',
+    plaid: settings?.apiKeys.plaid || '',
+    plaidSecret: settings?.apiKeys.plaidSecret || '',
+    xApiKey: settings?.apiKeys.xApiKey || '',
+    xApiSecret: settings?.apiKeys.xApiSecret || '',
+    xAccessToken: settings?.apiKeys.xAccessToken || '',
+    xAccessTokenSecret: settings?.apiKeys.xAccessTokenSecret || '',
   })
 
   const [localClientIds, setLocalClientIds] = useState({
@@ -43,6 +52,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const [showKeys, setShowKeys] = useState({
     digitalOcean: false,
+    suno: false,
+    plaid: false,
+    plaidSecret: false,
+    xApiKey: false,
+    xApiSecret: false,
+    xAccessToken: false,
+    xAccessTokenSecret: false,
     googledrive: false,
     onedrive: false,
     github: false,
@@ -59,6 +75,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   useEffect(() => {
     setLocalApiKeys({
       digitalOcean: settings?.apiKeys.digitalOcean || '',
+      suno: settings?.apiKeys.suno || '',
+      plaid: settings?.apiKeys.plaid || '',
+      plaidSecret: settings?.apiKeys.plaidSecret || '',
+      xApiKey: settings?.apiKeys.xApiKey || '',
+      xApiSecret: settings?.apiKeys.xApiSecret || '',
+      xAccessToken: settings?.apiKeys.xAccessToken || '',
+      xAccessTokenSecret: settings?.apiKeys.xAccessTokenSecret || '',
     })
     setLocalClientIds({
       googledrive: settings?.oauthClientIds.googledrive || '',
@@ -396,6 +419,194 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </div>
               </Card>
 
+              <Card className="p-6 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="suno-key">Suno API Key</Label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setShowKeys((prev) => ({ ...prev, suno: !prev.suno }))
+                      }
+                    >
+                      {showKeys.suno ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="suno-key"
+                    type={showKeys.suno ? 'text' : 'password'}
+                    placeholder="Enter your Suno API key for music generation"
+                    value={localApiKeys.suno}
+                    onChange={(e) =>
+                      setLocalApiKeys((prev) => ({ ...prev, suno: e.target.value }))
+                    }
+                  />
+                  {localApiKeys.suno && !showKeys.suno && (
+                    <p className="text-xs text-muted-foreground">
+                      Current key: {maskApiKey(localApiKeys.suno)}
+                    </p>
+                  )}
+                </div>
+              </Card>
+
+              <Card className="p-6 space-y-4">
+                <h3 className="font-semibold text-base">Plaid — Bank Connection</h3>
+                <p className="text-sm text-muted-foreground">
+                  Connect your bank account so Jarvis can provide financial advice based on your income and spending.
+                </p>
+                <Separator />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="plaid-client-id">Plaid Client ID</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, plaid: !prev.plaid }))}>
+                      {showKeys.plaid ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="plaid-client-id"
+                    type={showKeys.plaid ? 'text' : 'password'}
+                    placeholder="Enter your Plaid Client ID"
+                    value={localApiKeys.plaid}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, plaid: e.target.value }))}
+                  />
+                  {localApiKeys.plaid && !showKeys.plaid && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.plaid)}</p>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="plaid-secret">Plaid Secret</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, plaidSecret: !prev.plaidSecret }))}>
+                      {showKeys.plaidSecret ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="plaid-secret"
+                    type={showKeys.plaidSecret ? 'text' : 'password'}
+                    placeholder="Enter your Plaid Secret"
+                    value={localApiKeys.plaidSecret}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, plaidSecret: e.target.value }))}
+                  />
+                  {localApiKeys.plaidSecret && !showKeys.plaidSecret && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.plaidSecret)}</p>
+                  )}
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Bank Account</p>
+                    <p className="text-xs text-muted-foreground">
+                      {settings?.plaidAccessToken ? 'Connected — Jarvis can access your financial data.' : 'Not connected yet.'}
+                    </p>
+                  </div>
+                  {settings?.plaidAccessToken ? (
+                    <div className="flex items-center gap-2">
+                      <CheckCircle size={16} className="text-green-500" />
+                      <span className="text-sm text-green-500 font-medium">Connected</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setSettings((prev) => ({ ...prev, plaidAccessToken: undefined }))
+                          toast.success('Bank account disconnected')
+                        }}
+                      >
+                        Disconnect
+                      </Button>
+                    </div>
+                  ) : (
+                    <PlaidLinkButton
+                      disabled={!localApiKeys.plaid || !localApiKeys.plaidSecret}
+                      onSuccess={(accessToken) => {
+                        setSettings((prev) => ({ ...prev, plaidAccessToken: accessToken }))
+                      }}
+                    />
+                  )}
+                </div>
+              </Card>
+
+              <Card className="p-6 space-y-4">
+                <h3 className="font-semibold text-base">X (Twitter) — Social Posting</h3>
+                <p className="text-sm text-muted-foreground">
+                  Connect your X developer account so Jarvis can post tweets, reply to threads, and schedule posts.
+                  Get API keys at <a href="https://developer.twitter.com/en/portal/dashboard" className="underline" target="_blank" rel="noreferrer">developer.twitter.com</a>.
+                </p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="x-api-key">API Key</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, xApiKey: !prev.xApiKey }))}>
+                      {showKeys.xApiKey ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="x-api-key"
+                    type={showKeys.xApiKey ? 'text' : 'password'}
+                    placeholder="Enter your X API Key"
+                    value={localApiKeys.xApiKey}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, xApiKey: e.target.value }))}
+                  />
+                  {localApiKeys.xApiKey && !showKeys.xApiKey && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.xApiKey)}</p>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="x-api-secret">API Secret</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, xApiSecret: !prev.xApiSecret }))}>
+                      {showKeys.xApiSecret ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="x-api-secret"
+                    type={showKeys.xApiSecret ? 'text' : 'password'}
+                    placeholder="Enter your X API Secret"
+                    value={localApiKeys.xApiSecret}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, xApiSecret: e.target.value }))}
+                  />
+                  {localApiKeys.xApiSecret && !showKeys.xApiSecret && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.xApiSecret)}</p>
+                  )}
+
+                  <Separator />
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="x-access-token">Access Token</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, xAccessToken: !prev.xAccessToken }))}>
+                      {showKeys.xAccessToken ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="x-access-token"
+                    type={showKeys.xAccessToken ? 'text' : 'password'}
+                    placeholder="Enter your X Access Token"
+                    value={localApiKeys.xAccessToken}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, xAccessToken: e.target.value }))}
+                  />
+                  {localApiKeys.xAccessToken && !showKeys.xAccessToken && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.xAccessToken)}</p>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="x-access-token-secret">Access Token Secret</Label>
+                    <Button variant="ghost" size="sm" onClick={() => setShowKeys((prev) => ({ ...prev, xAccessTokenSecret: !prev.xAccessTokenSecret }))}>
+                      {showKeys.xAccessTokenSecret ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                  <Input
+                    id="x-access-token-secret"
+                    type={showKeys.xAccessTokenSecret ? 'text' : 'password'}
+                    placeholder="Enter your X Access Token Secret"
+                    value={localApiKeys.xAccessTokenSecret}
+                    onChange={(e) => setLocalApiKeys((prev) => ({ ...prev, xAccessTokenSecret: e.target.value }))}
+                  />
+                  {localApiKeys.xAccessTokenSecret && !showKeys.xAccessTokenSecret && (
+                    <p className="text-xs text-muted-foreground">Current: {maskApiKey(localApiKeys.xAccessTokenSecret)}</p>
+                  )}
+                </div>
+                {localApiKeys.xApiKey && localApiKeys.xAccessToken && (
+                  <p className="text-sm text-emerald-500">X credentials configured — Jarvis can post tweets and replies.</p>
+                )}
+              </Card>
+
               <div className="flex justify-end gap-3 pt-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel
@@ -651,6 +862,26 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                     })}
                   </div>
                 )}
+              </Card>
+
+              {/* Voice Analysis */}
+              <Card className="p-6 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-medium">Voice Analysis</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Analyse your voice in real time during voice mode. Jarvis will be aware of your vocal state
+                      (emotion, speaking rate, pitch) and adapt his responses accordingly.
+                      Requires the Python voice analysis service running on port 5199.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings?.enableVoiceAnalysis ?? false}
+                    onCheckedChange={(checked) => {
+                      setSettings((prev) => ({ ...prev, enableVoiceAnalysis: checked }))
+                    }}
+                  />
+                </div>
               </Card>
 
               <div className="flex justify-end gap-3 pt-4">

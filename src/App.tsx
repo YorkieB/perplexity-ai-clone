@@ -33,9 +33,15 @@ import { AppModuleRails } from '@/components/layout/AppModuleRails'
 import { TuneInControlProvider } from '@/contexts/TuneInControlContext'
 import { BrowserControlProvider, useBrowserControl, useBrowserGuideMode } from '@/contexts/BrowserControlContext'
 import { MediaCanvasProvider, useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
+import { CodeEditorProvider, useCodeEditor } from '@/contexts/CodeEditorContext'
+import { MusicPlayerProvider, useMusicPlayer, useMusicPlayerGenerating } from '@/contexts/MusicPlayerContext'
 import { MediaCanvasModal } from '@/components/MediaCanvasModal'
+import { CodeEditorModal } from '@/components/CodeEditorModal'
+import { MusicPlayerModal } from '@/components/MusicPlayerModal'
 import { runChatWithTools } from '@/lib/chat-tools'
 import { useWakeWord } from '@/hooks/useWakeWord'
+import { checkAndFireScheduled } from '@/lib/social-scheduler'
+import { getAntiHallucinationPrompt } from '@/lib/hallucination-guard'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -81,6 +87,8 @@ function MainApp() {
   const [voiceModalOpen, setVoiceModalOpen] = useState(false)
   const [webBrowserOpen, setWebBrowserOpen] = useState(false)
   const [mediaCanvasOpen, setMediaCanvasOpen] = useState(false)
+  const [codeEditorOpen, setCodeEditorOpen] = useState(false)
+  const [musicPlayerOpen, setMusicPlayerOpen] = useState(false)
   const [wakeWordEnabled, setWakeWordEnabled] = useLocalStorage('wake-word-enabled', false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const workspaceFileInputRef = useRef<HTMLInputElement>(null)
@@ -94,6 +102,9 @@ function MainApp() {
   const { guideMode: browserGuideMode } = useBrowserGuideMode()
   const mediaCanvasControl = useMediaCanvas()
   const { setGenerating: setMediaGenerating, setGeneratingLabel: setMediaGeneratingLabel } = useMediaCanvasGenerating()
+  const codeEditorControl = useCodeEditor()
+  const musicPlayerControl = useMusicPlayer()
+  const { setGenerating: setMusicGenerating, setGeneratingLabel: setMusicGeneratingLabel } = useMusicPlayerGenerating()
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const contextWorkspaceId = activeWorkspaceId ?? activeThread?.workspaceId ?? null
@@ -109,6 +120,11 @@ function MainApp() {
       }
     }
   }, [activeThread?.messages.length])
+
+  useEffect(() => {
+    const id = setInterval(() => { void checkAndFireScheduled() }, 30000)
+    return () => clearInterval(id)
+  }, [])
 
   const handleNewThread = () => {
     setActiveThreadId(null)
@@ -396,13 +412,42 @@ You have tools available:
 - generate_image: Generate an image from a text description using AI. The image opens in the Media Canvas.
 - generate_video: Generate a short video from a text description. The video opens in the Media Canvas.
 - edit_image: Edit the current image in the Media Canvas (e.g. "increase contrast", "remove the background", "enhance to HD").
+- show_code: Display code in the interactive Code Editor with syntax highlighting. User can edit, run, copy, and download.
+- run_code: Execute Python or JavaScript code and return the output.
+- search_huggingface: Search Hugging Face for datasets or ML models.
+- fetch_dataset_sample: Fetch a preview of rows from a Hugging Face dataset.
+- search_github: Search GitHub for repositories or code.
+- fetch_github_file: Fetch a file from a GitHub repository.
+- generate_music: Generate a full song from a text description using Suno AI.
+- get_account_balances: Get current balances for all linked bank accounts.
+- get_transactions: Get recent bank transactions with dates, amounts, merchants, and categories.
+- get_spending_summary: Comprehensive financial summary — income vs expenditure, spending by category, top merchants.
+- search_stories: Search for stories from Project Gutenberg (70,000+ classic books) and short story collections.
+- tell_story: Fetch and read a story aloud, with support for random stories by genre.
+- post_to_x: Post a tweet to X (Twitter). ALWAYS confirm with the user before posting.
+- read_social_feed: Read posts from X or Threads using the browser.
+- read_comments: Read replies/comments on a specific social media post.
+- suggest_reply: Generate a suggested reply to a post for user approval.
+- post_reply: Post a reply on X or Threads. ALWAYS confirm with the user first.
+- schedule_post: Schedule, list, or cancel social media posts.
 
 When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
 When the user asks about stored information, use rag_search.
 When the user asks to write or create a document, use create_document.
 When the user asks to create, generate, draw, or make an image or picture, use generate_image.
 When the user asks to create or generate a video or animation, use generate_video.
-When the user asks to edit, adjust, enhance, or modify the current image, use edit_image.`
+When the user asks to edit, adjust, enhance, or modify the current image, use edit_image.
+When the user asks to code, program, write a script, or show code, use show_code to present it in the Code Editor.
+When the user asks to run or execute code, use run_code.
+When the user asks about datasets or ML models, use search_huggingface.
+When the user asks to find GitHub projects or code, use search_github.
+When the user asks to make, create, or generate music or a song, use generate_music.
+When the user asks about their finances, spending, budget, bills, or savings, use get_spending_summary, get_transactions, or get_account_balances.
+When the user asks for a story, use search_stories to find options (results include ID and Source for each story), present them, then use tell_story with the story_id and source from the results. If they just say "tell me a story", use tell_story with random=true.
+When the user asks about social media, X, Twitter, or Threads, use read_social_feed or read_comments to browse content.
+When the user asks to post, tweet, or share something, use post_to_x or post_reply — but ALWAYS show them the draft and get explicit approval before posting.
+When the user asks to schedule a post, use schedule_post. To view pending scheduled posts, use schedule_post with action "list".
+${getAntiHallucinationPrompt()}`
 
         const userPrompt = `${contextSection}${ragContext}${combinedFileContext}
 
@@ -429,6 +474,12 @@ ${
           onMediaGenerating: setMediaGenerating,
           onMediaGeneratingLabel: setMediaGeneratingLabel,
           openMediaCanvas: () => setMediaCanvasOpen(true),
+          codeEditorControl,
+          openCodeEditor: () => setCodeEditorOpen(true),
+          musicPlayerControl,
+          openMusicPlayer: () => setMusicPlayerOpen(true),
+          onMusicGenerating: setMusicGenerating,
+          onMusicGeneratingLabel: setMusicGeneratingLabel,
         })
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
@@ -653,6 +704,8 @@ ${
   return (
     <BrowserControlProvider>
     <MediaCanvasProvider>
+    <CodeEditorProvider>
+    <MusicPlayerProvider>
     <TuneInControlProvider>
     <div className="flex h-screen overflow-hidden">
       <Toaster position="top-center" />
@@ -682,6 +735,8 @@ ${
         onOpenAgentBrowser={() => setAgentBrowserOpen(true)}
         onOpenVoice={() => setVoiceModalOpen(true)}
         onOpenMediaCanvas={() => setMediaCanvasOpen(true)}
+        onOpenCodeEditor={() => setCodeEditorOpen(true)}
+        onOpenMusicPlayer={() => setMusicPlayerOpen(true)}
         wakeWordEnabled={Boolean(wakeWordEnabled)}
         wakeWordSupported={wakeWordSupported}
         wakeWordListening={wakeWordListening}
@@ -722,8 +777,14 @@ ${
       <WebBrowserModal open={webBrowserOpen} onOpenChange={setWebBrowserOpen} onRequestOpen={() => setWebBrowserOpen(true)} />
 
       <MediaCanvasModal open={mediaCanvasOpen} onOpenChange={setMediaCanvasOpen} />
+
+      <CodeEditorModal open={codeEditorOpen} onOpenChange={setCodeEditorOpen} />
+
+      <MusicPlayerModal open={musicPlayerOpen} onOpenChange={setMusicPlayerOpen} />
     </div>
     </TuneInControlProvider>
+    </MusicPlayerProvider>
+    </CodeEditorProvider>
     </MediaCanvasProvider>
     </BrowserControlProvider>
   )

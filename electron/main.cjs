@@ -1857,9 +1857,505 @@ async function handleElevenLabsSoundEffect(req, res) {
   }
 }
 
+const VOICE_ANALYSIS_URL = 'http://localhost:5199/analyze'
+
+async function handleVoiceAnalysis(req, res) {
+  try {
+    const body = await readBodyRaw(req)
+    const upstream = await fetch(VOICE_ANALYSIS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch {
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: 'Voice analysis service unavailable', vocalState: 'Unable to analyse voice' }))
+  }
+}
+
+// ── Suno API proxy ──
+async function handleSunoGenerate(req, res) {
+  const env = getEnv()
+  const key = (env.SUNO_API_KEY || env.VITE_SUNO_API_KEY || '').trim()
+  if (!key) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing SUNO_API_KEY' } })); return }
+  try {
+    const body = await readBody(req)
+    const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Suno proxy error' } }))
+  }
+}
+
+async function handleSunoStatus(req, res) {
+  const env = getEnv()
+  const key = (env.SUNO_API_KEY || env.VITE_SUNO_API_KEY || '').trim()
+  if (!key) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing SUNO_API_KEY' } })); return }
+  const taskId = new URL(req.url || '', 'http://localhost').searchParams.get('taskId')
+  if (!taskId) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing taskId' } })); return }
+  try {
+    const upstream = await fetch(`https://api.sunoapi.org/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Suno status error' } }))
+  }
+}
+
+// ── Hugging Face API proxy ──
+async function handleHfSearch(req, res) {
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const q = params.get('q') || ''
+  const type = params.get('type') || 'datasets'
+  const limit = params.get('limit') || '10'
+  try {
+    const upstream = await fetch(`https://huggingface.co/api/${encodeURIComponent(type)}?search=${encodeURIComponent(q)}&limit=${limit}&sort=downloads&direction=-1`, {
+      headers: { Accept: 'application/json' },
+    })
+    const data = await upstream.json()
+    const results = (Array.isArray(data) ? data : []).map(d => ({
+      id: d.id || d.modelId || '',
+      description: d.description || d.pipeline_tag || '',
+      downloads: d.downloads || 0,
+      pipeline_tag: d.pipeline_tag || '',
+    }))
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ results }))
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'HF search error' } }))
+  }
+}
+
+async function handleHfDatasetSample(req, res) {
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const dataset = params.get('dataset') || ''
+  const split = params.get('split') || 'train'
+  const config = params.get('config') || 'default'
+  try {
+    const upstream = await fetch(`https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(dataset)}&config=${encodeURIComponent(config)}&split=${encodeURIComponent(split)}`, {
+      headers: { Accept: 'application/json' },
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'HF dataset error' } }))
+  }
+}
+
+// ── GitHub API proxy ──
+async function handleGitHubSearch(req, res) {
+  const env = getEnv()
+  const ghToken = (env.GITHUB_TOKEN || env.VITE_GITHUB_TOKEN || '').trim()
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const q = params.get('q') || ''
+  const type = params.get('type') || 'repositories'
+  const limit = params.get('limit') || '10'
+  const headers = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Jarvis-AI' }
+  if (ghToken) headers.Authorization = `Bearer ${ghToken}`
+  try {
+    const upstream = await fetch(`https://api.github.com/search/${encodeURIComponent(type)}?q=${encodeURIComponent(q)}&per_page=${limit}`, { headers })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'GitHub search error' } }))
+  }
+}
+
+async function handleGitHubFile(req, res) {
+  const env = getEnv()
+  const ghToken = (env.GITHUB_TOKEN || env.VITE_GITHUB_TOKEN || '').trim()
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const owner = params.get('owner') || ''
+  const repo = params.get('repo') || ''
+  const path = params.get('path') || ''
+  const headers = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Jarvis-AI' }
+  if (ghToken) headers.Authorization = `Bearer ${ghToken}`
+  try {
+    const upstream = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}`, { headers })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'GitHub file error' } }))
+  }
+}
+
+// ── Plaid API proxy ──
+function plaidRequest(endpoint, body, env) {
+  const clientId = (env.PLAID_CLIENT_ID || '').trim()
+  const secret = (env.PLAID_SECRET || '').trim()
+  const plaidEnv = (env.PLAID_ENV || 'sandbox').trim()
+  const base = plaidEnv === 'production' ? 'https://production.plaid.com' : plaidEnv === 'development' ? 'https://development.plaid.com' : 'https://sandbox.plaid.com'
+  return fetch(`${base}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId, secret, ...body }),
+  })
+}
+
+async function handlePlaidLinkToken(req, res) {
+  const env = getEnv()
+  if (!(env.PLAID_CLIENT_ID || '').trim() || !(env.PLAID_SECRET || '').trim()) {
+    res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing PLAID_CLIENT_ID or PLAID_SECRET' } })); return
+  }
+  try {
+    const upstream = await plaidRequest('/link/token/create', {
+      user: { client_user_id: 'jarvis-user-1' },
+      client_name: 'Jarvis AI',
+      products: ['transactions'],
+      country_codes: ['GB', 'US'],
+      language: 'en',
+    }, env)
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Plaid link token error' } }))
+  }
+}
+
+async function handlePlaidExchange(req, res) {
+  const env = getEnv()
+  if (!(env.PLAID_CLIENT_ID || '').trim()) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing PLAID_CLIENT_ID' } })); return }
+  try {
+    const body = JSON.parse(await readBody(req))
+    const upstream = await plaidRequest('/item/public_token/exchange', { public_token: body.public_token }, env)
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Plaid exchange error' } }))
+  }
+}
+
+async function handlePlaidAccounts(req, res) {
+  const env = getEnv()
+  const accessToken = (env.PLAID_ACCESS_TOKEN || '').trim()
+  if (!accessToken) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No bank account linked. Connect via Settings.' } })); return }
+  try {
+    const upstream = await plaidRequest('/accounts/get', { access_token: accessToken }, env)
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Plaid accounts error' } }))
+  }
+}
+
+async function handlePlaidBalances(req, res) {
+  const env = getEnv()
+  const accessToken = (env.PLAID_ACCESS_TOKEN || '').trim()
+  if (!accessToken) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No bank account linked.' } })); return }
+  try {
+    const upstream = await plaidRequest('/accounts/balance/get', { access_token: accessToken }, env)
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Plaid balances error' } }))
+  }
+}
+
+async function handlePlaidTransactions(req, res) {
+  const env = getEnv()
+  const accessToken = (env.PLAID_ACCESS_TOKEN || '').trim()
+  if (!accessToken) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No bank account linked.' } })); return }
+  try {
+    const body = JSON.parse(await readBody(req) || '{}')
+    const now = new Date()
+    const endDate = body.end_date || now.toISOString().slice(0, 10)
+    const startDate = body.start_date || new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10)
+    const upstream = await plaidRequest('/transactions/get', {
+      access_token: accessToken,
+      start_date: startDate,
+      end_date: endDate,
+      options: { count: 100, offset: 0 },
+    }, env)
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Plaid transactions error' } }))
+  }
+}
+
+// ── Story library proxy ──
+async function handleStorySearch(req, res) {
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const q = params.get('q') || ''
+  const source = params.get('source') || 'all'
+  const limit = parseInt(params.get('limit') || '10', 10)
+  const results = []
+
+  try {
+    if (source === 'all' || source === 'gutenberg') {
+      const gutRes = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}`)
+      if (gutRes.ok) {
+        const gutData = await gutRes.json()
+        for (const b of (gutData.results || []).slice(0, limit)) {
+          results.push({
+            id: String(b.id),
+            title: b.title,
+            authors: (b.authors || []).map(a => a.name),
+            source: 'gutenberg',
+            subjects: (b.subjects || []).slice(0, 5),
+          })
+        }
+      }
+    }
+
+    if (source === 'all' || source === 'short') {
+      let hfOk = false
+      try {
+        const ctrl = new AbortController()
+        const timeout = setTimeout(() => ctrl.abort(), 8000)
+        const hfRes = await fetch(`https://datasets-server.huggingface.co/search?dataset=roneneldan/TinyStories&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=${Math.min(limit, 20)}`, {
+          headers: { Accept: 'application/json' },
+          signal: ctrl.signal,
+        })
+        clearTimeout(timeout)
+        if (hfRes.ok) {
+          const hfData = await hfRes.json()
+          for (const row of (hfData.rows || []).slice(0, limit)) {
+            const text = row.row?.text || ''
+            results.push({
+              id: `hf-tinystories-${row.row_idx}`,
+              title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story',
+              authors: [],
+              source: 'huggingface',
+              snippet: text.slice(0, 200),
+            })
+          }
+          hfOk = true
+        }
+      } catch { /* search endpoint flaky — fall through to rows fallback */ }
+
+      if (!hfOk) {
+        try {
+          const offset = Math.floor(Math.random() * 2000000)
+          const fallbackRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=${Math.min(limit, 10)}`)
+          if (fallbackRes.ok) {
+            const fbData = await fallbackRes.json()
+            for (const row of (fbData.rows || []).slice(0, limit)) {
+              const text = row.row?.text || ''
+              results.push({
+                id: `hf-tinystories-${row.row_idx}`,
+                title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story',
+                authors: [],
+                source: 'huggingface',
+                snippet: text.slice(0, 200),
+              })
+            }
+          }
+        } catch { /* ignore fallback errors */ }
+      }
+    }
+
+    res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ results }))
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Story search error' } }))
+  }
+}
+
+async function handleStoryContent(req, res) {
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const id = params.get('id') || ''
+  const source = params.get('source') || 'gutenberg'
+  const maxChars = parseInt(params.get('maxChars') || '8000', 10)
+
+  try {
+    if (source === 'gutenberg') {
+      const metaRes = await fetch(`https://gutendex.com/books/${id}`)
+      if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
+      const meta = await metaRes.json()
+      const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
+      if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available for this book' } })); return }
+      const textRes = await fetch(textUrl)
+      const fullText = await textRes.text()
+      const truncated = fullText.length > maxChars
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        title: meta.title,
+        authors: (meta.authors || []).map(a => a.name),
+        content: truncated ? fullText.slice(0, maxChars) : fullText,
+        truncated,
+        totalChars: fullText.length,
+      }))
+    } else {
+      const rowIdx = id.replace('hf-tinystories-', '')
+      const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`)
+      if (!hfRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Story not found' } })); return }
+      const hfData = await hfRes.json()
+      const text = hfData.rows?.[0]?.row?.text || ''
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, truncated: false, totalChars: text.length }))
+    }
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Story content error' } }))
+  }
+}
+
+async function handleStoryRandom(req, res) {
+  const params = new URL(req.url || '', 'http://localhost').searchParams
+  const genre = params.get('genre') || ''
+  try {
+    const topic = genre || ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror'][Math.floor(Math.random() * 8)]
+
+    // Try Gutenberg first
+    try {
+      const ctrl = new AbortController()
+      const timeout = setTimeout(() => ctrl.abort(), 10000)
+      const gutRes = await fetch(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { signal: ctrl.signal })
+      clearTimeout(timeout)
+      if (gutRes.ok) {
+        const gutData = await gutRes.json()
+        const books = gutData.results || []
+        if (books.length > 0) {
+          const book = books[Math.floor(Math.random() * books.length)]
+          const textUrl = book.formats?.['text/plain; charset=utf-8'] || book.formats?.['text/plain'] || ''
+          let content = `(Full text not available in plain text format for this book. Try searching for "${book.title}" to find a readable version.)`
+          if (textUrl) {
+            const textCtrl = new AbortController()
+            const textTimeout = setTimeout(() => textCtrl.abort(), 15000)
+            const textRes = await fetch(textUrl, { signal: textCtrl.signal })
+            clearTimeout(textTimeout)
+            const fullText = await textRes.text()
+            content = fullText.slice(0, 6000)
+            if (fullText.length > 6000) content += '\n\n[Truncated — ask for more to continue reading.]'
+          }
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ title: book.title, authors: (book.authors || []).map(a => a.name), content, source: 'gutenberg' }))
+          return
+        }
+      }
+    } catch { /* Gutenberg timed out or failed — fall through to HF */ }
+
+    // Fallback: random short story from HuggingFace TinyStories
+    const offset = Math.floor(Math.random() * 2000000)
+    const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=1`)
+    if (hfRes.ok) {
+      const hfData = await hfRes.json()
+      const text = hfData.rows?.[0]?.row?.text || ''
+      if (text) {
+        res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, source: 'huggingface' }))
+        return
+      }
+    }
+
+    res.statusCode = 404; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'No random story found. Try a different genre.' } }))
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Random story error' } }))
+  }
+}
+
+// ── X (Twitter) API proxy ──
+async function handleXTweet(req, res) {
+  const env = getEnv()
+  const apiKey = (env.X_API_KEY || '').trim()
+  const apiSecret = (env.X_API_SECRET || '').trim()
+  const accessToken = (env.X_ACCESS_TOKEN || '').trim()
+  const accessTokenSecret = (env.X_ACCESS_TOKEN_SECRET || '').trim()
+  if (!apiKey || !apiSecret || !accessToken || !accessTokenSecret) {
+    res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing X API credentials (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET)' } }))
+    return
+  }
+  try {
+    const body = JSON.parse(await readBody(req))
+    const OAuth = require('oauth-1.0a')
+    const CryptoJS = require('crypto-js')
+    const oauth = OAuth({
+      consumer: { key: apiKey, secret: apiSecret },
+      signature_method: 'HMAC-SHA1',
+      hash_function(baseString, key) { return CryptoJS.HmacSHA1(baseString, key).toString(CryptoJS.enc.Base64) },
+    })
+    const token = { key: accessToken, secret: accessTokenSecret }
+    const url = 'https://api.twitter.com/2/tweets'
+    const oauthHeader = oauth.toHeader(oauth.authorize({ url, method: 'POST' }, token))
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { ...oauthHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'X API error' } }))
+  }
+}
+
 function createServer() {
   return http.createServer((req, res) => {
     const urlPath = req.url?.split('?')[0] || '/'
+
+    // ── X (Twitter) routes ──
+    if (urlPath === '/api/x/tweet' && req.method === 'POST') { void handleXTweet(req, res); return }
+
+    // ── Plaid routes ──
+    if (urlPath === '/api/plaid/link-token' && req.method === 'POST') { void handlePlaidLinkToken(req, res); return }
+    if (urlPath === '/api/plaid/exchange' && req.method === 'POST') { void handlePlaidExchange(req, res); return }
+    if (urlPath === '/api/plaid/accounts' && req.method === 'POST') { void handlePlaidAccounts(req, res); return }
+    if (urlPath === '/api/plaid/balances' && req.method === 'POST') { void handlePlaidBalances(req, res); return }
+    if (urlPath === '/api/plaid/transactions' && req.method === 'POST') { void handlePlaidTransactions(req, res); return }
+
+    // ── Story routes ──
+    if (urlPath === '/api/stories/search' && req.method === 'GET') { void handleStorySearch(req, res); return }
+    if (urlPath === '/api/stories/content' && req.method === 'GET') { void handleStoryContent(req, res); return }
+    if (urlPath === '/api/stories/random' && req.method === 'GET') { void handleStoryRandom(req, res); return }
+
+    // ── Suno routes ──
+    if (urlPath === '/api/suno/generate' && req.method === 'POST') { void handleSunoGenerate(req, res); return }
+    if (urlPath === '/api/suno/status' && req.method === 'GET') { void handleSunoStatus(req, res); return }
+
+    // ── Hugging Face routes ──
+    if (urlPath === '/api/huggingface/search' && req.method === 'GET') { void handleHfSearch(req, res); return }
+    if (urlPath === '/api/huggingface/dataset-sample' && req.method === 'GET') { void handleHfDatasetSample(req, res); return }
+
+    // ── GitHub routes ──
+    if (urlPath === '/api/github/search' && req.method === 'GET') { void handleGitHubSearch(req, res); return }
+    if (urlPath === '/api/github/file' && req.method === 'GET') { void handleGitHubFile(req, res); return }
 
     if (urlPath === '/api/digitalocean/models' && req.method === 'GET') {
       void handleDigitalOceanModels(req, res)
@@ -1923,6 +2419,11 @@ function createServer() {
     }
     if (urlPath === '/api/elevenlabs/sound-effect' && req.method === 'POST') {
       void handleElevenLabsSoundEffect(req, res)
+      return
+    }
+
+    if (urlPath === '/api/voice-analysis' && req.method === 'POST') {
+      void handleVoiceAnalysis(req, res)
       return
     }
 

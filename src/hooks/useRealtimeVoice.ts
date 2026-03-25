@@ -3,8 +3,19 @@ import type { VisionContext } from './useVision'
 import type { TuneInControl } from '@/contexts/TuneInControlContext'
 import type { BrowserControl } from '@/contexts/BrowserControlContext'
 import type { MediaCanvasControl } from '@/contexts/MediaCanvasContext'
+import type { CodeEditorControl } from '@/contexts/CodeEditorContext'
+import type { MusicPlayerControl } from '@/contexts/MusicPlayerContext'
 import { runBrowserAgent } from '@/lib/browser-agent'
 import { generateImage, editImage, createVideo } from '@/lib/media-api'
+import { runCode } from '@/lib/code-runner'
+import { searchHuggingFace, fetchDatasetSample } from '@/lib/hf-api'
+import { searchGitHub, fetchGitHubFile } from '@/lib/github-api'
+import { generateMusic } from '@/lib/suno-api'
+import { getBalances, getTransactions, getSpendingSummary } from '@/lib/plaid-api'
+import { searchStories, getStoryContent, getRandomStory } from '@/lib/story-api'
+import { postTweet, readSocialFeed, readComments, replyViaBrowser } from '@/lib/social-api'
+import { quickScan } from '@/lib/hallucination-guard'
+import { schedulePost, listScheduledPostsSummary, cancelScheduledPost } from '@/lib/social-scheduler'
 import type { BehavioralChunk } from '@/lib/behavioral-engine'
 import { parseBehavioralMarkup, stripBehavioralMarkup, hasUnclosedTag, buildPersonalityInstructions } from '@/lib/behavioral-engine'
 import type { VoiceProfile } from '@/lib/voice-registry'
@@ -28,7 +39,15 @@ export interface UseRealtimeVoiceOptions {
   onMediaGenerating?: (generating: boolean) => void
   onMediaGeneratingLabel?: (label: string) => void
   openMediaCanvas?: () => void
+  codeEditorControl?: CodeEditorControl | null
+  openCodeEditor?: () => void
+  musicPlayerControl?: MusicPlayerControl | null
+  openMusicPlayer?: () => void
+  onMusicGenerating?: (generating: boolean) => void
+  onMusicGeneratingLabel?: (label: string) => void
   voiceRegistry?: { defaultVoiceId: string | null; voices: VoiceProfile[] } | null
+  enableVoiceAnalysis?: boolean
+  onVocalState?: (state: string) => void
 }
 
 export interface UseRealtimeVoiceReturn {
@@ -133,6 +152,7 @@ interface BuildInstructionsOpts {
   hasMedia?: boolean
   voiceNames?: string[]
   isElevenLabs?: boolean
+  hasVoiceAnalysis?: boolean
 }
 
 function buildInstructions(opts: BuildInstructionsOpts): string {
@@ -141,6 +161,17 @@ function buildInstructions(opts: BuildInstructionsOpts): string {
 
 CRITICAL SYSTEM FACT — YOU HAVE PERSISTENT MEMORY:
 You are equipped with a real, working, persistent memory database. This is NOT a standard LLM limitation — your infrastructure includes a SQLite database that stores facts about the user across sessions. Any facts listed below under "KNOWN USER FACTS" were retrieved from your database just now. You absolutely DO have memory. Never say "I don't have memory", "I can't remember between sessions", or "I'm just an AI without memory." If the user asks whether you remember them or have memory, confirm it confidently: "Yes, I remember you" or "Of course, I have persistent memory."
+
+=== HALLUCINATION PREVENTION — MANDATORY ===
+You are STRICTLY FORBIDDEN from fabricating information:
+1. NEVER invent URLs, statistics, specific numbers, dates, quotes, or study names.
+2. NEVER present guesses as facts. Use "I believe", "I think", "from what I know" for uncertain claims.
+3. When you don't know something, SAY SO: "I'm not sure about that" or "Let me look that up for you".
+4. When citing tool results (search, finances, stories), attribute them: "Based on the search results" or "Your account shows".
+5. NEVER fabricate capabilities. If you cannot do something, say so honestly.
+6. For financial data, ONLY cite numbers from actual tool outputs — never guess balances or transactions.
+7. If asked about current events or facts you're unsure of, offer to search: "Want me to look that up?"
+=== END HALLUCINATION PREVENTION ===
 
 `
 
@@ -271,8 +302,89 @@ When the user asks to edit, modify, adjust, enhance, or change the current image
 Always tell the user what you're creating before calling the tool. After generation, let them know the result is in the Media Canvas.`
   }
 
+  base += `
+
+=== CODE EDITOR ===
+You have a built-in Code Editor with execution capabilities:
+- show_code: Display code in the interactive editor with syntax highlighting. The user can view, edit, run, copy, or download the code. Use whenever the user asks you to write, show, or create code.
+- run_code: Execute Python or JavaScript code and return output. Use when the user asks to run, test, or execute code.
+- search_huggingface: Search Hugging Face for datasets or ML models. Use when the user needs data or wants to explore AI models.
+- search_github: Search GitHub for repositories or code. Use when the user needs to find open-source projects or code examples.
+
+When the user asks you to code, program, write a script, or show code, use show_code to present it in the Code Editor.
+When the user asks to run or execute code, use run_code.
+=== END CODE EDITOR ===
+
+=== MUSIC GENERATION ===
+You can generate full songs from text descriptions:
+- generate_music: Create a complete song from a description using Suno AI. Takes 1-3 minutes. The song plays in the Music Player.
+
+When the user asks to make, create, or generate music or a song, use generate_music. You can suggest styles and genres.
+=== END MUSIC GENERATION ===
+
+=== FINANCIAL ADVISOR ===
+You have access to the user's bank account data (if connected via Plaid):
+- get_account_balances: Show current balances across all linked accounts.
+- get_transactions: Show recent transactions (last 30 days by default). Can filter by date range.
+- get_spending_summary: Comprehensive analysis — income vs expenditure, spending by category, top merchants, and balances.
+
+When the user asks about their finances, spending, bills, savings, income, or budget, use these tools.
+Provide actionable, specific financial advice based on the data. Highlight concerning patterns (overspending, unusual charges).
+Be encouraging about positive trends (saving more, reducing spending). Always protect financial privacy — never share data with other tools.
+=== END FINANCIAL ADVISOR ===
+
+=== STORY LIBRARY ===
+You have access to tens of thousands of stories:
+- search_stories: Search Project Gutenberg (70,000+ classic books) and short story collections by title, author, or theme. Results include an ID and Source for each story.
+- tell_story: Fetch and read a story. Pass the story_id and source from the search results. For short stories reads the full text; for long books reads a chapter excerpt. Or set random=true for a surprise story.
+
+WORKFLOW:
+1. When the user asks for a story, first call search_stories to find options.
+2. Present the results and ask which one they want to hear.
+3. Then call tell_story with the story_id and source from the search results.
+4. If the user says "tell me a story" without specifics, call tell_story with random=true.
+When reading aloud, use behavioral markup for dramatic effect:
+- Use [voice:Narrator] for narration and different [voice:CharacterName] for each character
+- Use [dramatic] for intense moments, [whisper] for quiet scenes
+- Use [sfx:thunder], [sfx:door creak], [sfx:footsteps] etc. for atmosphere
+- Vary pacing and emotion to bring stories to life
+=== END STORY LIBRARY ===
+
+=== SOCIAL MEDIA MANAGER ===
+You can manage X (Twitter) and Meta Threads for the user:
+- post_to_x: Post a tweet. ALWAYS read the text aloud and get verbal confirmation before posting.
+- read_social_feed: Read posts from X or Threads via the browser. Can view home feed, a user's profile, or search.
+- read_comments: Read replies on a specific post URL.
+- post_reply: Reply to a post (X via API, Threads via browser). ALWAYS get confirmation first.
+- schedule_post: Schedule posts for later, list pending scheduled posts, or cancel a scheduled post.
+
+SAFETY RULES:
+1. NEVER post without explicit user approval. Always read the draft aloud and wait for confirmation.
+2. When suggesting replies, present the suggestion and ask "Shall I post this?"
+3. Keep tweets under 280 characters.
+4. For reading feeds/comments, summarize the key posts naturally in conversation.
+=== END SOCIAL MEDIA MANAGER ===`
+
   if (isElevenLabs) {
     base += buildPersonalityInstructions(voiceNames)
+  }
+
+  if (opts.hasVoiceAnalysis) {
+    base += `
+
+=== VOCAL AWARENESS ===
+You have real-time awareness of the user's vocal characteristics through periodic [Vocal Analysis] system messages.
+These messages describe the user's current vocal state — their pitch, speaking rate, voice quality, and inferred emotional state.
+
+When you receive vocal state updates, subtly adapt your tone, pacing, and emotional register:
+- If the user sounds stressed or anxious, be calming and reassuring.
+- If the user sounds excited, match their energy.
+- If the user is whispering, respond more softly and intimately.
+- If the user sounds calm and relaxed, maintain a warm, unhurried tone.
+- If the user sounds urgent, be concise and responsive.
+
+Never explicitly mention that you are analysing their voice unless the user asks about it directly.
+=== END VOCAL AWARENESS ===`
   }
 
   if (!mem) return base
@@ -361,7 +473,15 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
     onMediaGenerating,
     onMediaGeneratingLabel,
     openMediaCanvas,
+    codeEditorControl,
+    openCodeEditor,
+    musicPlayerControl,
+    openMusicPlayer,
+    onMusicGenerating,
+    onMusicGeneratingLabel,
     voiceRegistry,
+    enableVoiceAnalysis,
+    onVocalState,
   } = opts
 
   const isEL = ttsProvider === 'elevenlabs'
@@ -411,8 +531,37 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const onMediaGeneratingLabelRef = useRef(onMediaGeneratingLabel)
   useEffect(() => { onMediaGeneratingLabelRef.current = onMediaGeneratingLabel }, [onMediaGeneratingLabel])
 
+  const codeEditorRef = useRef(codeEditorControl)
+  useEffect(() => { codeEditorRef.current = codeEditorControl }, [codeEditorControl])
+
+  const openCodeEditorRef = useRef(openCodeEditor)
+  useEffect(() => { openCodeEditorRef.current = openCodeEditor }, [openCodeEditor])
+
+  const musicPlayerRef = useRef(musicPlayerControl)
+  useEffect(() => { musicPlayerRef.current = musicPlayerControl }, [musicPlayerControl])
+
+  const openMusicPlayerRef = useRef(openMusicPlayer)
+  useEffect(() => { openMusicPlayerRef.current = openMusicPlayer }, [openMusicPlayer])
+
+  const onMusicGeneratingRef = useRef(onMusicGenerating)
+  useEffect(() => { onMusicGeneratingRef.current = onMusicGenerating }, [onMusicGenerating])
+
+  const onMusicGeneratingLabelRef = useRef(onMusicGeneratingLabel)
+  useEffect(() => { onMusicGeneratingLabelRef.current = onMusicGeneratingLabel }, [onMusicGeneratingLabel])
+
   const openMediaCanvasRef = useRef(openMediaCanvas)
   useEffect(() => { openMediaCanvasRef.current = openMediaCanvas }, [openMediaCanvas])
+
+  // Voice analysis refs
+  const vaEnabledRef = useRef(enableVoiceAnalysis ?? false)
+  useEffect(() => { vaEnabledRef.current = enableVoiceAnalysis ?? false }, [enableVoiceAnalysis])
+  const onVocalStateRef = useRef(onVocalState)
+  useEffect(() => { onVocalStateRef.current = onVocalState }, [onVocalState])
+  const vaBufRef = useRef<Int16Array[]>([])
+  const vaSamplesRef = useRef(0)
+  const vaInflightRef = useRef(false)
+  const vaPrevStateRef = useRef('')
+  const VA_WINDOW = SAMPLE_RATE * 3 // 3 seconds of samples
 
   // ElevenLabs-specific refs
   const elBufRef = useRef('')
@@ -618,6 +767,19 @@ Assistant: ${ai || ''}`
       const cleanAi = stripBehavioralMarkup(aiAccRef.current)
       onResRef.current?.(userRef.current, cleanAi)
       saveTurnToMemory(userRef.current, cleanAi)
+
+      const flags = quickScan(cleanAi)
+      const severe = flags.filter(f => f.severity === 'high' || f.severity === 'critical')
+      if (severe.length > 0) {
+        const ws = wsRef.current
+        if (ws?.readyState === WebSocket.OPEN) {
+          const warning = `[SYSTEM HALLUCINATION ALERT] Your previous response contained ${severe.length} potentially fabricated claim(s): ${severe.map(f => f.reason).join('; ')}. In your next response, correct any inaccurate information and avoid fabricating facts.`
+          ws.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: { type: 'message', role: 'system', content: [{ type: 'input_text', text: warning }] },
+          }))
+        }
+      }
     }
     userRef.current = ''
     const rem = Math.max(0, Math.trunc((nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000))
@@ -671,6 +833,39 @@ Assistant: ${ai || ''}`
     }
   }, [speakEL, playSfx, setS, finishTurn])
 
+  // ── Voice analysis sender ────────────────────────────────────────────────
+
+  const sendVoiceAnalysis = useCallback((pcmBuffer: ArrayBuffer) => {
+    fetch('/api/voice-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: pcmBuffer,
+    })
+      .then(r => r.json())
+      .then((data: { vocalState?: string; error?: string }) => {
+        vaInflightRef.current = false
+        if (data.error) return
+        const newState = data.vocalState ?? ''
+        if (newState && newState !== vaPrevStateRef.current) {
+          vaPrevStateRef.current = newState
+          onVocalStateRef.current?.(newState)
+          // Inject into Realtime session as system context
+          const ws = wsRef.current
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'message',
+                role: 'system',
+                content: [{ type: 'input_text', text: `[Vocal Analysis] ${newState}` }],
+              },
+            }))
+          }
+        }
+      })
+      .catch(() => { vaInflightRef.current = false })
+  }, [])
+
   // ── Mic → PCM16 → WS ─────────────────────────────────────────────────────
 
   const startMic = useCallback(async (ws: WebSocket) => {
@@ -685,7 +880,25 @@ Assistant: ${ai || ''}`
     procRef.current = proc
     proc.onaudioprocess = (e) => { // NOSONAR -- deprecated but AudioWorklet alternative is disproportionate here
       if (ws.readyState !== WebSocket.OPEN) return
-      ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: abToBase64(float32ToPcm16(e.inputBuffer.getChannelData(0))) })) // NOSONAR
+      const pcm = float32ToPcm16(e.inputBuffer.getChannelData(0))
+      ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: abToBase64(pcm) })) // NOSONAR
+
+      // Fork to voice analysis accumulator
+      if (vaEnabledRef.current && !vaInflightRef.current) {
+        vaBufRef.current.push(new Int16Array(pcm))
+        vaSamplesRef.current += pcm.byteLength / 2
+        if (vaSamplesRef.current >= VA_WINDOW) {
+          const chunks = vaBufRef.current.splice(0)
+          const total = chunks.reduce((n, c) => n + c.length, 0)
+          const merged = new Int16Array(total)
+          let offset = 0
+          for (const c of chunks) { merged.set(c, offset); offset += c.length }
+          vaBufRef.current = []
+          vaSamplesRef.current = 0
+          vaInflightRef.current = true
+          sendVoiceAnalysis(merged.buffer)
+        }
+      }
     }
     src.connect(proc)
     proc.connect(ctx.destination)
@@ -698,6 +911,10 @@ Assistant: ${ai || ''}`
     streamRef.current = null
     if (capCtxRef.current && capCtxRef.current.state !== 'closed') capCtxRef.current.close().catch(() => {})
     capCtxRef.current = null
+    // Reset voice analysis state
+    vaBufRef.current = []
+    vaSamplesRef.current = 0
+    vaInflightRef.current = false
   }, [])
 
   // ── Server events ─────────────────────────────────────────────────────────
@@ -783,6 +1000,19 @@ Assistant: ${ai || ''}`
           if (userRef.current && aiAccRef.current) {
             onResRef.current?.(userRef.current, aiAccRef.current)
             saveTurnToMemory(userRef.current, aiAccRef.current)
+
+            const flags = quickScan(aiAccRef.current)
+            const severe = flags.filter(f => f.severity === 'high' || f.severity === 'critical')
+            if (severe.length > 0) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                const warning = `[SYSTEM HALLUCINATION ALERT] Your previous response contained ${severe.length} potentially fabricated claim(s): ${severe.map(f => f.reason).join('; ')}. Correct any inaccurate information in your next response.`
+                ws.send(JSON.stringify({
+                  type: 'conversation.item.create',
+                  item: { type: 'message', role: 'system', content: [{ type: 'input_text', text: warning }] },
+                }))
+              }
+            }
           }
           aiAccRef.current = ''
           userRef.current = ''
@@ -1311,6 +1541,285 @@ Assistant: ${ai || ''}`
               onMediaGeneratingLabelRef.current?.('')
             }
           })()
+
+        } else if (fnName === 'show_code') {
+          let args: { code?: string; language?: string; filename?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.code || !args.language) break
+
+          const ctrl = codeEditorRef.current
+          if (ctrl) {
+            ctrl.showCode(args.code, args.language, args.filename)
+          } else {
+            openCodeEditorRef.current?.()
+          }
+
+          const ws = wsRef.current
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: 'Code is now displayed in the Code Editor.' } }))
+            ws.send(JSON.stringify({ type: 'response.create' }))
+          }
+
+        } else if (fnName === 'run_code') {
+          let args: { code?: string; language?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.code || !args.language) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              const result = await runCode(args.code!, args.language!)
+              let output = ''
+              if (result.stdout) output += result.stdout
+              if (result.stderr) output += (output ? '\n' : '') + `[stderr] ${result.stderr}`
+              if (result.error) output += (output ? '\n' : '') + `[error] ${result.error}`
+              if (!output) output = '(no output)'
+              output = `Execution completed in ${result.elapsed}ms:\n${output}`
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Execution failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'search_huggingface') {
+          let args: { query?: string; type?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.query) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              const output = await searchHuggingFace(args.query!, (args.type as 'datasets' | 'models') || 'datasets')
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `HF search failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'search_github') {
+          let args: { query?: string; type?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.query) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              const output = await searchGitHub(args.query!, (args.type as 'repositories' | 'code') || 'repositories')
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `GitHub search failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'generate_music') {
+          let args: { prompt?: string; style?: string; instrumental?: boolean } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.prompt) break
+
+          setS('thinking')
+          onMusicGeneratingRef.current?.(true)
+          onMusicGeneratingLabelRef.current?.('Generating music — this takes 1–3 minutes...')
+          openMusicPlayerRef.current?.()
+
+          void (async () => {
+            try {
+              const tracks = await generateMusic(args.prompt!, { style: args.style, instrumental: args.instrumental })
+              if (tracks.length > 0) {
+                const track = tracks[0]
+                musicPlayerRef.current?.showTrack({
+                  id: track.id,
+                  audioUrl: track.audioUrl,
+                  title: track.title,
+                  tags: track.tags,
+                  duration: track.duration,
+                  prompt: args.prompt!,
+                  createdAt: Date.now(),
+                })
+              }
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Music generated! "${tracks[0]?.title || 'Song'}" is now playing.` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Music generation failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } finally {
+              onMusicGeneratingRef.current?.(false)
+              onMusicGeneratingLabelRef.current?.('')
+            }
+          })()
+
+        } else if (fnName === 'get_account_balances' || fnName === 'get_transactions' || fnName === 'get_spending_summary') {
+          let args: { start_date?: string; end_date?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              let output: string
+              if (fnName === 'get_account_balances') output = await getBalances()
+              else if (fnName === 'get_transactions') output = await getTransactions(args.start_date, args.end_date)
+              else output = await getSpendingSummary(args.start_date, args.end_date)
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Financial data error: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'search_stories') {
+          let args: { query?: string; source?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId || !args.query) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              const output = await searchStories(args.query!, (args.source as 'all' | 'gutenberg' | 'short') || 'all')
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Story search failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'tell_story') {
+          let args: { story_id?: string; source?: string; random?: boolean; genre?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              let output: string
+              if (args.random) {
+                output = await getRandomStory(args.genre)
+              } else if (args.story_id && args.source) {
+                output = await getStoryContent(args.story_id, args.source as 'gutenberg' | 'huggingface')
+              } else {
+                output = 'Missing story_id or source. Search for stories first with search_stories, or set random=true.'
+              }
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Story error: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'post_to_x' || fnName === 'post_reply' || fnName === 'read_social_feed' || fnName === 'read_comments' || fnName === 'schedule_post') {
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId) break
+
+          setS('thinking')
+          void (async () => {
+            try {
+              let output: string
+              const bc = browserRef.current
+
+              if (fnName === 'post_to_x') {
+                const result = await postTweet(args.text as string, args.reply_to_id as string | undefined)
+                output = `Tweet posted! URL: ${result.url}`
+              } else if (fnName === 'read_social_feed') {
+                if (bc) {
+                  output = await readSocialFeed(args.platform as 'x' | 'threads', bc, { username: args.username as string | undefined, query: args.query as string | undefined })
+                } else {
+                  output = 'Browser not available.'
+                }
+              } else if (fnName === 'read_comments') {
+                if (bc) {
+                  output = await readComments(args.post_url as string, bc)
+                } else {
+                  output = 'Browser not available.'
+                }
+              } else if (fnName === 'post_reply') {
+                const platform = args.platform as 'x' | 'threads'
+                if (platform === 'x') {
+                  const result = await postTweet(args.text as string, args.tweet_id as string)
+                  output = `Reply posted on X! URL: ${result.url}`
+                } else if (bc) {
+                  output = await replyViaBrowser(args.post_url as string, args.text as string, bc)
+                } else {
+                  output = 'Browser not available for Threads reply.'
+                }
+              } else if (fnName === 'schedule_post') {
+                const action = args.action as string
+                if (action === 'list') {
+                  output = listScheduledPostsSummary()
+                } else if (action === 'cancel') {
+                  const ok = cancelScheduledPost(args.post_id as string)
+                  output = ok ? `Cancelled post ${args.post_id}.` : `Post ${args.post_id} not found.`
+                } else {
+                  const post = schedulePost(args.platform as 'x' | 'threads', args.text as string, args.scheduled_time as string)
+                  output = `Post scheduled for ${new Date(args.scheduled_time as string).toLocaleString()} on ${(args.platform as string).toUpperCase()}. ID: ${post.id}`
+                }
+              } else {
+                output = `Unknown social tool: ${fnName}`
+              }
+
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Social media error: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
         }
         break
       }
@@ -1380,6 +1889,7 @@ Assistant: ${ai || ''}`
           mem: memory, hasVision: visionAvailable, hasTuneIn, hasRag, hasBrowser,
           browserGuideMode: browserGuideModeRef.current ?? false, hasMedia,
           voiceNames: registeredVoiceNames, isElevenLabs: isEL,
+          hasVoiceAnalysis: vaEnabledRef.current,
         })
 
         const tools: Record<string, unknown>[] = [
@@ -1544,6 +2054,215 @@ Assistant: ${ai || ''}`
             },
           )
         }
+
+        // Code editor tools — always available
+        tools.push(
+          {
+            type: 'function',
+            name: 'show_code',
+            description: 'Display code in the interactive Code Editor. Supports syntax highlighting, editing, copy, download, and execution (Python & JavaScript).',
+            parameters: {
+              type: 'object',
+              properties: {
+                code: { type: 'string', description: 'The code to display' },
+                language: { type: 'string', description: 'Programming language' },
+                filename: { type: 'string', description: 'Optional filename' },
+              },
+              required: ['code', 'language'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'run_code',
+            description: 'Execute code and return the output. Supports Python and JavaScript.',
+            parameters: {
+              type: 'object',
+              properties: {
+                code: { type: 'string', description: 'The code to execute' },
+                language: { type: 'string', enum: ['python', 'javascript'], description: 'Language to execute' },
+              },
+              required: ['code', 'language'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'search_huggingface',
+            description: 'Search Hugging Face for datasets or models by keyword.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query' },
+                type: { type: 'string', enum: ['datasets', 'models'], description: 'What to search for (default: datasets)' },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'search_github',
+            description: 'Search GitHub for repositories or code.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query' },
+                type: { type: 'string', enum: ['repositories', 'code'], description: 'What to search for (default: repositories)' },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'generate_music',
+            description: 'Generate a full song from a text description using Suno AI. Returns a playable audio track.',
+            parameters: {
+              type: 'object',
+              properties: {
+                prompt: { type: 'string', description: 'Description of the song to generate' },
+                style: { type: 'string', description: 'Optional music style/genre tags' },
+                instrumental: { type: 'boolean', description: 'Instrumental only, no lyrics (default: false)' },
+              },
+              required: ['prompt'],
+            },
+          },
+        )
+
+        // Financial tools — always available (server returns 401 gracefully if not configured)
+        tools.push(
+          {
+            type: 'function',
+            name: 'get_account_balances',
+            description: 'Get current balances for all linked bank accounts.',
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+          {
+            type: 'function',
+            name: 'get_transactions',
+            description: 'Get recent bank transactions with dates, amounts, merchants, and categories.',
+            parameters: {
+              type: 'object',
+              properties: {
+                start_date: { type: 'string', description: 'Start date YYYY-MM-DD (default: 30 days ago)' },
+                end_date: { type: 'string', description: 'End date YYYY-MM-DD (default: today)' },
+              },
+              required: [],
+            },
+          },
+          {
+            type: 'function',
+            name: 'get_spending_summary',
+            description: 'Get a comprehensive financial summary: income vs expenditure, spending by category, top merchants, balances.',
+            parameters: {
+              type: 'object',
+              properties: {
+                start_date: { type: 'string', description: 'Start date YYYY-MM-DD (default: 30 days ago)' },
+                end_date: { type: 'string', description: 'End date YYYY-MM-DD (default: today)' },
+              },
+              required: [],
+            },
+          },
+        )
+
+        // Story tools — always available
+        tools.push(
+          {
+            type: 'function',
+            name: 'search_stories',
+            description: 'Search for stories from Project Gutenberg (70,000+ classic books) and short story collections.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query (title, author, subject, or theme)' },
+                source: { type: 'string', enum: ['all', 'gutenberg', 'short'], description: 'Where to search (default: all)' },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'tell_story',
+            description: 'Fetch and read a story. Use the ID and Source values from search_stories results, or set random=true for a surprise story.',
+            parameters: {
+              type: 'object',
+              properties: {
+                story_id: { type: 'string', description: 'The story ID from search_stories (e.g. "11" for Gutenberg, "hf-tinystories-1450265" for short stories)' },
+                source: { type: 'string', enum: ['gutenberg', 'huggingface'], description: 'Story source from search_stories results' },
+                random: { type: 'boolean', description: 'Get a random story instead (default: false)' },
+                genre: { type: 'string', description: 'Genre for random stories (adventure, fairy tale, mystery, fantasy, fable, etc.)' },
+              },
+              required: [],
+            },
+          },
+          {
+            type: 'function',
+            name: 'post_to_x',
+            description: 'Post a tweet to X (Twitter). ALWAYS confirm with the user first by reading the text aloud before posting.',
+            parameters: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'Tweet text (max 280 chars)' },
+                reply_to_id: { type: 'string', description: 'Tweet ID to reply to (optional)' },
+              },
+              required: ['text'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'read_social_feed',
+            description: 'Read posts from X or Threads using the browser.',
+            parameters: {
+              type: 'object',
+              properties: {
+                platform: { type: 'string', enum: ['x', 'threads'] },
+                username: { type: 'string', description: 'Username to view' },
+                query: { type: 'string', description: 'Search query' },
+              },
+              required: ['platform'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'read_comments',
+            description: 'Read replies/comments on a specific social media post.',
+            parameters: {
+              type: 'object',
+              properties: {
+                post_url: { type: 'string', description: 'Full URL of the post' },
+              },
+              required: ['post_url'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'post_reply',
+            description: 'Post a reply on X (via API) or Threads (via browser). ALWAYS confirm with the user first.',
+            parameters: {
+              type: 'object',
+              properties: {
+                platform: { type: 'string', enum: ['x', 'threads'] },
+                text: { type: 'string', description: 'Reply text' },
+                post_url: { type: 'string', description: 'URL of the post' },
+                tweet_id: { type: 'string', description: 'For X: tweet ID to reply to' },
+              },
+              required: ['platform', 'text', 'post_url'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'schedule_post',
+            description: 'Schedule, list, or cancel social media posts.',
+            parameters: {
+              type: 'object',
+              properties: {
+                action: { type: 'string', enum: ['schedule', 'list', 'cancel'] },
+                platform: { type: 'string', enum: ['x', 'threads'] },
+                text: { type: 'string' },
+                scheduled_time: { type: 'string', description: 'ISO 8601 datetime' },
+                post_id: { type: 'string', description: 'For cancel action' },
+              },
+              required: ['action'],
+            },
+          },
+        )
 
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],

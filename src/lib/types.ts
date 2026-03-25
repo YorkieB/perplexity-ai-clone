@@ -149,7 +149,25 @@ export interface UserSettings {
     onedrive?: string
     github?: string
     dropbox?: string
+    /** Suno API key for music generation. */
+    suno?: string
+    /** Plaid Client ID for bank connections. */
+    plaid?: string
+    /** Plaid Secret for bank connections. */
+    plaidSecret?: string
+    /** X (Twitter) API Key for posting. */
+    xApiKey?: string
+    /** X (Twitter) API Secret. */
+    xApiSecret?: string
+    /** X (Twitter) Access Token. */
+    xAccessToken?: string
+    /** X (Twitter) Access Token Secret. */
+    xAccessTokenSecret?: string
   }
+  /** Plaid access token (stored after bank link). */
+  plaidAccessToken?: string
+  /** Plaid environment: sandbox, development, or production. */
+  plaidEnvironment?: 'sandbox' | 'development' | 'production'
   /** Read-aloud / voice chat TTS backend. Default OpenAI. */
   ttsProvider?: 'openai' | 'elevenlabs'
   includeWebSearch?: boolean
@@ -191,6 +209,7 @@ export interface UserSettings {
       voiceSettings?: { stability?: number; similarity_boost?: number; style?: number }
     }>
   }
+  enableVoiceAnalysis?: boolean
 }
 
 export interface CloudFile {

@@ -5,6 +5,8 @@ import { useVision } from '@/hooks/useVision'
 import { useTuneInControl } from '@/contexts/TuneInControlContext'
 import { useBrowserControl, useBrowserGuideMode, useBrowserAutomating, useBrowserAgentSteps } from '@/contexts/BrowserControlContext'
 import { useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
+import { useCodeEditor } from '@/contexts/CodeEditorContext'
+import { useMusicPlayer, useMusicPlayerGenerating } from '@/contexts/MusicPlayerContext'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
@@ -25,6 +27,9 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
   const { addAgentStep, clearAgentSteps } = useBrowserAgentSteps()
   const mediaCanvasControl = useMediaCanvas()
   const { setGenerating: setMediaGenerating, setGeneratingLabel: setMediaGeneratingLabel } = useMediaCanvasGenerating()
+  const codeEditorControl = useCodeEditor()
+  const musicPlayerControl = useMusicPlayer()
+  const { setGenerating: setMusicGenerating, setGeneratingLabel: setMusicGeneratingLabel } = useMusicPlayerGenerating()
   const [settings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
   const pipeline = useRealtimeVoice({
@@ -39,7 +44,12 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     mediaCanvasControl,
     onMediaGenerating: setMediaGenerating,
     onMediaGeneratingLabel: setMediaGeneratingLabel,
+    codeEditorControl,
+    musicPlayerControl,
+    onMusicGenerating: setMusicGenerating,
+    onMusicGeneratingLabel: setMusicGeneratingLabel,
     voiceRegistry: settings?.voiceRegistry ?? null,
+    enableVoiceAnalysis: settings?.enableVoiceAnalysis ?? false,
   })
 
   const handleBargeIn = useCallback(() => {
