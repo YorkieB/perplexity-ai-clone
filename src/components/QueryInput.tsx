@@ -1,4 +1,4 @@
-import { useState, KeyboardEvent, useRef, useEffect } from 'react'
+import { useState, KeyboardEvent, useRef, useEffect, useMemo } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -7,8 +7,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CloudFile, UploadedFile } from '@/lib/types'
+import { CloudFile, UploadedFile, UserSettings } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
+import { ragIngestBulk } from '@/lib/rag'
+import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
 import { ModelCouncilSelector } from '@/components/ModelCouncilSelector'
@@ -29,6 +32,7 @@ import {
   Microphone,
   Waveform,
   Desktop,
+  Brain,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -39,12 +43,12 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => void
-  isLoading?: boolean
-  placeholder?: string
-  advancedMode: boolean
-  onAdvancedModeChange: (enabled: boolean) => void
-  onVoiceOpen?: () => void
+  readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string) => void
+  readonly isLoading?: boolean
+  readonly placeholder?: string
+  readonly advancedMode: boolean
+  readonly onAdvancedModeChange: (enabled: boolean) => void
+  readonly onVoiceOpen?: () => void
 }
 
 export function QueryInput({
@@ -69,8 +73,35 @@ export function QueryInput({
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false)
   const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
+  const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [settings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
+  const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
+  const doToken = settings?.apiKeys?.digitalOcean?.trim()
+  const useDigitalOcean = Boolean(doToken) || useEnvInference
+
+  useEffect(() => {
+    if (!useDigitalOcean) { setDoModels([]); return }
+    let cancelled = false
+    fetchDigitalOceanModels(doToken || undefined)
+      .then((list) => { if (!cancelled) setDoModels(list) })
+      .catch(() => { if (!cancelled) setDoModels([]) })
+    return () => { cancelled = true }
+  }, [useDigitalOcean, doToken])
+
+  const modelOptions = useMemo(() => {
+    const openai = [
+      { id: 'gpt-4o', label: 'GPT-4o' },
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+    ]
+    const doItems = doModels.map((m) => ({
+      id: m.id,
+      label: m.name,
+    }))
+    return [...openai, ...doItems]
+  }, [doModels])
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
@@ -96,7 +127,7 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined)
+      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel)
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
@@ -140,6 +171,38 @@ export function QueryInput({
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
+  }
+
+  const ragFileInputRef = useRef<HTMLInputElement>(null)
+  const [isIngestingRag, setIsIngestingRag] = useState(false)
+
+  const handleRagUploadClick = () => {
+    ragFileInputRef.current?.click()
+  }
+
+  const handleRagFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = event.target.files
+    if (!fileList || fileList.length === 0) return
+    const files = Array.from(fileList)
+    setIsIngestingRag(true)
+    const toastId = toast.loading(`Ingesting ${files.length} file${files.length > 1 ? 's' : ''} into Knowledge Base...`)
+    try {
+      const result = await ragIngestBulk(files)
+      const ok = result.results.length
+      const fail = result.errors.length
+      if (ok > 0 && fail === 0) {
+        toast.success(`${ok} file${ok > 1 ? 's' : ''} saved to Knowledge Base`, { id: toastId })
+      } else if (ok > 0 && fail > 0) {
+        toast.success(`${ok} saved, ${fail} failed`, { id: toastId })
+      } else {
+        toast.error(`Failed: ${result.errors.map(e => e.filename).join(', ')}`, { id: toastId })
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Ingest failed', { id: toastId })
+    } finally {
+      setIsIngestingRag(false)
+      if (ragFileInputRef.current) ragFileInputRef.current.value = ''
+    }
   }
 
   const handleVoiceOpen = () => {
@@ -208,6 +271,17 @@ export function QueryInput({
                 >
                   <UploadSimple size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Upload files or images</span>
+                </button>
+
+                <button
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
+                  onClick={handleRagUploadClick}
+                  disabled={isIngestingRag}
+                >
+                  <Brain size={18} className="text-muted-foreground" />
+                  <span className="flex-1 text-left">
+                    {isIngestingRag ? 'Ingesting...' : 'Save to Knowledge Base'}
+                  </span>
                 </button>
 
                 <button
@@ -341,15 +415,26 @@ export function QueryInput({
             onChange={handleFileSelect}
             disabled={isLoading || isUploadingFile}
           />
+          <input
+            ref={ragFileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            onChange={handleRagFileSelect}
+            disabled={isIngestingRag}
+          />
 
           <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0 min-w-0 sm:ml-auto">
             <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto max-w-[9rem] px-2">
+              <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto max-w-[12rem] px-2">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                {modelOptions.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
 

@@ -182,6 +182,15 @@ export interface UserSettings {
     dropbox: boolean
     spotify: boolean
   }
+  voiceRegistry?: {
+    defaultVoiceId: string | null
+    voices: Array<{
+      id: string
+      name: string
+      elevenLabsVoiceId: string
+      voiceSettings?: { stability?: number; similarity_boost?: number; style?: number }
+    }>
+  }
 }
 
 export interface CloudFile {

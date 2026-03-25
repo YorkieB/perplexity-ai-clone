@@ -17,6 +17,7 @@ export type InAppWebview = HTMLElement & {
   loadURL: (url: string) => void
   openDevTools: () => void
   setZoomFactor: (z: number) => number
+  executeJavaScript: (code: string) => Promise<unknown>
   getWebContents: () => {
     findInPage: (text: string, opts?: { forward?: boolean; findNext?: boolean }) => number
     stopFindInPage: (action: 'clearSelection' | 'activateSelection' | 'keepSelection') => void

@@ -49,7 +49,23 @@ import {
   type InAppWebview,
 } from '@/components/in-app-browser/InAppBrowserWebviewArea'
 import { toast } from 'sonner'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  useBrowserControlRegister,
+  useBrowserGuideMode,
+  useBrowserAutomating,
+  useBrowserAgentSteps,
+  type BrowserControl,
+} from '@/contexts/BrowserControlContext'
+import {
+  SNAPSHOT_SCRIPT,
+  EXTRACT_SCRIPT,
+  clickScript,
+  typeScript,
+  scrollScript,
+} from '@/lib/browser-agent-scripts'
 
 const LAST_URL_KEY = 'web-browser-modal-last-url'
 const MAX_TABS = 12
@@ -74,11 +90,17 @@ interface NavState {
 interface WebBrowserModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onRequestOpen?: () => void
 }
 
-export function WebBrowserModal({ open, onOpenChange }: WebBrowserModalProps) {
+export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowserModalProps) {
   const useWebview = isElectronWebviewAvailable()
   const partition = window.electronInAppBrowser?.webviewPartition ?? ''
+  const { register, unregister } = useBrowserControlRegister()
+  const { guideMode, setGuideMode } = useBrowserGuideMode()
+  const { automating } = useBrowserAutomating()
+  const { agentSteps } = useBrowserAgentSteps()
+  const [stepsExpanded, setStepsExpanded] = useState(false)
 
   const [input, setInput] = useState('')
   const [nav, setNav] = useState<NavState>({ stack: ['about:blank'], index: 0 })
@@ -91,6 +113,10 @@ export function WebBrowserModal({ open, onOpenChange }: WebBrowserModalProps) {
   ])
   const [activeTabId, setActiveTabId] = useState(() => tabs[0]?.id ?? '')
   const webviews = useRef<Map<string, InAppWebview>>(new Map())
+  const activeTabIdRef = useRef(activeTabId)
+  activeTabIdRef.current = activeTabId
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
 
   const [loading, setLoading] = useState(false)
   const [navTick, setNavTick] = useState(0)
@@ -248,6 +274,176 @@ export function WebBrowserModal({ open, onOpenChange }: WebBrowserModalProps) {
     })
     return off
   }, [useWebview])
+
+  // ── Register browser control for Jarvis agent ──
+  useEffect(() => {
+    if (!useWebview) return
+
+    function getActiveWv(): InAppWebview | null {
+      return webviews.current.get(activeTabIdRef.current) ?? null
+    }
+
+    const control: BrowserControl = {
+      navigate: (url: string) => new Promise((resolve) => {
+        const w = getActiveWv()
+        if (!w) {
+          resolve({ ok: false, url: '', title: '' })
+          return
+        }
+        const u = normalizeUrl(url)
+        let settled = false
+        const timeout = setTimeout(() => {
+          if (settled) return
+          settled = true
+          w.removeEventListener('did-stop-loading', onStop)
+          let finalUrl = u
+          try { finalUrl = w.getURL() } catch { /* */ }
+          resolve({ ok: true, url: finalUrl, title: '' })
+        }, 15000)
+        const onStop = () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          w.removeEventListener('did-stop-loading', onStop)
+          let finalUrl = u
+          try { finalUrl = w.getURL() } catch { /* ignore */ }
+          const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current)
+          resolve({ ok: true, url: finalUrl, title: tab?.title ?? '' })
+        }
+        w.addEventListener('did-stop-loading', onStop)
+        try {
+          w.loadURL(u)
+          try { if (u !== 'about:blank') localStorage.setItem(LAST_URL_KEY, u) } catch { /* */ }
+        } catch {
+          if (!settled) {
+            settled = true
+            clearTimeout(timeout)
+            w.removeEventListener('did-stop-loading', onStop)
+            resolve({ ok: false, url: '', title: '' })
+          }
+        }
+      }),
+
+      snapshot: async () => {
+        const w = getActiveWv()
+        if (!w) return 'Browser is not open or webview not ready.'
+        try {
+          return (await w.executeJavaScript(SNAPSHOT_SCRIPT)) as string
+        } catch (e) {
+          return `Snapshot error: ${e instanceof Error ? e.message : String(e)}`
+        }
+      },
+
+      click: async (ref: string) => {
+        const w = getActiveWv()
+        if (!w) return { ok: false }
+        try {
+          return (await w.executeJavaScript(clickScript(ref))) as { ok: boolean }
+        } catch {
+          return { ok: false }
+        }
+      },
+
+      type: async (ref: string, text: string) => {
+        const w = getActiveWv()
+        if (!w) return { ok: false }
+        try {
+          return (await w.executeJavaScript(typeScript(ref, text))) as { ok: boolean }
+        } catch {
+          return { ok: false }
+        }
+      },
+
+      extractText: async () => {
+        const w = getActiveWv()
+        if (!w) return ''
+        try {
+          return (await w.executeJavaScript(EXTRACT_SCRIPT)) as string
+        } catch {
+          return ''
+        }
+      },
+
+      scroll: async (direction: 'up' | 'down') => {
+        const w = getActiveWv()
+        if (!w) return { ok: false }
+        try {
+          return (await w.executeJavaScript(scrollScript(direction))) as { ok: boolean }
+        } catch {
+          return { ok: false }
+        }
+      },
+
+      goBack: async () => {
+        const w = getActiveWv()
+        if (!w) return { ok: false }
+        try { w.goBack(); return { ok: true } } catch { return { ok: false } }
+      },
+
+      goForward: async () => {
+        const w = getActiveWv()
+        if (!w) return { ok: false }
+        try { w.goForward(); return { ok: true } } catch { return { ok: false } }
+      },
+
+      getCurrentUrl: () => {
+        const w = getActiveWv()
+        if (!w) return 'about:blank'
+        try { return w.getURL() } catch { return 'about:blank' }
+      },
+
+      isOpen: () => open,
+      openBrowser: () => { onRequestOpen?.() },
+
+      newTab: (url?: string) => new Promise((resolve) => {
+        const currentTabs = tabsRef.current
+        if (currentTabs.length >= MAX_TABS) {
+          resolve({ ok: false, tabId: '' })
+          return
+        }
+        const id = generateTabId()
+        const u = url ? normalizeUrl(url) : 'about:blank'
+        setTabs(prev => [...prev, { id, srcAtCreate: u, url: u, title: u === 'about:blank' ? 'New tab' : u }])
+        setActiveTabId(id)
+        setInput(u === 'about:blank' ? '' : u)
+        resolve({ ok: true, tabId: id })
+      }),
+
+      switchTab: (tabId: string) => new Promise((resolve) => {
+        const tab = tabsRef.current.find(t => t.id === tabId)
+        if (!tab) { resolve({ ok: false }); return }
+        setActiveTabId(tabId)
+        setInput(tab.url === 'about:blank' ? '' : tab.url)
+        resolve({ ok: true })
+      }),
+
+      closeTab: (tabId: string) => new Promise((resolve) => {
+        const currentTabs = tabsRef.current
+        if (currentTabs.length <= 1) { resolve({ ok: false }); return }
+        const idx = currentTabs.findIndex(t => t.id === tabId)
+        if (idx < 0) { resolve({ ok: false }); return }
+        webviews.current.delete(tabId)
+        const remaining = currentTabs.filter(t => t.id !== tabId)
+        setTabs(remaining)
+        if (activeTabIdRef.current === tabId) {
+          const next = remaining[Math.min(idx, remaining.length - 1)]
+          setActiveTabId(next.id)
+          setInput(next.url === 'about:blank' ? '' : next.url)
+        }
+        resolve({ ok: true })
+      }),
+
+      listTabs: () => tabsRef.current.map(t => ({
+        id: t.id,
+        url: t.url,
+        title: t.title,
+        active: t.id === activeTabIdRef.current,
+      })),
+    }
+
+    register(control)
+    return () => { unregister() }
+  }, [useWebview, open, register, unregister, onRequestOpen])
 
   const go = () => {
     const u = normalizeUrl(input || 'about:blank')
@@ -525,7 +721,28 @@ export function WebBrowserModal({ open, onOpenChange }: WebBrowserModalProps) {
             </Button>
             <div className="space-y-1 pr-2">
               <DialogHeader className="p-0">
-                <DialogTitle>Web browser</DialogTitle>
+                <DialogTitle className="flex items-center gap-3">
+                  Web browser
+                  {automating && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary animate-pulse">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      Jarvis is browsing
+                    </span>
+                  )}
+                  {useWebview && (
+                    <span className="ml-auto flex items-center gap-2 text-xs font-normal">
+                      <Switch
+                        id="guide-mode"
+                        checked={guideMode}
+                        onCheckedChange={setGuideMode}
+                        className="scale-75"
+                      />
+                      <Label htmlFor="guide-mode" className="text-xs text-muted-foreground cursor-pointer">
+                        Guide Mode
+                      </Label>
+                    </span>
+                  )}
+                </DialogTitle>
               </DialogHeader>
               <p className="text-muted-foreground text-sm">
                 {useWebview
@@ -893,6 +1110,33 @@ export function WebBrowserModal({ open, onOpenChange }: WebBrowserModalProps) {
                 />
               )}
             </div>
+
+            {automating && agentSteps.length > 0 && (
+              <div className="shrink-0 border-t border-border bg-muted/30">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/50 transition-colors"
+                  onClick={() => setStepsExpanded(e => !e)}
+                >
+                  <span>Agent Steps ({agentSteps.length})</span>
+                  <span className={cn('inline-block text-[10px] transition-transform', stepsExpanded && 'rotate-180')}>▼</span>
+                </button>
+                {stepsExpanded && (
+                  <div className="max-h-32 overflow-y-auto px-4 pb-2 space-y-1">
+                    {agentSteps.map((step, i) => (
+                      <div key={`${step.timestamp}-${i}`} className="flex items-start gap-2 text-[11px]">
+                        <span className="shrink-0 font-mono text-muted-foreground">{i + 1}.</span>
+                        <span className="text-muted-foreground">
+                          <span className="font-medium text-foreground">{step.action}</span>
+                          {' — '}
+                          {step.result.slice(0, 120)}{step.result.length > 120 ? '...' : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="shrink-0 border-t border-border bg-muted/20 px-6 py-3">

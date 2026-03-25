@@ -5,6 +5,7 @@ import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusM
 import { generateId, generateThreadTitle, processFile } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { callLlm } from '@/lib/llm'
+import { ragSearch } from '@/lib/rag'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { AppSidebar } from '@/components/AppSidebar'
 import { EmptyState } from '@/components/EmptyState'
@@ -29,6 +30,12 @@ import { AgentBrowserPanel } from '@/components/AgentBrowserPanel'
 import { VoiceMode } from '@/components/VoiceMode'
 import { WebBrowserModal } from '@/components/WebBrowserModal'
 import { AppModuleRails } from '@/components/layout/AppModuleRails'
+import { TuneInControlProvider } from '@/contexts/TuneInControlContext'
+import { BrowserControlProvider, useBrowserControl, useBrowserGuideMode } from '@/contexts/BrowserControlContext'
+import { MediaCanvasProvider, useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
+import { MediaCanvasModal } from '@/components/MediaCanvasModal'
+import { runChatWithTools } from '@/lib/chat-tools'
+import { useWakeWord } from '@/hooks/useWakeWord'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -73,8 +80,20 @@ function MainApp() {
   const [agentBrowserOpen, setAgentBrowserOpen] = useState(false)
   const [voiceModalOpen, setVoiceModalOpen] = useState(false)
   const [webBrowserOpen, setWebBrowserOpen] = useState(false)
+  const [mediaCanvasOpen, setMediaCanvasOpen] = useState(false)
+  const [wakeWordEnabled, setWakeWordEnabled] = useLocalStorage('wake-word-enabled', false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const workspaceFileInputRef = useRef<HTMLInputElement>(null)
+
+  const { isListening: wakeWordListening, isSupported: wakeWordSupported } = useWakeWord({
+    enabled: Boolean(wakeWordEnabled) && !voiceModalOpen,
+    onWake: () => setVoiceModalOpen(true),
+  })
+
+  const browserControl = useBrowserControl()
+  const { guideMode: browserGuideMode } = useBrowserGuideMode()
+  const mediaCanvasControl = useMediaCanvas()
+  const { setGenerating: setMediaGenerating, setGeneratingLabel: setMediaGeneratingLabel } = useMediaCanvasGenerating()
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const contextWorkspaceId = activeWorkspaceId ?? activeThread?.workspaceId ?? null
@@ -228,7 +247,7 @@ function MainApp() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[]) => {
+  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string) => {
     setIsGenerating(true)
     const workspaceForQuery = activeWorkspace
     const useWebSearchForQuery = workspaceForQuery?.includeWebSearch ?? globalWebSearchEnabled
@@ -290,6 +309,17 @@ function MainApp() {
           )
           .join('\n')}`
       }
+
+      // RAG: retrieve relevant knowledge from the vector store
+      let ragContext = ''
+      try {
+        const ragResults = await ragSearch(query, 5)
+        if (ragResults.length > 0) {
+          ragContext = `\n\nRetrieved Knowledge:\n${ragResults
+            .map((r) => `[From: ${r.document_title}]\n${r.content}`)
+            .join('\n---\n')}`
+        }
+      } catch { /* RAG unavailable — continue without it */ }
 
       let fileContext = ''
       if (files && files.length > 0) {
@@ -353,22 +383,53 @@ function MainApp() {
           )
         )
       } else {
-        const promptText = `You are an advanced AI research assistant.${
+        const sysPrompt = `You are an advanced AI research assistant.${
           systemPrompt ? ` ${systemPrompt}` : ''
-        }${modeInstruction}${contextSection}${combinedFileContext}
+        }${modeInstruction}
+
+You have tools available:
+- web_search: Search the web for current information.
+- browser_action: Control a visible web browser (navigate, click, type, scroll, snapshot, manage tabs).
+- browser_task: Execute complex multi-step browser tasks autonomously (research, comparison, data extraction).
+- rag_search: Search the personal knowledge base.
+- create_document: Create and store documents (md, docx, pdf).
+- generate_image: Generate an image from a text description using AI. The image opens in the Media Canvas.
+- generate_video: Generate a short video from a text description. The video opens in the Media Canvas.
+- edit_image: Edit the current image in the Media Canvas (e.g. "increase contrast", "remove the background", "enhance to HD").
+
+When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
+When the user asks about stored information, use rag_search.
+When the user asks to write or create a document, use create_document.
+When the user asks to create, generate, draw, or make an image or picture, use generate_image.
+When the user asks to create or generate a video or animation, use generate_video.
+When the user asks to edit, adjust, enhance, or modify the current image, use edit_image.`
+
+        const userPrompt = `${contextSection}${ragContext}${combinedFileContext}
 
 User query: ${query}
 
 ${
   webSources.length > 0
-    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+    ? 'Web search results are provided above. Synthesize information from them and any other tools as needed.'
+    : ragContext
+    ? 'Knowledge base results are provided above. Use them along with any other tools as needed.'
     : hasAttachedFileContext
     ? 'Analyze the provided files and answer the user query based on the file content.'
-    : 'Provide a helpful, accurate answer based on your knowledge.'
-}
-`
+    : 'Answer the query using your knowledge and available tools.'
+}`
 
-        const response = await callLlm(promptText, 'gpt-4o-mini')
+        const chatModel = selectedModel || 'gpt-4o-mini'
+        const response = await runChatWithTools({
+          systemPrompt: sysPrompt,
+          userPrompt,
+          model: chatModel,
+          browserControl,
+          guideMode: browserGuideMode,
+          mediaCanvasControl,
+          onMediaGenerating: setMediaGenerating,
+          onMediaGeneratingLabel: setMediaGeneratingLabel,
+          openMediaCanvas: () => setMediaCanvasOpen(true),
+        })
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
@@ -378,7 +439,7 @@ ${
           content: response,
           sources: webSources.length > 0 ? webSources : undefined,
           createdAt: Date.now(),
-          modelUsed: 'gpt-4o-mini',
+          modelUsed: chatModel,
           focusMode,
           followUpQuestions,
         }
@@ -590,6 +651,9 @@ ${
   }
 
   return (
+    <BrowserControlProvider>
+    <MediaCanvasProvider>
+    <TuneInControlProvider>
     <div className="flex h-screen overflow-hidden">
       <Toaster position="top-center" />
       
@@ -617,6 +681,11 @@ ${
         onOpenWebBrowser={() => setWebBrowserOpen(true)}
         onOpenAgentBrowser={() => setAgentBrowserOpen(true)}
         onOpenVoice={() => setVoiceModalOpen(true)}
+        onOpenMediaCanvas={() => setMediaCanvasOpen(true)}
+        wakeWordEnabled={Boolean(wakeWordEnabled)}
+        wakeWordSupported={wakeWordSupported}
+        wakeWordListening={wakeWordListening}
+        onWakeWordToggle={setWakeWordEnabled}
       />
 
       <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
@@ -650,8 +719,13 @@ ${
         onClose={() => setVoiceModalOpen(false)}
       />
 
-      <WebBrowserModal open={webBrowserOpen} onOpenChange={setWebBrowserOpen} />
+      <WebBrowserModal open={webBrowserOpen} onOpenChange={setWebBrowserOpen} onRequestOpen={() => setWebBrowserOpen(true)} />
+
+      <MediaCanvasModal open={mediaCanvasOpen} onOpenChange={setMediaCanvasOpen} />
     </div>
+    </TuneInControlProvider>
+    </MediaCanvasProvider>
+    </BrowserControlProvider>
   )
 }
 

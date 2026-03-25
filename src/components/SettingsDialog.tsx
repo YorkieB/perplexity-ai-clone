@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
@@ -12,7 +12,8 @@ import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star } from '@phosphor-icons/react'
+import type { VoiceProfile } from '@/lib/voice-registry'
 
 interface SettingsDialogProps {
   open: boolean
@@ -154,6 +155,141 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4)
   }
 
+  // ── Voice Library State ──
+  const [voiceSearch, setVoiceSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<Array<{
+    public_owner_id: string
+    voice_id: string
+    name: string
+    accent?: string
+    gender?: string
+    age?: string
+    descriptive?: string
+    use_case?: string
+    category?: string
+    language?: string
+    description?: string
+    preview_url?: string
+  }>>([])
+  const [myVoices, setMyVoices] = useState<Array<{
+    voice_id: string
+    name: string
+    category?: string
+    labels?: Record<string, string>
+    preview_url?: string
+    description?: string
+  }>>([])
+  const [voicesLoading, setVoicesLoading] = useState(false)
+  const [myVoicesLoaded, setMyVoicesLoaded] = useState(false)
+  const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null)
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [addingVoiceName, setAddingVoiceName] = useState('')
+  const [addingVoiceId, setAddingVoiceId] = useState<string | null>(null)
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const registeredVoices: VoiceProfile[] = settings?.voiceRegistry?.voices ?? []
+  const defaultVoiceId = settings?.voiceRegistry?.defaultVoiceId ?? null
+
+  const loadMyVoices = useCallback(async () => {
+    if (myVoicesLoaded) return
+    try {
+      const res = await fetch('/api/elevenlabs/my-voices')
+      if (res.ok) {
+        const data = await res.json()
+        setMyVoices(data.voices ?? [])
+        setMyVoicesLoaded(true)
+      }
+    } catch (e) {
+      console.warn('Failed to load ElevenLabs voices:', e)
+    }
+  }, [myVoicesLoaded])
+
+  const searchSharedVoices = useCallback(async (query: string) => {
+    setVoicesLoading(true)
+    try {
+      const params = new URLSearchParams({ page_size: '20' })
+      if (query.trim()) params.set('search', query.trim())
+      const res = await fetch(`/api/elevenlabs/voices?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setSearchResults(data.voices ?? [])
+      }
+    } catch (e) {
+      console.warn('Failed to search shared voices:', e)
+    } finally {
+      setVoicesLoading(false)
+    }
+  }, [])
+
+  const handleVoiceSearchChange = useCallback((value: string) => {
+    setVoiceSearch(value)
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
+    searchTimeoutRef.current = setTimeout(() => searchSharedVoices(value), 400)
+  }, [searchSharedVoices])
+
+  const previewVoice = useCallback((previewUrl: string, voiceId: string) => {
+    if (previewAudio) {
+      previewAudio.pause()
+      previewAudio.src = ''
+    }
+    if (previewingId === voiceId) {
+      setPreviewingId(null)
+      setPreviewAudio(null)
+      return
+    }
+    const audio = new Audio(previewUrl)
+    audio.onended = () => { setPreviewingId(null); setPreviewAudio(null) }
+    audio.play().catch(() => toast.error('Could not play preview'))
+    setPreviewAudio(audio)
+    setPreviewingId(voiceId)
+  }, [previewAudio, previewingId])
+
+  const addVoiceToSettings = useCallback((voiceId: string, name: string, elVoiceId: string, description?: string, previewUrl?: string) => {
+    const profile: VoiceProfile = {
+      id: voiceId,
+      name: name || 'Unnamed',
+      elevenLabsVoiceId: elVoiceId,
+      description,
+      previewUrl,
+    }
+    setSettings((current) => {
+      const reg = current?.voiceRegistry ?? { defaultVoiceId: null, voices: [] }
+      const existing = reg.voices.findIndex(v => v.id === profile.id)
+      const voices = [...reg.voices]
+      if (existing >= 0) voices[existing] = profile
+      else voices.push(profile)
+      return { ...current!, voiceRegistry: { ...reg, voices } }
+    })
+    toast.success(`"${name}" added to voice library`)
+    setAddingVoiceId(null)
+    setAddingVoiceName('')
+  }, [setSettings])
+
+  const removeVoiceFromSettings = useCallback((profileId: string) => {
+    setSettings((current) => {
+      const reg = current?.voiceRegistry ?? { defaultVoiceId: null, voices: [] }
+      return {
+        ...current!,
+        voiceRegistry: {
+          defaultVoiceId: reg.defaultVoiceId === profileId ? null : reg.defaultVoiceId,
+          voices: reg.voices.filter(v => v.id !== profileId),
+        },
+      }
+    })
+    toast.info('Voice removed')
+  }, [setSettings])
+
+  const setDefaultVoiceInSettings = useCallback((profileId: string | null) => {
+    setSettings((current) => ({
+      ...current!,
+      voiceRegistry: {
+        ...(current?.voiceRegistry ?? { defaultVoiceId: null, voices: [] }),
+        defaultVoiceId: profileId,
+      },
+    }))
+    toast.success(profileId ? 'Default voice updated' : 'Default voice cleared')
+  }, [setSettings])
+
   const cloudServices = [
     {
       id: 'googledrive' as const,
@@ -200,14 +336,18 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </DialogHeader>
 
         <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="api-keys" className="gap-2">
               <Key size={16} />
               API Keys
             </TabsTrigger>
+            <TabsTrigger value="voices" className="gap-2">
+              <Microphone size={16} />
+              Voices
+            </TabsTrigger>
             <TabsTrigger value="oauth" className="gap-2">
               <CloudArrowUp size={16} />
-              OAuth Connections
+              OAuth
             </TabsTrigger>
           </TabsList>
 
@@ -261,6 +401,262 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   Cancel
                 </Button>
                 <Button onClick={handleSaveApiKeys}>Save API Keys</Button>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="voices" className="flex-1 overflow-y-auto space-y-6 mt-4">
+            <div className="space-y-6">
+              {/* My Voice Library */}
+              <Card className="p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-emerald-500/10 rounded-lg">
+                    <Microphone className="text-emerald-500" size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-lg">My Voice Library</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Voices registered for Jarvis to use during conversations, impersonations, and storytelling.
+                    </p>
+                  </div>
+                </div>
+                <Separator />
+
+                {registeredVoices.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No voices added yet. Browse the ElevenLabs library below to add voices.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {registeredVoices.map((v) => (
+                      <div key={v.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                            <Microphone size={14} className="text-primary" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm">{v.name}</span>
+                              {defaultVoiceId === v.id && (
+                                <Badge variant="default" className="text-xs">Default</Badge>
+                              )}
+                            </div>
+                            {v.description && (
+                              <p className="text-xs text-muted-foreground">{v.description}</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {v.previewUrl && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => previewVoice(v.previewUrl!, v.id)}
+                            >
+                              {previewingId === v.id ? <Stop size={14} /> : <Play size={14} />}
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDefaultVoiceInSettings(defaultVoiceId === v.id ? null : v.id)}
+                            title={defaultVoiceId === v.id ? 'Remove as default' : 'Set as default Jarvis voice'}
+                          >
+                            <Star size={14} weight={defaultVoiceId === v.id ? 'fill' : 'regular'} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeVoiceFromSettings(v.id)}
+                          >
+                            <Trash size={14} className="text-destructive" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              {/* My ElevenLabs Voices */}
+              <Card className="p-6 space-y-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-violet-500/10 rounded-lg">
+                      <Microphone className="text-violet-500" size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-lg">My ElevenLabs Voices</h3>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Your personal and cloned voices from ElevenLabs.
+                      </p>
+                    </div>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={loadMyVoices} disabled={myVoicesLoaded}>
+                    {myVoicesLoaded ? 'Loaded' : 'Load Voices'}
+                  </Button>
+                </div>
+                <Separator />
+
+                {myVoices.length === 0 && myVoicesLoaded && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No personal voices found. Create voices in your ElevenLabs dashboard.
+                  </p>
+                )}
+
+                {myVoices.length > 0 && (
+                  <div className="grid gap-2">
+                    {myVoices.map((v) => {
+                      const alreadyAdded = registeredVoices.some(rv => rv.elevenLabsVoiceId === v.voice_id)
+                      return (
+                        <div key={v.voice_id} className="flex items-center justify-between p-3 rounded-lg border">
+                          <div className="flex items-center gap-3">
+                            <div>
+                              <span className="font-medium text-sm">{v.name}</span>
+                              {v.category && <span className="text-xs text-muted-foreground ml-2">({v.category})</span>}
+                              {v.description && <p className="text-xs text-muted-foreground mt-0.5">{v.description}</p>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {v.preview_url && (
+                              <Button variant="ghost" size="sm" onClick={() => previewVoice(v.preview_url!, v.voice_id)}>
+                                {previewingId === v.voice_id ? <Stop size={14} /> : <Play size={14} />}
+                              </Button>
+                            )}
+                            {alreadyAdded ? (
+                              <Badge variant="outline" className="text-xs">Added</Badge>
+                            ) : addingVoiceId === v.voice_id ? (
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  className="h-7 w-32 text-xs"
+                                  placeholder="Display name"
+                                  value={addingVoiceName}
+                                  onChange={(e) => setAddingVoiceName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && addingVoiceName.trim()) {
+                                      addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
+                                    }
+                                  }}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  className="h-7 px-2"
+                                  disabled={!addingVoiceName.trim()}
+                                  onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
+                                >
+                                  <Plus size={12} />
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
+                                <Plus size={14} className="mr-1" /> Add
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </Card>
+
+              {/* Browse ElevenLabs Library */}
+              <Card className="p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-blue-500/10 rounded-lg">
+                    <MagnifyingGlass className="text-blue-500" size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-lg">Browse ElevenLabs Library</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Search thousands of community voices for impersonations and characters.
+                    </p>
+                  </div>
+                </div>
+                <Separator />
+
+                <div className="relative">
+                  <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+                  <Input
+                    className="pl-9"
+                    placeholder="Search voices (e.g. narrator, deep male, British accent...)"
+                    value={voiceSearch}
+                    onChange={(e) => handleVoiceSearchChange(e.target.value)}
+                    onFocus={() => { if (searchResults.length === 0) searchSharedVoices('') }}
+                  />
+                </div>
+
+                {voicesLoading && (
+                  <p className="text-sm text-muted-foreground text-center py-4">Searching...</p>
+                )}
+
+                {searchResults.length > 0 && (
+                  <div className="grid gap-2 max-h-[300px] overflow-y-auto">
+                    {searchResults.map((v) => {
+                      const alreadyAdded = registeredVoices.some(rv => rv.elevenLabsVoiceId === v.voice_id)
+                      const tags = [v.gender, v.age, v.accent, v.language].filter(Boolean)
+                      return (
+                        <div key={v.voice_id} className="flex items-center justify-between p-3 rounded-lg border">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm">{v.name}</span>
+                              {tags.map(tag => (
+                                <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                              ))}
+                            </div>
+                            {v.description && (
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">{v.description}</p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                            {v.preview_url && (
+                              <Button variant="ghost" size="sm" onClick={() => previewVoice(v.preview_url!, v.voice_id)}>
+                                {previewingId === v.voice_id ? <Stop size={14} /> : <Play size={14} />}
+                              </Button>
+                            )}
+                            {alreadyAdded ? (
+                              <Badge variant="outline" className="text-xs">Added</Badge>
+                            ) : addingVoiceId === v.voice_id ? (
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  className="h-7 w-28 text-xs"
+                                  placeholder="Display name"
+                                  value={addingVoiceName}
+                                  onChange={(e) => setAddingVoiceName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && addingVoiceName.trim()) {
+                                      addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
+                                    }
+                                  }}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  className="h-7 px-2"
+                                  disabled={!addingVoiceName.trim()}
+                                  onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
+                                >
+                                  <Plus size={12} />
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
+                                <Plus size={14} />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </Card>
+
+              <div className="flex justify-end gap-3 pt-4">
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Close
+                </Button>
               </div>
             </div>
           </TabsContent>

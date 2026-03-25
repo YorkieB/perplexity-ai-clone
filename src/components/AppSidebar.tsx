@@ -17,11 +17,13 @@ import {
   GlobeSimple,
   Robot,
   FilmSlate,
-  Trash
+  Trash,
+  PaintBrush
 } from '@phosphor-icons/react'
 import { Thread, Workspace } from '@/lib/types'
 import { formatTimestamp } from '@/lib/helpers'
 import { cn } from '@/lib/utils'
+import { useBrowserGuideMode } from '@/contexts/BrowserControlContext'
 
 interface AppSidebarProps {
   isCollapsed: boolean
@@ -40,7 +42,12 @@ interface AppSidebarProps {
   onOpenA2eStudio?: () => void
   onOpenWebBrowser?: () => void
   onOpenAgentBrowser?: () => void
+  onOpenMediaCanvas?: () => void
   onOpenVoice?: () => void
+  wakeWordEnabled?: boolean
+  wakeWordSupported?: boolean
+  wakeWordListening?: boolean
+  onWakeWordToggle?: (enabled: boolean) => void
 }
 
 export function AppSidebar({
@@ -60,7 +67,12 @@ export function AppSidebar({
   onOpenA2eStudio,
   onOpenWebBrowser,
   onOpenAgentBrowser,
+  onOpenMediaCanvas,
   onOpenVoice,
+  wakeWordEnabled,
+  wakeWordSupported,
+  wakeWordListening,
+  onWakeWordToggle,
 }: AppSidebarProps) {
   const [storedThreads] = useLocalStorage<Thread[]>('threads', [])
   const [storedWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
@@ -68,6 +80,7 @@ export function AppSidebar({
   const workspaces = workspacesProp ?? storedWorkspaces
   const [libraryOpen, setLibraryOpen] = useState(true)
   const [workspacesOpen, setWorkspacesOpen] = useState(true)
+  const { guideMode, setGuideMode } = useBrowserGuideMode()
 
   const sortedThreads = [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)
   const activeWorkspace = (workspaces || []).find((workspace) => workspace.id === activeWorkspaceId)
@@ -239,6 +252,65 @@ export function AppSidebar({
               <span className="text-sm">Voice Mode</span>
             </Button>
           )}
+          {onWakeWordToggle && (
+            <button
+              type="button"
+              onClick={() => onWakeWordToggle(!wakeWordEnabled)}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors',
+                wakeWordEnabled
+                  ? 'text-foreground hover:bg-muted'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <span className="relative flex size-4 items-center justify-center">
+                <Microphone size={14} />
+                {wakeWordListening && (
+                  <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]" />
+                )}
+              </span>
+              <span className="flex-1 text-left text-sm">
+                &quot;Hey Jarvis&quot;
+              </span>
+              <span
+                className={cn(
+                  'rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                  wakeWordEnabled
+                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {wakeWordEnabled ? 'ON' : 'OFF'}
+              </span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setGuideMode(!guideMode)}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors',
+              guideMode
+                ? 'text-foreground hover:bg-muted'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <span className="relative flex size-4 items-center justify-center">
+              <GlobeSimple size={14} />
+            </span>
+            <span className="flex-1 text-left text-sm">
+              Guide Mode
+            </span>
+            <span
+              className={cn(
+                'rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                guideMode
+                  ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                  : 'bg-muted text-muted-foreground'
+              )}
+            >
+              {guideMode ? 'ON' : 'OFF'}
+            </span>
+          </button>
           {onOpenA2eStudio && (
             <Button variant="ghost" size="sm" onClick={onOpenA2eStudio} className="w-full justify-start gap-2 px-2">
               <FilmSlate size={16} />
@@ -255,6 +327,12 @@ export function AppSidebar({
             <Button variant="ghost" size="sm" onClick={onOpenAgentBrowser} className="w-full justify-start gap-2 px-2">
               <Robot size={16} />
               <span className="text-sm">Agent Browser</span>
+            </Button>
+          )}
+          {onOpenMediaCanvas && (
+            <Button variant="ghost" size="sm" onClick={onOpenMediaCanvas} className="w-full justify-start gap-2 px-2">
+              <PaintBrush size={16} />
+              <span className="text-sm">Media Canvas</span>
             </Button>
           )}
         </div>

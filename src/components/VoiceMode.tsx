@@ -1,22 +1,51 @@
 import { useEffect, useCallback } from 'react'
-import { X, HandWaving, VideoCamera } from '@phosphor-icons/react'
+import { XIcon, HandWavingIcon, VideoCameraIcon } from '@phosphor-icons/react'
 import { useRealtimeVoice, VoicePipelineState } from '@/hooks/useRealtimeVoice'
 import { useVision } from '@/hooks/useVision'
+import { useTuneInControl } from '@/contexts/TuneInControlContext'
+import { useBrowserControl, useBrowserGuideMode, useBrowserAutomating, useBrowserAgentSteps } from '@/contexts/BrowserControlContext'
+import { useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
+import { UserSettings } from '@/lib/types'
+import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { cn } from '@/lib/utils'
 
 interface VoiceModeProps {
-  open: boolean
-  onClose: () => void
-  onResponse?: (userText: string, aiText: string) => void
-  focusMode?: string
-  model?: string
+  readonly open: boolean
+  readonly onClose: () => void
+  readonly onResponse?: (userText: string, aiText: string) => void
 }
 
 export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
   const { context: visionCtx } = useVision(open)
-  const pipeline = useRealtimeVoice({ onResponse, ttsProvider: 'elevenlabs', visionContext: visionCtx })
+  const tuneInControl = useTuneInControl()
+  const browserControl = useBrowserControl()
+  const { guideMode: browserGuideMode } = useBrowserGuideMode()
+  const { setAutomating } = useBrowserAutomating()
+  const { addAgentStep, clearAgentSteps } = useBrowserAgentSteps()
+  const mediaCanvasControl = useMediaCanvas()
+  const { setGenerating: setMediaGenerating, setGeneratingLabel: setMediaGeneratingLabel } = useMediaCanvasGenerating()
+  const [settings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
-  // Open / close the pipeline when the overlay visibility changes
+  const pipeline = useRealtimeVoice({
+    onResponse,
+    ttsProvider: 'elevenlabs',
+    visionContext: visionCtx,
+    tuneInControl,
+    browserControl,
+    browserGuideMode,
+    onBrowserAutomating: (on) => { if (on) clearAgentSteps(); setAutomating(on) },
+    onBrowserStep: (step) => { addAgentStep(step) },
+    mediaCanvasControl,
+    onMediaGenerating: setMediaGenerating,
+    onMediaGeneratingLabel: setMediaGeneratingLabel,
+    voiceRegistry: settings?.voiceRegistry ?? null,
+  })
+
+  const handleBargeIn = useCallback(() => {
+    pipeline.bargeIn()
+  }, [pipeline.bargeIn])
+
   useEffect(() => {
     if (open) {
       pipeline.open()
@@ -26,7 +55,6 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // ESC key closes the overlay
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -36,10 +64,27 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
 
   useEffect(() => {
     if (open) {
-      window.addEventListener('keydown', handleKeyDown)
-      return () => window.removeEventListener('keydown', handleKeyDown)
+      globalThis.addEventListener('keydown', handleKeyDown)
+      return () => globalThis.removeEventListener('keydown', handleKeyDown)
     }
   }, [open, handleKeyDown])
+
+  // Duck radio volume while Jarvis is speaking, restore when done
+  useEffect(() => {
+    if (!tuneInControl) return
+    if (pipeline.state === 'speaking') {
+      tuneInControl.duck()
+    } else {
+      tuneInControl.unduck()
+    }
+  }, [pipeline.state, tuneInControl])
+
+  // Ensure volume is restored when Voice Mode closes
+  useEffect(() => {
+    if (!open && tuneInControl) {
+      tuneInControl.unduck()
+    }
+  }, [open, tuneInControl])
 
   if (!open) return null
 
@@ -48,39 +93,36 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
       {/* Close button */}
       <button
         onClick={onClose}
-        className="absolute top-6 right-6 p-2 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+        className="absolute top-6 right-6 z-10 p-2 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors"
         aria-label="Close voice mode"
       >
-        <X size={24} />
+        <XIcon size={24} />
       </button>
 
       {/* Vision status indicator */}
-      <div className="absolute top-6 left-6 flex items-center gap-2">
-        <VideoCamera size={16} className={visionCtx.connected ? 'text-white/60' : 'text-white/20'} />
+      <div className="absolute top-6 left-6 z-10 flex items-center gap-2">
+        <VideoCameraIcon size={16} className={visionCtx.connected ? 'text-white/60' : 'text-white/20'} />
         <span className={cn(
           'w-2 h-2 rounded-full',
-          visionCtx.cameraConnected ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.7)]' :
-          visionCtx.connected ? 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.5)]' :
-          'bg-white/20'
+          visionStatusClass(visionCtx),
         )} />
         {visionCtx.cameraConnected && visionCtx.facesRecognized > 0 && (
-          <span className="text-white/40 text-xs">{visionCtx.facesRecognized} face{visionCtx.facesRecognized !== 1 ? 's' : ''}</span>
+          <span className="text-white/40 text-xs">{visionCtx.facesRecognized} face{visionCtx.facesRecognized === 1 ? '' : 's'}</span>
         )}
       </div>
 
       {/* State label */}
-      <p className="absolute top-8 left-1/2 -translate-x-1/2 text-white/50 text-xs uppercase tracking-widest select-none">
+      <p className="absolute top-8 left-1/2 -translate-x-1/2 z-10 text-white/50 text-xs uppercase tracking-widest select-none">
         {stateLabel(pipeline.state)}
       </p>
 
       {/* Orb */}
       <div className="relative flex items-center justify-center mb-10">
-        <Orb state={pipeline.state} onClick={pipeline.state === 'speaking' ? pipeline.bargeIn : undefined} />
+        <Orb state={pipeline.state} onClick={pipeline.state === 'speaking' ? handleBargeIn : undefined} />
       </div>
 
       {/* Transcript / response text area */}
       <div className="w-full max-w-lg px-8 flex flex-col items-center gap-4 min-h-[120px]">
-        {/* Interim / committed user speech */}
         {(pipeline.interimTranscript || pipeline.transcript) && pipeline.state === 'listening' && (
           <div className="text-center">
             {pipeline.transcript && (
@@ -92,30 +134,26 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
           </div>
         )}
 
-        {/* AI response streaming in */}
         {(pipeline.state === 'thinking' || pipeline.state === 'speaking') && pipeline.aiText && (
           <p className="text-white/90 text-base text-center leading-relaxed max-h-40 overflow-y-auto">
             {pipeline.aiText}
           </p>
         )}
 
-        {/* Barge-in hint */}
         {pipeline.state === 'speaking' && (
           <button
-            onClick={pipeline.bargeIn}
+            onClick={handleBargeIn}
             className="flex items-center gap-2 mt-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white text-sm transition-all"
           >
-            <HandWaving size={16} />
+            <HandWavingIcon size={16} />
             <span>Tap to interrupt</span>
           </button>
         )}
 
-        {/* Error */}
         {pipeline.errorMessage && (
           <p className="text-red-400 text-sm text-center">{pipeline.errorMessage}</p>
         )}
 
-        {/* Not supported notice */}
         {!pipeline.isSupported && (
           <p className="text-amber-400 text-sm text-center">
             Voice requires microphone access and MediaRecorder support.
@@ -125,7 +163,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
 
       {/* Bottom hint */}
       <p className="absolute bottom-8 text-white/30 text-xs select-none">
-        {pipeline.state === 'listening' ? 'Speak now…' : pipeline.state === 'thinking' ? 'Thinking…' : pipeline.state === 'speaking' ? 'AI is speaking' : ''}
+        {bottomHint(pipeline.state)}
       </p>
 
       <style>{`
@@ -167,26 +205,25 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
 
 // ─── Orb ─────────────────────────────────────────────────────────────────────
 
-function Orb({ state, onClick }: { state: VoicePipelineState; onClick?: () => void }) {
-  const isInteractable = !!onClick
+function Orb({ state, onClick }: Readonly<{ state: VoicePipelineState; onClick?: () => void }>) {
+  const rippleColor = state === 'listening' ? 'rgba(99,102,241,' : 'rgba(16,185,129,'
+  const rippleDelays = ['0s', '0.6s', '1.2s'] as const
+  const rippleOpacities = [0.4, 0.3, 0.2] as const
 
-  return (
-    <div
-      className={cn('relative', isInteractable && 'cursor-pointer')}
-      onClick={onClick}
-      role={isInteractable ? 'button' : undefined}
-      aria-label={isInteractable ? 'Interrupt' : undefined}
-    >
-      {/* Ripple rings (listening + speaking) */}
-      {(state === 'listening' || state === 'speaking') && (
-        <>
-          <span className="absolute inset-0 rounded-full" style={{ animation: 'ripple-out 1.8s ease-out infinite' , backgroundColor: state === 'listening' ? 'rgba(99,102,241,0.4)' : 'rgba(16,185,129,0.4)' }} />
-          <span className="absolute inset-0 rounded-full" style={{ animation: 'ripple-out 1.8s ease-out 0.6s infinite', backgroundColor: state === 'listening' ? 'rgba(99,102,241,0.3)' : 'rgba(16,185,129,0.3)' }} />
-          <span className="absolute inset-0 rounded-full" style={{ animation: 'ripple-out 1.8s ease-out 1.2s infinite', backgroundColor: state === 'listening' ? 'rgba(99,102,241,0.2)' : 'rgba(16,185,129,0.2)' }} />
-        </>
-      )}
+  const content = (
+    <>
+      {(state === 'listening' || state === 'speaking') &&
+        rippleDelays.map((delay, i) => (
+          <span
+            key={delay}
+            className="absolute inset-0 rounded-full"
+            style={{
+              animation: `ripple-out 1.8s ease-out ${delay} infinite`,
+              backgroundColor: `${rippleColor}${rippleOpacities[i]})`,
+            }}
+          />
+        ))}
 
-      {/* Core orb */}
       <div
         className="relative z-10 rounded-full flex items-center justify-center"
         style={{
@@ -202,8 +239,18 @@ function Orb({ state, onClick }: { state: VoicePipelineState; onClick?: () => vo
         {state === 'listening' && <MicDot />}
         {state === 'idle' && <IdleDot />}
       </div>
-    </div>
+    </>
   )
+
+  if (onClick) {
+    return (
+      <button type="button" className="relative cursor-pointer bg-transparent border-none p-0" onClick={onClick} aria-label="Interrupt">
+        {content}
+      </button>
+    )
+  }
+
+  return <div className="relative">{content}</div>
 }
 
 function ThinkingRing() {
@@ -219,20 +266,29 @@ function ThinkingRing() {
   )
 }
 
+const WAVEFORM_BARS = [
+  { id: 'w0', scale: 0.6 },
+  { id: 'w1', scale: 1 },
+  { id: 'w2', scale: 0.75 },
+  { id: 'w3', scale: 1.15 },
+  { id: 'w4', scale: 0.8 },
+  { id: 'w5', scale: 1 },
+  { id: 'w6', scale: 0.55 },
+] as const
+
 function WaveformBars() {
-  const bars = [0.6, 1, 0.75, 1.15, 0.8, 1, 0.55]
   return (
     <div className="flex items-center gap-1">
-      {bars.map((scale, i) => (
+      {WAVEFORM_BARS.map((bar, i) => (
         <div
-          key={i}
+          key={bar.id}
           className="w-1 rounded-full bg-white"
           style={{
             height: 20,
             animation: `orb-speak-wave ${0.5 + i * 0.07}s ease-in-out infinite`,
             animationDelay: `${i * 0.08}s`,
             transformOrigin: 'center',
-            transform: `scaleY(${scale})`,
+            transform: `scaleY(${bar.scale})`,
           }}
         />
       ))}
@@ -254,6 +310,21 @@ function IdleDot() {
 }
 
 // ─── State helpers ────────────────────────────────────────────────────────────
+
+function visionStatusClass(ctx: { cameraConnected: boolean; connected: boolean }): string {
+  if (ctx.cameraConnected) return 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
+  if (ctx.connected) return 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.5)]'
+  return 'bg-white/20'
+}
+
+function bottomHint(state: VoicePipelineState): string {
+  switch (state) {
+    case 'listening': return 'Speak now…'
+    case 'thinking':  return 'Thinking…'
+    case 'speaking':  return 'AI is speaking'
+    default:          return ''
+  }
+}
 
 function stateLabel(state: VoicePipelineState): string {
   switch (state) {

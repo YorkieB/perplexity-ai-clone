@@ -9,6 +9,8 @@ const path = require('node:path')
 const { Readable } = require('node:stream')
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron')
 const jarvisDb = require('./jarvis-db.cjs')
+const ragDb = require('./rag-db.cjs')
+const spacesClient = require('./spaces-client.cjs')
 
 const PROJECT_ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
@@ -578,6 +580,44 @@ async function handleLlmProxy(req, res) {
   }
 }
 
+/* ── Wake word proxy (Whisper transcription) ────────────────────────── */
+
+async function handleWakeWordProxy(req, res) {
+  const env = getEnv()
+  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+  if (!key) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY for wake word.' } }))
+    return
+  }
+
+  try {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const rawBody = Buffer.concat(chunks)
+    const contentType = req.headers['content-type'] || ''
+
+    const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+    const upstream = await fetch(`${base}/audio/transcriptions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': contentType,
+      },
+      body: rawBody,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Wake word proxy error' } }))
+  }
+}
+
 /* ── Web search proxy (Tavily + DuckDuckGo fallback) ────────────────── */
 
 function stripHtmlToText(html) {
@@ -835,7 +875,7 @@ async function handleElevenLabsStreamingTts(req, res) {
         body: JSON.stringify({
           text,
           model_id: body.model_id || 'eleven_turbo_v2_5',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
+          voice_settings: body.voice_settings || { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
         }),
       }
     )
@@ -893,6 +933,129 @@ async function handleRealtimeSession(req, res) {
   }
 }
 
+
+// ── Media Generation Handlers (Images + Videos) ────────────────────────────
+
+function getOpenAiKeyAndBase() {
+  const env = getEnv()
+  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+  const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+  return { key, base }
+}
+
+async function handleImageGenerate(req, res) {
+  const { key, base } = getOpenAiKeyAndBase()
+  if (!key) { res.statusCode = 500; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY.' } })); return }
+  try {
+    const body = await readBody(req)
+    const upstream = await fetch(`${base}/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Image generation error' } }))
+  }
+}
+
+async function handleImageEdit(req, res) {
+  const { key, base } = getOpenAiKeyAndBase()
+  if (!key) { res.statusCode = 500; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY.' } })); return }
+  try {
+    const rawBody = await readBodyRaw(req)
+    const contentType = req.headers['content-type'] || ''
+    const upstream = await fetch(`${base}/images/edits`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': contentType },
+      body: rawBody,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Image edit error' } }))
+  }
+}
+
+async function handleVideoCreate(req, res) {
+  const { key, base } = getOpenAiKeyAndBase()
+  if (!key) { res.statusCode = 500; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY.' } })); return }
+  try {
+    const body = await readBody(req)
+    const upstream = await fetch(`${base}/videos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body,
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Video creation error' } }))
+  }
+}
+
+async function handleVideoStatus(req, res) {
+  const { key, base } = getOpenAiKeyAndBase()
+  if (!key) { res.statusCode = 500; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY.' } })); return }
+  const url = new URL(req.url || '', 'http://localhost')
+  const videoId = url.searchParams.get('id')
+  if (!videoId) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing id parameter.' } })); return }
+  try {
+    const upstream = await fetch(`${base}/videos/${encodeURIComponent(videoId)}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Video status error' } }))
+  }
+}
+
+async function handleVideoContent(req, res) {
+  const { key, base } = getOpenAiKeyAndBase()
+  if (!key) { res.statusCode = 500; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY.' } })); return }
+  const url = new URL(req.url || '', 'http://localhost')
+  const videoId = url.searchParams.get('id')
+  if (!videoId) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing id parameter.' } })); return }
+  try {
+    const upstream = await fetch(`${base}/videos/${encodeURIComponent(videoId)}/content`, {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    res.statusCode = upstream.status
+    const ct = upstream.headers.get('content-type')
+    if (ct) res.setHeader('Content-Type', ct)
+    const cl = upstream.headers.get('content-length')
+    if (cl) res.setHeader('Content-Length', cl)
+    if (upstream.body) {
+      const nodeStream = Readable.fromWeb(upstream.body)
+      nodeStream.pipe(res)
+    } else {
+      const buf = Buffer.from(await upstream.arrayBuffer())
+      res.end(buf)
+    }
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Video content error' } }))
+  }
+}
 
 // ── Jarvis Memory API Handlers ──────────────────────────────────────────────
 
@@ -1089,6 +1252,611 @@ async function handleVisionProxy(req, res) {
   }
 }
 
+
+async function handleReliabilityProxy(req, res) {
+  try {
+    const urlPath = req.url?.split('?')[0] || '/';
+    const targetUrl = 'http://localhost:3000' + urlPath;
+    const headers = { 'Content-Type': req.headers['content-type'] || 'application/json' };
+    let body = null;
+    if (req.method === 'POST' || req.method === 'PUT') {
+      body = await readBody(req);
+    }
+    const fetchOpts = { method: req.method || 'GET', headers };
+    if (body) fetchOpts.body = body;
+    const upstream = await fetch(targetUrl, fetchOpts);
+    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' });
+    const data = await upstream.text();
+    res.end(data);
+  } catch (e) {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Reliability proxy error' }));
+  }
+}
+
+// ── RAG API Handlers ──────────────────────────────────────────────────────────
+
+function readBodyRaw(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+/**
+ * Minimal multipart/form-data parser for RAG ingest.
+ * Extracts named fields and file parts from the raw body.
+ */
+function parseMultipart(raw, contentType) {
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^\s;]+))/)
+  if (!boundaryMatch) return { fields: {}, files: [] }
+  const boundary = boundaryMatch[1] || boundaryMatch[2]
+  const sep = Buffer.from('--' + boundary)
+
+  const parts = []
+  let start = 0
+  while (true) {
+    const idx = raw.indexOf(sep, start)
+    if (idx === -1) break
+    if (start > 0) {
+      const partBuf = raw.slice(start, idx)
+      parts.push(partBuf)
+    }
+    start = idx + sep.length
+    // skip CRLF after boundary
+    if (raw[start] === 0x0d && raw[start + 1] === 0x0a) start += 2
+    // check for closing --
+    if (raw[start] === 0x2d && raw[start + 1] === 0x2d) break
+  }
+
+  const fields = {}
+  const files = []
+  for (const part of parts) {
+    const headerEnd = part.indexOf('\r\n\r\n')
+    if (headerEnd === -1) continue
+    const headerStr = part.slice(0, headerEnd).toString('utf8')
+    const body = part.slice(headerEnd + 4, part.length - 2) // strip trailing CRLF
+
+    const nameMatch = headerStr.match(/name="([^"]+)"/)
+    const filenameMatch = headerStr.match(/filename="([^"]*)"/)
+    const ctMatch = headerStr.match(/Content-Type:\s*(.+)/i)
+
+    if (filenameMatch) {
+      files.push({
+        fieldName: nameMatch ? nameMatch[1] : 'file',
+        filename: filenameMatch[1],
+        contentType: ctMatch ? ctMatch[1].trim() : 'application/octet-stream',
+        buffer: body,
+      })
+    } else if (nameMatch) {
+      fields[nameMatch[1]] = body.toString('utf8')
+    }
+  }
+  return { fields, files }
+}
+
+async function extractTextFromBuffer(buffer, mimeType, filename) {
+  let mt = (mimeType || '').toLowerCase()
+
+  // Fallback: detect type from file extension when MIME is generic
+  if (!mt || mt === 'application/octet-stream') {
+    const ext = (filename || '').split('.').pop()?.toLowerCase()
+    const extMap = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+      pdf: 'application/pdf', json: 'application/json',
+      txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', html: 'text/html',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }
+    if (ext && extMap[ext]) mt = extMap[ext]
+  }
+
+  console.log(`[rag] extractTextFromBuffer: mime=${mt} filename=${filename} size=${buffer.length}`)
+
+  if (mt.includes('text/') || mt.includes('application/json') || mt.includes('text/markdown') || mt.includes('text/csv')) {
+    return buffer.toString('utf8')
+  }
+
+  if (mt.includes('application/pdf')) {
+    return buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+  }
+
+  if (mt.startsWith('image/')) {
+    console.log('[rag] Sending image to Vision API for analysis...')
+    const description = await describeImageWithVision(buffer, mt)
+    console.log(`[rag] Vision result: ${description.slice(0, 120)}...`)
+    return description
+  }
+
+  // Office documents — extract what readable text we can
+  if (mt.includes('application/vnd.openxmlformats') || mt.includes('application/msword') || mt.includes('application/vnd.ms-')) {
+    const raw = buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (raw.length > 50) return raw
+  }
+
+  // Last resort: try UTF-8
+  const fallback = buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+  return fallback
+}
+
+async function describeImageWithVision(buffer, mimeType) {
+  const env = getEnv()
+  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+  if (!key) return '[Image — no OpenAI key for vision analysis]'
+
+  const base64 = buffer.toString('base64')
+  const dataUrl = `data:${mimeType};base64,${base64}`
+
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Describe this image in detail. Extract ALL visible text, labels, numbers, and data. If it contains a document, transcribe the full content. Be thorough.' },
+              { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            ],
+          },
+        ],
+      }),
+    })
+    if (!resp.ok) {
+      console.error('[rag] vision API error:', resp.status, await resp.text())
+      return `[Image: ${mimeType}]`
+    }
+    const data = await resp.json()
+    return data.choices?.[0]?.message?.content || `[Image: ${mimeType}]`
+  } catch (e) {
+    console.error('[rag] vision error:', e.message)
+    return `[Image: ${mimeType}]`
+  }
+}
+
+async function handleRagIngest(req, res) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
+    return
+  }
+  try {
+    const raw = await readBodyRaw(req)
+    const ct = req.headers['content-type'] || ''
+    const { fields, files } = parseMultipart(raw, ct)
+    if (files.length === 0) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'No file uploaded' } }))
+      return
+    }
+
+    const results = []
+    const errors = []
+
+    for (const file of files) {
+      try {
+        const title = fields.title || file.filename || 'Untitled'
+
+        let spacesKey = null
+        if (spacesClient.isConfigured()) {
+          const ext = path.extname(file.filename || '') || ''
+          spacesKey = `rag-docs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
+          await spacesClient.uploadFile(spacesKey, file.buffer, file.contentType)
+        }
+
+        const text = await extractTextFromBuffer(file.buffer, file.contentType, file.filename)
+        if (!text.trim()) {
+          errors.push({ filename: file.filename, error: 'Could not extract text from file' })
+          continue
+        }
+
+        const result = await ragDb.ingestText(text, {
+          title,
+          filename: file.filename,
+          spacesKey,
+          mimeType: file.contentType,
+          source: 'upload',
+          sizeBytes: file.buffer.length,
+        })
+        results.push({ filename: file.filename, ...result })
+      } catch (fileErr) {
+        console.error(`[rag] ingest error for ${file.filename}:`, fileErr)
+        errors.push({ filename: file.filename, error: fileErr instanceof Error ? fileErr.message : 'Ingest error' })
+      }
+    }
+
+    if (results.length === 0 && errors.length > 0) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: errors.map(e => `${e.filename}: ${e.error}`).join('; ') } }))
+      return
+    }
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ results, errors }))
+  } catch (e) {
+    console.error('[rag] ingest error:', e)
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Ingest error' } }))
+  }
+}
+
+async function handleRagIngestText(req, res) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
+    return
+  }
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    const { text, title } = body
+    if (!text || !text.trim()) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'text is required' } }))
+      return
+    }
+    const result = await ragDb.ingestText(text, {
+      title: title || 'Untitled',
+      source: body.source || 'manual',
+      mimeType: 'text/plain',
+      sizeBytes: Buffer.byteLength(text, 'utf8'),
+      metadata: body.metadata || {},
+    })
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(result))
+  } catch (e) {
+    console.error('[rag] ingest-text error:', e)
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Ingest text error' } }))
+  }
+}
+
+async function handleRagSearch(req, res) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    const query = (body.query || '').trim()
+    if (!query) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'query is required' } }))
+      return
+    }
+    const embedding = await ragDb.embedSingle(query)
+    const results = await ragDb.searchSimilar(embedding, body.limit || 5, body.threshold || 0.3)
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ results }))
+  } catch (e) {
+    console.error('[rag] search error:', e)
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Search error' } }))
+  }
+}
+
+async function handleRagCreateDocument(req, res) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    const { title, content, format } = body
+    if (!title || !content) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'title and content are required' } }))
+      return
+    }
+
+    const fmt = (format || 'md').toLowerCase()
+    let fileBuffer, mimeType, ext
+    switch (fmt) {
+      case 'docx': {
+        const { Document, Packer, Paragraph, TextRun } = require('docx')
+        const lines = content.split('\n')
+        const doc = new Document({
+          sections: [{
+            children: lines.map(line => new Paragraph({ children: [new TextRun(line)] })),
+          }],
+        })
+        fileBuffer = await Packer.toBuffer(doc)
+        mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ext = '.docx'
+        break
+      }
+      case 'pdf': {
+        const { jsPDF } = require('jspdf')
+        const pdf = new jsPDF({ unit: 'mm', format: 'a4' })
+        const pageW = pdf.internal.pageSize.getWidth()
+        const margin = 15
+        const maxW = pageW - margin * 2
+        const lines = pdf.splitTextToSize(content, maxW)
+        let y = margin
+        const lineH = 6
+        for (const line of lines) {
+          if (y + lineH > pdf.internal.pageSize.getHeight() - margin) {
+            pdf.addPage()
+            y = margin
+          }
+          pdf.text(line, margin, y)
+          y += lineH
+        }
+        fileBuffer = Buffer.from(pdf.output('arraybuffer'))
+        mimeType = 'application/pdf'
+        ext = '.pdf'
+        break
+      }
+      default: {
+        fileBuffer = Buffer.from(content, 'utf-8')
+        mimeType = 'text/markdown'
+        ext = '.md'
+      }
+    }
+
+    // Upload to Spaces
+    let spacesKey = null
+    if (spacesClient.isConfigured()) {
+      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+      spacesKey = `jarvis-docs/${Date.now()}-${safeTitle}${ext}`
+      await spacesClient.uploadFile(spacesKey, fileBuffer, mimeType)
+    }
+
+    // Index in pgvector
+    const result = await ragDb.ingestText(content, {
+      title,
+      filename: `${title}${ext}`,
+      spacesKey,
+      mimeType,
+      source: 'jarvis_created',
+      sizeBytes: fileBuffer.length,
+      metadata: { format: fmt },
+    })
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ...result, format: fmt, spacesKey }))
+  } catch (e) {
+    console.error('[rag] create-document error:', e)
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Create document error' } }))
+  }
+}
+
+async function handleRagDocumentsList(req, res) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
+  try {
+    const u = new URL(req.url || '/', 'http://127.0.0.1')
+    const limit = parseInt(u.searchParams.get('limit') || '50', 10)
+    const offset = parseInt(u.searchParams.get('offset') || '0', 10)
+    const docs = await ragDb.listDocuments(limit, offset)
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ documents: docs }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'List error' } }))
+  }
+}
+
+async function handleRagDocumentGet(req, res, docId) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
+  try {
+    const doc = await ragDb.getDocument(docId)
+    if (!doc) {
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Document not found' } }))
+      return
+    }
+    const chunks = await ragDb.getDocumentChunks(docId)
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ document: doc, chunks }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Get error' } }))
+  }
+}
+
+async function handleRagDocumentDownload(req, res, docId) {
+  try {
+    const doc = await ragDb.getDocument(docId)
+    if (!doc || !doc.spaces_key) {
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Document not found or no file stored' } }))
+      return
+    }
+    if (!spacesClient.isConfigured()) {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Spaces not configured' } }))
+      return
+    }
+    const { buffer, contentType } = await spacesClient.downloadFile(doc.spaces_key)
+    res.statusCode = 200
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Content-Disposition', `attachment; filename="${doc.filename || 'document'}"`)
+    res.end(buffer)
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Download error' } }))
+  }
+}
+
+async function handleRagDocumentDelete(req, res, docId) {
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
+  try {
+    const doc = await ragDb.deleteDocument(docId)
+    if (!doc) {
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Document not found' } }))
+      return
+    }
+    // Also delete from Spaces
+    if (doc.spaces_key && spacesClient.isConfigured()) {
+      try { await spacesClient.deleteFile(doc.spaces_key) } catch { /* best-effort */ }
+    }
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true, deleted: doc.id }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Delete error' } }))
+  }
+}
+
+async function handleElevenLabsMyVoices(_req, res) {
+  const env = getEnv()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  if (!elKey) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY in .env' } }))
+    return
+  }
+  try {
+    const upstream = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': elKey },
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'ElevenLabs voices error' } }))
+  }
+}
+
+async function handleElevenLabsSharedVoices(req, res) {
+  const env = getEnv()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  if (!elKey) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY in .env' } }))
+    return
+  }
+  try {
+    const query = (req.url || '').split('?')[1] || ''
+    const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${query}`, {
+      headers: { 'xi-api-key': elKey },
+    })
+    const text = await upstream.text()
+    res.statusCode = upstream.status
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'ElevenLabs shared voices error' } }))
+  }
+}
+
+async function handleElevenLabsSoundEffect(req, res) {
+  const env = getEnv()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  if (!elKey) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY in .env' } }))
+    return
+  }
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    const text = String(body.text || '').trim()
+    if (!text) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Empty text' } }))
+      return
+    }
+    const upstream = await fetch(
+      'https://api.elevenlabs.io/v1/sound-generation?output_format=pcm_24000',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'xi-api-key': elKey },
+        body: JSON.stringify({
+          text,
+          duration_seconds: body.duration_seconds || null,
+          prompt_influence: body.prompt_influence ?? 0.5,
+          model_id: 'eleven_text_to_sound_v2',
+        }),
+      }
+    )
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => upstream.statusText)
+      res.statusCode = upstream.status
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: errText } }))
+      return
+    }
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'audio/pcm')
+    if (upstream.body) {
+      Readable.fromWeb(upstream.body).pipe(res)
+    } else {
+      res.end()
+    }
+  } catch (e) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Sound effect generation error' } }))
+  }
+}
+
 function createServer() {
   return http.createServer((req, res) => {
     const urlPath = req.url?.split('?')[0] || '/'
@@ -1139,6 +1907,62 @@ function createServer() {
       return
     }
 
+    if (urlPath === '/api/wake-word' && req.method === 'POST') {
+      void handleWakeWordProxy(req, res)
+      return
+    }
+
+    // ── ElevenLabs voice library ──
+    if (urlPath === '/api/elevenlabs/my-voices' && req.method === 'GET') {
+      void handleElevenLabsMyVoices(req, res)
+      return
+    }
+    if (urlPath === '/api/elevenlabs/voices' && req.method === 'GET') {
+      void handleElevenLabsSharedVoices(req, res)
+      return
+    }
+    if (urlPath === '/api/elevenlabs/sound-effect' && req.method === 'POST') {
+      void handleElevenLabsSoundEffect(req, res)
+      return
+    }
+
+    // ── RAG routes ──
+    if (urlPath === '/api/rag/ingest' && req.method === 'POST') {
+      void handleRagIngest(req, res)
+      return
+    }
+    if (urlPath === '/api/rag/ingest-text' && req.method === 'POST') {
+      void handleRagIngestText(req, res)
+      return
+    }
+    if (urlPath === '/api/rag/search' && req.method === 'POST') {
+      void handleRagSearch(req, res)
+      return
+    }
+    if (urlPath === '/api/rag/create-document' && req.method === 'POST') {
+      void handleRagCreateDocument(req, res)
+      return
+    }
+    if (urlPath === '/api/rag/documents' && req.method === 'GET') {
+      void handleRagDocumentsList(req, res)
+      return
+    }
+    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+\/download$/) && req.method === 'GET') {
+      const docId = urlPath.split('/')[4]
+      void handleRagDocumentDownload(req, res, docId)
+      return
+    }
+    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+$/) && req.method === 'GET') {
+      const docId = urlPath.split('/')[4]
+      void handleRagDocumentGet(req, res, docId)
+      return
+    }
+    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+$/) && req.method === 'DELETE') {
+      const docId = urlPath.split('/')[4]
+      void handleRagDocumentDelete(req, res, docId)
+      return
+    }
+
     if (urlPath === '/api/search' && req.method === 'POST') {
       void handleSearchProxy(req, res)
       return
@@ -1154,8 +1978,35 @@ function createServer() {
       return
     }
 
+    if (urlPath.startsWith('/api/reliability/')) {
+      void handleReliabilityProxy(req, res)
+      return
+    }
+
     if (urlPath.startsWith('/api/a2e/')) {
       void handleA2eProxy(req, res)
+      return
+    }
+
+    // ── Media generation routes ──
+    if (urlPath === '/api/images/generate' && req.method === 'POST') {
+      void handleImageGenerate(req, res)
+      return
+    }
+    if (urlPath === '/api/images/edit' && req.method === 'POST') {
+      void handleImageEdit(req, res)
+      return
+    }
+    if (urlPath === '/api/videos/create' && req.method === 'POST') {
+      void handleVideoCreate(req, res)
+      return
+    }
+    if (urlPath === '/api/videos/status' && req.method === 'GET') {
+      void handleVideoStatus(req, res)
+      return
+    }
+    if (urlPath === '/api/videos/content' && req.method === 'GET') {
+      void handleVideoContent(req, res)
       return
     }
 
@@ -1366,8 +2217,15 @@ app.whenReady().then(() => {
     return allowed.includes(permission)
   })
 
+  loadEnvFromFile()
   setupBrowserSession()
   registerBrowserIpc()
+
+  // Initialise RAG database schema (pgvector) if configured
+  if (ragDb.isConfigured()) {
+    ragDb.initSchema().catch((err) => console.error('[rag-db] schema init failed:', err.message))
+  }
+
   void createWindow()
 })
 
@@ -1376,6 +2234,7 @@ app.on('window-all-closed', () => {
     server.close()
     server = null
   }
+  ragDb.shutdown().catch(() => {})
   if (process.platform !== 'darwin') app.quit()
 })
 

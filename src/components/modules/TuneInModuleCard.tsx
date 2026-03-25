@@ -10,9 +10,11 @@ import {
   getDefaultTuneInStationId,
   getTuneInWorldwideCatalog,
   parseTuneInPresetsFromEnv,
+  searchTuneInStations,
   tuneInPresetsAsSearchStations,
   type TuneInSearchStation,
 } from '@/lib/tunein'
+import { useTuneInControlRegister, type TuneInControl } from '@/contexts/TuneInControlContext'
 import { cn } from '@/lib/utils'
 
 
@@ -108,6 +110,9 @@ export function TuneInModuleCard() {
   const [nowPlaying, setNowPlaying] = useState<{ song?: string; artist?: string } | null>(null)
   const [playing, setPlaying] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const autoplayPendingRef = useRef(false)
+  const normalVolumeRef = useRef(1)
+  const isDuckedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -173,11 +178,20 @@ export function TuneInModuleCard() {
         if (info?.url) {
           setStreamUrl(info.url)
           setStreamError(false)
+          if (autoplayPendingRef.current) {
+            autoplayPendingRef.current = false
+            // Defer play until the new <audio> element mounts (key changes with streamUrl)
+            setTimeout(() => { audioRef.current?.play().catch(() => {}) }, 100)
+          }
         } else {
           setStreamError(true)
+          autoplayPendingRef.current = false
         }
       } catch {
-        if (!cancelled) setStreamError(true)
+        if (!cancelled) {
+          setStreamError(true)
+          autoplayPendingRef.current = false
+        }
       } finally {
         if (!cancelled) setStreamLoading(false)
       }
@@ -228,6 +242,73 @@ export function TuneInModuleCard() {
   const selectStation = useCallback((s: TuneInSearchStation) => {
     setStationId(s.stationId)
   }, [])
+
+  // ── TuneIn voice control registration ────────────────────────────────────
+  const { register, unregister } = useTuneInControlRegister()
+  const stationsRef = useRef(stations)
+  useEffect(() => { stationsRef.current = stations }, [stations])
+  const nowPlayingRef = useRef(nowPlaying)
+  useEffect(() => { nowPlayingRef.current = nowPlaying }, [nowPlaying])
+  const playingRef = useRef(playing)
+  useEffect(() => { playingRef.current = playing }, [playing])
+
+  useEffect(() => {
+    const control: TuneInControl = {
+      async searchAndPlay(query: string) {
+        try {
+          const results = await searchTuneInStations(query, 10)
+          if (results.length === 0) {
+            const local = stationsRef.current.filter(s =>
+              s.name.toLowerCase().includes(query.toLowerCase()) ||
+              (s.subtext?.toLowerCase().includes(query.toLowerCase()) ?? false)
+            )
+            if (local.length === 0) return { success: false, error: `No stations found for "${query}"` }
+            autoplayPendingRef.current = true
+            setStationId(local[0].stationId)
+            return { success: true, stationName: local[0].name }
+          }
+          autoplayPendingRef.current = true
+          setStationId(results[0].stationId)
+          return { success: true, stationName: results[0].name }
+        } catch {
+          return { success: false, error: 'Station search failed' }
+        }
+      },
+      pause() {
+        audioRef.current?.pause()
+      },
+      resume() {
+        audioRef.current?.play().catch(() => {})
+      },
+      getStatus() {
+        const station = stationsRef.current.find(s => s.stationId === stationId)
+        const np = nowPlayingRef.current
+        const parts: string[] = []
+        if (np?.song) parts.push(np.song)
+        if (np?.artist) parts.push(np.artist)
+        return {
+          playing: playingRef.current,
+          stationName: station?.name,
+          nowPlaying: parts.length > 0 ? parts.join(' by ') : undefined,
+        }
+      },
+      duck() {
+        const el = audioRef.current
+        if (!el || isDuckedRef.current) return
+        normalVolumeRef.current = el.volume
+        isDuckedRef.current = true
+        el.volume = Math.min(el.volume, 0.15)
+      },
+      unduck() {
+        const el = audioRef.current
+        if (!el || !isDuckedRef.current) return
+        isDuckedRef.current = false
+        el.volume = normalVolumeRef.current
+      },
+    }
+    register(control)
+    return unregister
+  }, [register, unregister, stationId])
 
   const currentStation = useMemo(
     () => stations.find((s) => s.stationId === stationId),
