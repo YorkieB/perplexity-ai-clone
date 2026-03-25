@@ -46,6 +46,42 @@ function getOpenAiConfig(env: Record<string, string>): {
   return { key, base }
 }
 
+const viteBookCache = new Map<string, { title: string; authors: string[]; fullText: string; fetchedAt: number }>()
+
+function stripGutenbergBoilerplate(text: string): string {
+  let content = text
+  const startMatch = content.match(/\*{3}\s*START OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK[^*]*\*{3}/i)
+  if (startMatch?.index != null) {
+    content = content.slice(startMatch.index + startMatch[0].length)
+  }
+  const endMatch = content.match(/\*{3}\s*END OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK/i)
+  if (endMatch?.index != null) {
+    content = content.slice(0, endMatch.index)
+  }
+  content = content.replace(/^\s*(Produced by|Transcribed by|E-text prepared by)[^\n]*\n*/i, '')
+  return content.trim()
+}
+
+const RETRYABLE_CODES = new Set([502, 503, 504])
+async function fetchRetry(url: string, opts: RequestInit & { timeoutMs?: number } = {}, retries = 3): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController()
+    const ms = opts.timeoutMs || 15000
+    const timer = setTimeout(() => ctrl.abort(), ms)
+    try {
+      const { timeoutMs: _, ...fetchOpts } = opts as Record<string, unknown>
+      const res = await fetch(url, { ...fetchOpts, signal: ctrl.signal } as RequestInit)
+      clearTimeout(timer)
+      if (res.ok || !RETRYABLE_CODES.has(res.status) || attempt === retries) return res
+    } catch (e) {
+      clearTimeout(timer)
+      if (attempt === retries) throw e
+    }
+    await new Promise(r => setTimeout(r, 1000 * 2 ** attempt))
+  }
+  return fetch(url, opts)
+}
+
 const defaultRealtimeSession = {
   session: {
     type: 'realtime' as const,
@@ -604,7 +640,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       const results: Array<{ id: string; title: string; authors: string[]; source: string; subjects?: string[]; snippet?: string }> = []
       try {
         if (source === 'all' || source === 'gutenberg') {
-          const gutRes = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}`)
+          const gutRes = await fetchRetry(`https://gutendex.com/books?search=${encodeURIComponent(q)}`, { timeoutMs: 10000 })
           if (gutRes.ok) {
             const gutData = await gutRes.json() as { results: Array<{ id: number; title: string; authors: Array<{ name: string }>; subjects: string[] }> }
             for (const b of (gutData.results || []).slice(0, limit)) {
@@ -654,27 +690,44 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       const params = new URL(req.url || '', 'http://localhost').searchParams
       const id = params.get('id') || ''
       const source = params.get('source') || 'gutenberg'
-      const maxChars = parseInt(params.get('maxChars') || '8000', 10)
+      const page = Math.max(1, Number.parseInt(params.get('page') || '1', 10))
       try {
         if (source === 'gutenberg') {
-          const metaRes = await fetch(`https://gutendex.com/books/${id}`)
-          if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
-          const meta = await metaRes.json() as { title: string; authors: Array<{ name: string }>; formats: Record<string, string> }
-          const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
-          if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available' } })); return }
-          const textRes = await fetch(textUrl)
-          const fullText = await textRes.text()
-          const truncated = fullText.length > maxChars
+          let cached = viteBookCache.get(`gutenberg:${id}`)
+          if (!cached || Date.now() - cached.fetchedAt > 30 * 60 * 1000) {
+            const metaRes = await fetchRetry(`https://gutendex.com/books/${id}`, { timeoutMs: 10000 })
+            if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
+            const meta = await metaRes.json() as { title: string; authors: Array<{ name: string }>; formats: Record<string, string> }
+            const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
+            if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available' } })); return }
+            const textRes = await fetchRetry(textUrl, { timeoutMs: 20000 })
+            const rawText = await textRes.text()
+            const fullText = stripGutenbergBoilerplate(rawText)
+            if (viteBookCache.size >= 20) {
+              const oldest = [...viteBookCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt)[0]
+              if (oldest) viteBookCache.delete(oldest[0])
+            }
+            cached = { title: meta.title, authors: (meta.authors || []).map((a: { name: string }) => a.name), fullText, fetchedAt: Date.now() }
+            viteBookCache.set(`gutenberg:${id}`, cached)
+          }
+          const pageSize = 4000
+          const totalPages = Math.ceil(cached.fullText.length / pageSize)
+          const p = Math.max(1, Math.min(page, totalPages))
+          const start = (p - 1) * pageSize
+          const content = cached.fullText.slice(start, start + pageSize)
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ title: meta.title, authors: (meta.authors || []).map((a: { name: string }) => a.name), content: truncated ? fullText.slice(0, maxChars) : fullText, truncated, totalChars: fullText.length }))
+          res.end(JSON.stringify({ title: cached.title, authors: cached.authors, content, page: p, totalPages, totalChars: cached.fullText.length, hasMore: p < totalPages, truncated: p < totalPages }))
         } else {
           const rowIdx = id.replace('hf-tinystories-', '')
-          const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`)
+          const hfCtrl = new AbortController()
+          const hfTimer = setTimeout(() => hfCtrl.abort(), 10000)
+          const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`, { signal: hfCtrl.signal })
+          clearTimeout(hfTimer)
           if (!hfRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Story not found' } })); return }
           const hfData = await hfRes.json() as { rows: Array<{ row: { text: string } }> }
           const text = hfData.rows?.[0]?.row?.text || ''
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, truncated: false, totalChars: text.length }))
+          res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, page: 1, totalPages: 1, totalChars: text.length, hasMore: false, truncated: false }))
         }
       } catch (e) { res.statusCode = 502; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: (e as Error).message } })); }
       return
@@ -687,10 +740,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         const topic = genre || ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror'][Math.floor(Math.random() * 8)]
 
         try {
-          const ctrl = new AbortController()
-          const timeout = setTimeout(() => ctrl.abort(), 10000)
-          const gutRes = await fetch(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { signal: ctrl.signal })
-          clearTimeout(timeout)
+          const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { timeoutMs: 10000 })
           if (gutRes.ok) {
             const gutData = await gutRes.json() as { results: Array<{ id: number; title: string; authors: Array<{ name: string }>; formats: Record<string, string> }> }
             const books = gutData.results || []
@@ -698,17 +748,25 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
               const book = books[Math.floor(Math.random() * books.length)]
               const textUrl = book.formats?.['text/plain; charset=utf-8'] || book.formats?.['text/plain'] || ''
               let content = '(Full text not available in plain text format.)'
+              let hasMore = false
+              let totalPages = 1
               if (textUrl) {
-                const textCtrl = new AbortController()
-                const textTimeout = setTimeout(() => textCtrl.abort(), 15000)
-                const textRes = await fetch(textUrl, { signal: textCtrl.signal })
-                clearTimeout(textTimeout)
-                const fullText = await textRes.text()
-                content = fullText.slice(0, 6000)
-                if (fullText.length > 6000) content += '\n\n[Truncated]'
+                const textRes = await fetchRetry(textUrl, { timeoutMs: 15000 })
+                const rawText = await textRes.text()
+                const fullText = stripGutenbergBoilerplate(rawText)
+                const bkAuthors = (book.authors || []).map((a: { name: string }) => a.name)
+                if (viteBookCache.size >= 20) {
+                  const oldest = [...viteBookCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt)[0]
+                  if (oldest) viteBookCache.delete(oldest[0])
+                }
+                viteBookCache.set(`gutenberg:${book.id}`, { title: book.title, authors: bkAuthors, fullText, fetchedAt: Date.now() })
+                const pageSize = 4000
+                totalPages = Math.ceil(fullText.length / pageSize)
+                content = fullText.slice(0, pageSize)
+                hasMore = totalPages > 1
               }
               res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-              res.end(JSON.stringify({ title: book.title, authors: (book.authors || []).map((a: { name: string }) => a.name), content, source: 'gutenberg' }))
+              res.end(JSON.stringify({ title: book.title, authors: (book.authors || []).map((a: { name: string }) => a.name), content, source: 'gutenberg', bookId: String(book.id), page: 1, totalPages, hasMore }))
               return
             }
           }
@@ -737,11 +795,13 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       const sunoKey = (env.SUNO_API_KEY || env.VITE_SUNO_API_KEY || '').trim()
       if (!sunoKey) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing SUNO_API_KEY' } })); return }
       try {
-        const body = await readBody(req)
+        const raw = await readBody(req)
+        const parsed = JSON.parse(raw)
+        if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
         const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sunoKey}` },
-          body,
+          body: JSON.stringify(parsed),
         })
         const text = await upstream.text()
         res.statusCode = upstream.status

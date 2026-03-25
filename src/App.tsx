@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, WorkspaceFile, UserSettings } from '@/lib/types'
@@ -36,12 +36,14 @@ import { MediaCanvasProvider, useMediaCanvas, useMediaCanvasGenerating } from '@
 import { CodeEditorProvider, useCodeEditor } from '@/contexts/CodeEditorContext'
 import { MusicPlayerProvider, useMusicPlayer, useMusicPlayerGenerating } from '@/contexts/MusicPlayerContext'
 import { MediaCanvasModal } from '@/components/MediaCanvasModal'
-import { CodeEditorModal } from '@/components/CodeEditorModal'
+const CodeEditorModal = lazy(() => import('@/components/CodeEditorModal').then(m => ({ default: m.CodeEditorModal })))
 import { MusicPlayerModal } from '@/components/MusicPlayerModal'
 import { runChatWithTools } from '@/lib/chat-tools'
 import { useWakeWord } from '@/hooks/useWakeWord'
 import { checkAndFireScheduled } from '@/lib/social-scheduler'
 import { getAntiHallucinationPrompt } from '@/lib/hallucination-guard'
+import { getThinkingPrompt, classifyComplexity } from '@/lib/thinking-engine'
+import { getLearnedContext } from '@/lib/learning-engine'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -399,10 +401,13 @@ function MainApp() {
           )
         )
       } else {
+        const thinkingDepth = classifyComplexity(query)
+        const learnedContext = await getLearnedContext().catch(() => '')
+
         const sysPrompt = `You are an advanced AI research assistant.${
           systemPrompt ? ` ${systemPrompt}` : ''
         }${modeInstruction}
-
+${learnedContext ? `\n${learnedContext}\n` : ''}
 You have tools available:
 - web_search: Search the web for current information.
 - browser_action: Control a visible web browser (navigate, click, type, scroll, snapshot, manage tabs).
@@ -412,8 +417,19 @@ You have tools available:
 - generate_image: Generate an image from a text description using AI. The image opens in the Media Canvas.
 - generate_video: Generate a short video from a text description. The video opens in the Media Canvas.
 - edit_image: Edit the current image in the Media Canvas (e.g. "increase contrast", "remove the background", "enhance to HD").
-- show_code: Display code in the interactive Code Editor with syntax highlighting. User can edit, run, copy, and download.
+- show_code: Display code in the IDE with syntax highlighting. User can edit, run, copy, and download.
 - run_code: Execute Python or JavaScript code and return the output.
+- ide_create_file: Create a new file in the IDE (returns file ID).
+- ide_edit_file: Replace the entire content of a file by ID.
+- ide_replace_text: Find and replace text in the active file — use for fixing errors.
+- ide_get_files: List all open files with their IDs.
+- ide_read_file: Read a file's content by ID (or the active file).
+- ide_open_file: Switch to a specific file tab.
+- ide_delete_file: Delete/close a file.
+- ide_rename_file: Rename a file.
+- ide_run_and_fix: Run the active file, detect errors, and return results for fixing.
+- ide_find_in_file: Search for text in the active file (returns line numbers).
+- ide_toggle_preview: Toggle the live preview panel for HTML/CSS/JS.
 - search_huggingface: Search Hugging Face for datasets or ML models.
 - fetch_dataset_sample: Fetch a preview of rows from a Hugging Face dataset.
 - search_github: Search GitHub for repositories or code.
@@ -423,13 +439,15 @@ You have tools available:
 - get_transactions: Get recent bank transactions with dates, amounts, merchants, and categories.
 - get_spending_summary: Comprehensive financial summary — income vs expenditure, spending by category, top merchants.
 - search_stories: Search for stories from Project Gutenberg (70,000+ classic books) and short story collections.
-- tell_story: Fetch and read a story aloud, with support for random stories by genre.
+- tell_story: Start reading a story/book. Books are paginated — returns page 1 first. Use continue_reading for subsequent pages.
+- continue_reading: Read the next page of the current book. Use when user says "continue", "keep reading", "next page", "go on", "more".
 - post_to_x: Post a tweet to X (Twitter). ALWAYS confirm with the user before posting.
 - read_social_feed: Read posts from X or Threads using the browser.
 - read_comments: Read replies/comments on a specific social media post.
 - suggest_reply: Generate a suggested reply to a post for user approval.
 - post_reply: Post a reply on X or Threads. ALWAYS confirm with the user first.
 - schedule_post: Schedule, list, or cancel social media posts.
+- learning_stats: Show what Jarvis has learned about the user over time.
 
 When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
 When the user asks about stored information, use rag_search.
@@ -437,17 +455,22 @@ When the user asks to write or create a document, use create_document.
 When the user asks to create, generate, draw, or make an image or picture, use generate_image.
 When the user asks to create or generate a video or animation, use generate_video.
 When the user asks to edit, adjust, enhance, or modify the current image, use edit_image.
-When the user asks to code, program, write a script, or show code, use show_code to present it in the Code Editor.
-When the user asks to run or execute code, use run_code.
+When the user asks to code, program, write a script, or show code, use show_code or ide_create_file to present it in the IDE.
+When the user asks to run or execute code, use run_code or ide_run_and_fix.
+When asked to fix code errors, use ide_run_and_fix to detect errors, then ide_replace_text to fix them, then run again.
+For multi-file projects, use ide_create_file for each file and ide_toggle_preview for HTML/CSS/JS.
 When the user asks about datasets or ML models, use search_huggingface.
 When the user asks to find GitHub projects or code, use search_github.
 When the user asks to make, create, or generate music or a song, use generate_music.
 When the user asks about their finances, spending, budget, bills, or savings, use get_spending_summary, get_transactions, or get_account_balances.
 When the user asks for a story, use search_stories to find options (results include ID and Source for each story), present them, then use tell_story with the story_id and source from the results. If they just say "tell me a story", use tell_story with random=true.
+IMPORTANT — BOOK READING: When reading a book, you MUST automatically call continue_reading after every page WITHOUT stopping to ask the user. Read continuously, page after page, until the book is finished or the user tells you to stop. Never pause between pages to ask "shall I continue?" — just keep reading. The user will interrupt you when they want to stop.
 When the user asks about social media, X, Twitter, or Threads, use read_social_feed or read_comments to browse content.
 When the user asks to post, tweet, or share something, use post_to_x or post_reply — but ALWAYS show them the draft and get explicit approval before posting.
 When the user asks to schedule a post, use schedule_post. To view pending scheduled posts, use schedule_post with action "list".
-${getAntiHallucinationPrompt()}`
+When the user asks "what have you learned about me?" or similar, use learning_stats.
+${getAntiHallucinationPrompt()}
+${getThinkingPrompt(thinkingDepth)}`
 
         const userPrompt = `${contextSection}${ragContext}${combinedFileContext}
 
@@ -464,7 +487,7 @@ ${
 }`
 
         const chatModel = selectedModel || 'gpt-4o-mini'
-        const response = await runChatWithTools({
+        const { content: response, reasoning } = await runChatWithTools({
           systemPrompt: sysPrompt,
           userPrompt,
           model: chatModel,
@@ -488,6 +511,7 @@ ${
           id: generateId(),
           role: 'assistant',
           content: response,
+          reasoning: reasoning || undefined,
           sources: webSources.length > 0 ? webSources : undefined,
           createdAt: Date.now(),
           modelUsed: chatModel,
@@ -778,7 +802,9 @@ ${
 
       <MediaCanvasModal open={mediaCanvasOpen} onOpenChange={setMediaCanvasOpen} />
 
-      <CodeEditorModal open={codeEditorOpen} onOpenChange={setCodeEditorOpen} />
+      <Suspense fallback={null}>
+        <CodeEditorModal open={codeEditorOpen} onOpenChange={setCodeEditorOpen} />
+      </Suspense>
 
       <MusicPlayerModal open={musicPlayerOpen} onOpenChange={setMusicPlayerOpen} />
     </div>

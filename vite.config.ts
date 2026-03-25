@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss(), openaiProxyPlugin() as PluginOption],
     build: {
-      chunkSizeWarningLimit: 800,
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
           manualChunks(id) {
@@ -27,6 +27,14 @@ export default defineConfig(({ mode }) => {
               if (id.includes('/recharts/') || id.includes('/d3')) return 'vendor-charts'
               if (id.includes('/framer-motion/')) return 'vendor-motion'
               if (id.includes('/three/')) return 'vendor-three'
+              if (id.includes('monaco-editor/') || id.includes('@monaco-editor/')) return 'vendor-monaco'
+              if (id.includes('@codemirror/lang-') || id.includes('@lezer/lang')) return 'vendor-cm-langs'
+              if (id.includes('@codemirror') || id.includes('@uiw/react-codemirror') || id.includes('@lezer')) return 'vendor-codemirror'
+              if (id.includes('/pdfjs-dist/')) return 'vendor-pdf'
+              if (id.includes('/html2canvas/')) return 'vendor-html2canvas'
+              if (id.includes('/sonner/') || id.includes('/cmdk/') || id.includes('class-variance-authority') || id.includes('/clsx/') || id.includes('tailwind-merge')) return 'vendor-ui-utils'
+              if (id.includes('crypto-js') || id.includes('oauth-1.0a')) return 'vendor-crypto'
+              if (id.includes('react-plaid-link')) return 'vendor-plaid'
             }
           },
         },

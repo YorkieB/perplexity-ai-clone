@@ -12,10 +12,12 @@ import { searchHuggingFace, fetchDatasetSample } from '@/lib/hf-api'
 import { searchGitHub, fetchGitHubFile } from '@/lib/github-api'
 import { generateMusic } from '@/lib/suno-api'
 import { getBalances, getTransactions, getSpendingSummary } from '@/lib/plaid-api'
-import { searchStories, getStoryContent, getRandomStory } from '@/lib/story-api'
+import { searchStories, getStoryContent, getRandomStory, continueReading, jumpToPage, getCurrentBook } from '@/lib/story-api'
 import { postTweet, readSocialFeed, readComments, replyViaBrowser } from '@/lib/social-api'
 import { quickScan } from '@/lib/hallucination-guard'
 import { schedulePost, listScheduledPostsSummary, cancelScheduledPost } from '@/lib/social-scheduler'
+import { getVoiceThinkingPrompt } from '@/lib/thinking-engine'
+import { analyzeExchangeAsync, getLearnedContext, getLearningStats } from '@/lib/learning-engine'
 import type { BehavioralChunk } from '@/lib/behavioral-engine'
 import { parseBehavioralMarkup, stripBehavioralMarkup, hasUnclosedTag, buildPersonalityInstructions } from '@/lib/behavioral-engine'
 import type { VoiceProfile } from '@/lib/voice-registry'
@@ -60,6 +62,40 @@ export interface UseRealtimeVoiceReturn {
   open: () => Promise<void>
   close: () => void
   bargeIn: () => void
+  micMuted: boolean
+  toggleMicMute: () => void
+}
+
+// ─── Story voice output helpers ──────────────────────────────────────────────
+
+function stripStoryMetaForVoice(output: string, hasMore: boolean): string {
+  let text = output
+    .replace(/\[AUTO-CONTINUE:[^\]]*\]/g, '')
+    .replace(/📖\s*.+\n/g, '')
+    .replace(/Author:\s*.+\n/g, '')
+    .replace(/Pages:\s*.+\n/g, '')
+    .replace(/Source:\s*.+\n/g, '')
+    .replace(/📄\s*Page \d+ of \d+\..*/g, '')
+    .replace(/📕\s*End of book\..*/g, '')
+    .replace(/---\s*$/gm, '')
+    .trim()
+  const directive = hasMore
+    ? '[MANDATORY RULE: Read ONLY the book text below word for word. When you reach the end, just STOP. Do NOT say anything else — no "shall I continue", no "would you like to keep reading", no commentary. Just read and stop.]\n\n'
+    : '[Read the final passage of this book. When done, say "That is the end of the book."]\n\n'
+  return directive + text
+}
+
+const CONTINUE_QUESTION_RE = /\b(would you like (me to |to )?(continue|keep (going|reading)|read more|go on)|shall I (continue|keep (going|reading)|go on)|want (me to )?(continue|keep (going|reading))|ready for (the next|more)|let me know (if|when)|should I (continue|keep|go on))\b[?.!]*/gi
+
+function stripContinuationQuestions(text: string): string {
+  return text
+    .replace(CONTINUE_QUESTION_RE, '')
+    .replace(/\bCertainly!\s*/g, '')
+    .replace(/\bSure!\s*/g, '')
+    .replace(/\bOf course!\s*/g, '')
+    .replace(/\bAbsolutely!\s*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 // ─── PCM16 helpers ────────────────────────────────────────────────────────────
@@ -153,6 +189,7 @@ interface BuildInstructionsOpts {
   voiceNames?: string[]
   isElevenLabs?: boolean
   hasVoiceAnalysis?: boolean
+  learnedContext?: string
 }
 
 function buildInstructions(opts: BuildInstructionsOpts): string {
@@ -304,16 +341,42 @@ Always tell the user what you're creating before calling the tool. After generat
 
   base += `
 
-=== CODE EDITOR ===
-You have a built-in Code Editor with execution capabilities:
-- show_code: Display code in the interactive editor with syntax highlighting. The user can view, edit, run, copy, or download the code. Use whenever the user asks you to write, show, or create code.
-- run_code: Execute Python or JavaScript code and return output. Use when the user asks to run, test, or execute code.
-- search_huggingface: Search Hugging Face for datasets or ML models. Use when the user needs data or wants to explore AI models.
-- search_github: Search GitHub for repositories or code. Use when the user needs to find open-source projects or code examples.
+=== JARVIS IDE (Full Control) ===
+You have FULL CONTROL of a built-in IDE. You can create files, edit code, navigate, run, debug, and fix errors autonomously.
 
-When the user asks you to code, program, write a script, or show code, use show_code to present it in the Code Editor.
-When the user asks to run or execute code, use run_code.
-=== END CODE EDITOR ===
+File Management:
+- show_code: Display code in the IDE (quick way to create a file).
+- ide_create_file: Create a new file with a filename, code, and language.
+- ide_edit_file: Replace the entire content of a file by ID.
+- ide_delete_file: Remove a file from the IDE.
+- ide_rename_file: Rename a file.
+- ide_open_file: Switch the active tab to a file.
+- ide_get_files: List all open files with IDs.
+- ide_read_file: Read the contents of a file (or the active file).
+
+Editing:
+- ide_replace_text: Find and replace text in the active file. Use for targeted fixes.
+- ide_find_in_file: Search for text in the active file (returns line numbers).
+
+Execution & Debugging:
+- run_code: Execute Python or JavaScript code directly and return output.
+- ide_run_and_fix: Run the active file and return results with error detection. If errors are found, use ide_replace_text or ide_edit_file to fix them, then run again.
+
+Preview:
+- ide_toggle_preview: Toggle live preview panel for HTML/CSS/JS.
+
+External Resources:
+- search_huggingface / search_github: Find datasets, models, repos, and code examples.
+
+WORKFLOW — When asked to code:
+1. Use ide_create_file or show_code to create the file.
+2. Use ide_run_and_fix to test it.
+3. If errors, read the error output, use ide_replace_text to fix, and run again.
+4. Repeat until the code works perfectly.
+5. For HTML/CSS/JS, use ide_toggle_preview so the user can see the result.
+
+You can chain multiple IDE tools in sequence to build complete projects with multiple files.
+=== END JARVIS IDE ===
 
 === MUSIC GENERATION ===
 You can generate full songs from text descriptions:
@@ -334,15 +397,18 @@ Be encouraging about positive trends (saving more, reducing spending). Always pr
 === END FINANCIAL ADVISOR ===
 
 === STORY LIBRARY ===
-You have access to tens of thousands of stories:
+You have access to tens of thousands of stories and full-length books:
 - search_stories: Search Project Gutenberg (70,000+ classic books) and short story collections by title, author, or theme. Results include an ID and Source for each story.
-- tell_story: Fetch and read a story. Pass the story_id and source from the search results. For short stories reads the full text; for long books reads a chapter excerpt. Or set random=true for a surprise story.
+- tell_story: Start reading a story/book. Pass the story_id and source from search results. Books are paginated — you'll get page 1 first. Set random=true for a surprise.
+- continue_reading: Read the NEXT PAGE of the current book. Use whenever the user says "continue", "keep reading", "next page", "go on", "more", etc. You can also specify a page number to jump to a specific page.
 
 WORKFLOW:
 1. When the user asks for a story, first call search_stories to find options.
 2. Present the results and ask which one they want to hear.
 3. Then call tell_story with the story_id and source from the search results.
 4. If the user says "tell me a story" without specifics, call tell_story with random=true.
+5. CRITICAL — CONTINUOUS READING: When reading a book, just read the text naturally. Do NOT ask "shall I continue?", "would you like me to keep reading?", or anything similar. The system automatically provides the next page — your only job is to read the text aloud. If the user wants you to stop, they will interrupt you.
+6. Never skip pages or summarize unless the user explicitly asks you to.
 When reading aloud, use behavioral markup for dramatic effect:
 - Use [voice:Narrator] for narration and different [voice:CharacterName] for each character
 - Use [dramatic] for intense moments, [whisper] for quiet scenes
@@ -420,6 +486,12 @@ Never explicitly mention that you are analysing their voice unless the user asks
 
   parts.push('\nUse your stored knowledge naturally. Reference things the user has told you before when relevant, but don\'t enumerate facts back unless asked.')
 
+  if (opts.learnedContext) {
+    parts.push(`\n${opts.learnedContext}`)
+  }
+
+  parts.push(getVoiceThinkingPrompt())
+
   return parts.join('\n')
 }
 
@@ -491,6 +563,8 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const [interimTranscript, setInterimTranscript] = useState('')
   const [aiText, setAiText] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [micMuted, setMicMuted] = useState(false)
+  const micMutedRef = useRef(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -499,6 +573,11 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const playCtxRef = useRef<AudioContext | null>(null)
   const isOpenRef = useRef(false)
   const stateRef = useRef<VoicePipelineState>('idle')
+  const bargeInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoReadRef = useRef<{ pending: boolean }>({ pending: false })
+  const directTTSRef = useRef(false)
+  const triggerAutoReadRef = useRef<() => boolean>(() => false)
+  const processElQueueRef = useRef<() => void>(() => {})
   const aiAccRef = useRef('')
   const userRef = useRef('')
   const nextTRef = useRef(0)
@@ -762,11 +841,66 @@ Assistant: ${ai || ''}`
     }
   }, [])
 
+  const triggerAutoRead = useCallback(() => {
+    if (!autoReadRef.current.pending || !isOpenRef.current) return false
+    autoReadRef.current.pending = false
+    const book = getCurrentBook()
+    if (!book) return false
+    setS('thinking')
+    void (async () => {
+      let output: string
+      try {
+        const fetchPromise = continueReading()
+        const timeout = new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Page fetch timed out.')), 25000))
+        output = await Promise.race([fetchPromise, timeout])
+      } catch (e) {
+        output = `Auto-read error: ${e instanceof Error ? e.message : String(e)}`
+        autoReadRef.current.pending = false
+      }
+      autoReadRef.current.pending = output.includes('[AUTO-CONTINUE:')
+      output = stripStoryMetaForVoice(output, autoReadRef.current.pending)
+
+      // ElevenLabs path: bypass the LLM entirely and send text straight to TTS
+      if (isEL) {
+        directTTSRef.current = true
+        const rawText = output.replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+        if (rawText) {
+          const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
+          elQueueRef.current.push(...chunks)
+          elDoneRef.current = true
+          processElQueueRef.current()
+        }
+        return
+      }
+
+      // Native audio path: use per-response instructions override
+      const ws = wsRef.current
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: { type: 'message', role: 'system', content: [{ type: 'input_text', text: output }] },
+        }))
+        ws.send(JSON.stringify({
+          type: 'response.create',
+          response: {
+            instructions: 'Read the book text aloud, word for word. Do NOT add any commentary, questions, or ask if the user wants to continue. Just read and stop.',
+          },
+        }))
+      } else {
+        setS('listening')
+      }
+    })()
+    return true
+  }, [isEL, setS])
+  triggerAutoReadRef.current = triggerAutoRead
+
   const finishTurn = useCallback(() => {
     if (userRef.current && aiAccRef.current) {
       const cleanAi = stripBehavioralMarkup(aiAccRef.current)
       onResRef.current?.(userRef.current, cleanAi)
       saveTurnToMemory(userRef.current, cleanAi)
+
+      analyzeExchangeAsync(userRef.current, cleanAi)
 
       const flags = quickScan(cleanAi)
       const severe = flags.filter(f => f.severity === 'high' || f.severity === 'critical')
@@ -784,7 +918,12 @@ Assistant: ${ai || ''}`
     userRef.current = ''
     const rem = Math.max(0, Math.trunc((nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000))
     setTimeout(() => {
-      if (isOpenRef.current) { aiAccRef.current = ''; setS('listening'); setInterimTranscript('') }
+      if (!isOpenRef.current) return
+      aiAccRef.current = ''
+      directTTSRef.current = false
+      if (triggerAutoReadRef.current()) return
+      setS('listening')
+      setInterimTranscript('')
     }, rem + 80)
   }, [setS, saveTurnToMemory])
 
@@ -795,6 +934,11 @@ Assistant: ${ai || ''}`
 
     while (elQueueRef.current.length > 0 && isOpenRef.current) {
       const chunk = elQueueRef.current.shift()!
+      // When reading a book, strip any "would you like to continue?" the LLM adds
+      if (autoReadRef.current.pending && !chunk.isSfx) {
+        chunk.text = stripContinuationQuestions(chunk.text)
+        if (!chunk.text) continue
+      }
       elAbortRef.current = new AbortController()
       setS('speaking')
 
@@ -832,6 +976,7 @@ Assistant: ${ai || ''}`
       finishTurn()
     }
   }, [speakEL, playSfx, setS, finishTurn])
+  processElQueueRef.current = processElQueue
 
   // ── Voice analysis sender ────────────────────────────────────────────────
 
@@ -870,7 +1015,7 @@ Assistant: ${ai || ''}`
 
   const startMic = useCallback(async (ws: WebSocket) => {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
     })
     streamRef.current = stream
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
@@ -880,7 +1025,20 @@ Assistant: ${ai || ''}`
     procRef.current = proc
     proc.onaudioprocess = (e) => { // NOSONAR -- deprecated but AudioWorklet alternative is disproportionate here
       if (ws.readyState !== WebSocket.OPEN) return
-      const pcm = float32ToPcm16(e.inputBuffer.getChannelData(0))
+      if (micMutedRef.current) return
+      const samples = e.inputBuffer.getChannelData(0)
+
+      // Energy gate: when Jarvis is speaking, suppress mic input unless
+      // the user is genuinely talking (high energy). This prevents speaker
+      // output bleeding back into the mic from triggering barge-in.
+      if (stateRef.current === 'speaking') {
+        let sumSq = 0
+        for (let i = 0; i < samples.length; i++) sumSq += samples[i] * samples[i]
+        const rms = Math.sqrt(sumSq / samples.length)
+        if (rms < 0.06) return // below threshold — likely speaker bleed, discard
+      }
+
+      const pcm = float32ToPcm16(samples)
       ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: abToBase64(pcm) })) // NOSONAR
 
       // Fork to voice analysis accumulator
@@ -922,21 +1080,47 @@ Assistant: ${ai || ''}`
   const onMsg = useCallback((msg: Record<string, unknown>) => {
     switch (msg.type) {
       case 'input_audio_buffer.speech_started':
-        stopPlay()
         if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'response.cancel' }))
+          // Debounce barge-in: wait 250ms to confirm it's real user speech,
+          // not speaker bleed that slipped past the energy gate.
+          if (!bargeInTimerRef.current) {
+            bargeInTimerRef.current = setTimeout(() => {
+              bargeInTimerRef.current = null
+              if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
+                autoReadRef.current.pending = false
+                stopPlay()
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'response.cancel' }))
+                }
+                aiAccRef.current = ''
+                setAiText('')
+                setInterimTranscript('Listening…')
+                setS('listening')
+                elBufRef.current = ''
+                elDoneRef.current = false
+              }
+            }, 250)
           }
+        } else {
+          stopPlay()
+          aiAccRef.current = ''
+          setAiText('')
+          setInterimTranscript('Listening…')
+          setS('listening')
+          elBufRef.current = ''
+          elDoneRef.current = false
         }
-        aiAccRef.current = ''
-        setAiText('')
-        setInterimTranscript('Listening…')
-        setS('listening')
-        elBufRef.current = ''
-        elDoneRef.current = false
         break
 
       case 'input_audio_buffer.speech_stopped':
+        // If speech stopped while a debounced barge-in is pending and
+        // Jarvis is still speaking, it was likely brief speaker bleed —
+        // cancel the pending interruption and let Jarvis continue.
+        if (bargeInTimerRef.current) {
+          clearTimeout(bargeInTimerRef.current)
+          bargeInTimerRef.current = null
+          break
+        }
         setInterimTranscript('')
         setS('thinking')
         break
@@ -960,6 +1144,7 @@ Assistant: ${ai || ''}`
       // ── ElevenLabs text-only events ──
       case 'response.text.delta':
         if (isEL && msg.delta) {
+          if (directTTSRef.current) break // suppress LLM text while doing direct TTS (story reading)
           const d = msg.delta as string
           aiAccRef.current += d
           setAiText(stripBehavioralMarkup(aiAccRef.current))
@@ -974,15 +1159,25 @@ Assistant: ${ai || ''}`
         break
 
       case 'response.text.done':
-        if (isEL && elBufRef.current.trim()) {
-          const finalChunks = parseBehavioralMarkup(elBufRef.current.trim(), voiceMapRef.current)
-          elQueueRef.current.push(...finalChunks)
-          elBufRef.current = ''
-          processElQueue()
+        if (isEL) {
+          if (directTTSRef.current) { elBufRef.current = ''; break } // suppress during direct TTS
+          if (elBufRef.current.trim()) {
+            const finalChunks = parseBehavioralMarkup(elBufRef.current.trim(), voiceMapRef.current)
+            elQueueRef.current.push(...finalChunks)
+            elBufRef.current = ''
+            processElQueue()
+          }
         }
         break
 
-      case 'response.done':
+      case 'response.done': {
+        // Skip cancelled responses (e.g. from story reading where we cancel the auto-response)
+        const respStatus = (msg.response as Record<string, unknown> | undefined)?.status as string | undefined
+        if (respStatus === 'cancelled') {
+          directTTSRef.current = false
+          break
+        }
+
         if (isEL) {
           elDoneRef.current = true
           if (elBufRef.current.trim()) {
@@ -1018,10 +1213,14 @@ Assistant: ${ai || ''}`
           userRef.current = ''
           const rem = Math.max(0, Math.trunc((nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000))
           setTimeout(() => {
-            if (isOpenRef.current) { setS('listening'); setInterimTranscript('') }
+            if (!isOpenRef.current) return
+            if (triggerAutoReadRef.current()) return
+            setS('listening')
+            setInterimTranscript('')
           }, rem + 80)
         }
         break
+      }
 
       case 'response.function_call_arguments.done': {
         const fnName = msg.name as string
@@ -1589,6 +1788,100 @@ Assistant: ${ai || ''}`
             }
           })()
 
+        } else if (fnName === 'ide_create_file' || fnName === 'ide_edit_file' || fnName === 'ide_replace_text' ||
+                   fnName === 'ide_get_files' || fnName === 'ide_read_file' || fnName === 'ide_open_file' ||
+                   fnName === 'ide_delete_file' || fnName === 'ide_run_and_fix' || fnName === 'ide_find_in_file' ||
+                   fnName === 'ide_toggle_preview') {
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId) break
+
+          const ctrl = codeEditorRef.current
+          if (!ctrl) {
+            const ws = wsRef.current
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: 'IDE is not available. Ask the user to open it.' } }))
+              ws.send(JSON.stringify({ type: 'response.create' }))
+            }
+            break
+          }
+
+          setS('thinking')
+          void (async () => {
+            let output = ''
+            try {
+              switch (fnName) {
+                case 'ide_create_file': {
+                  const id = ctrl.createFile(args.filename as string, args.code as string || '', args.language as string || 'javascript')
+                  output = `File "${args.filename}" created (ID: ${id}).`
+                  break
+                }
+                case 'ide_edit_file':
+                  output = ctrl.editFile(args.file_id as string, args.new_code as string) ? 'File updated.' : 'File not found.'
+                  break
+                case 'ide_replace_text': {
+                  const count = ctrl.replaceText(args.search as string, args.replace as string || '', !!args.replace_all)
+                  output = count > 0 ? `Replaced ${count} occurrence(s).` : 'No matches found.'
+                  break
+                }
+                case 'ide_get_files': {
+                  const files = ctrl.getFiles()
+                  const active = ctrl.getActiveFile()
+                  output = files.length === 0 ? 'No files open.'
+                    : files.map(f => `${f.id === active?.id ? '→ ' : '  '}${f.filename} [${f.language}] (ID: ${f.id})`).join('\n')
+                  break
+                }
+                case 'ide_read_file': {
+                  const fid = args.file_id as string | undefined
+                  if (fid) {
+                    const content = ctrl.getFileContent(fid)
+                    output = content != null ? content : 'File not found.'
+                  } else {
+                    const af = ctrl.getActiveFile()
+                    output = af ? `File: ${af.filename}\n---\n${af.code}` : 'No active file.'
+                  }
+                  break
+                }
+                case 'ide_open_file':
+                  output = ctrl.openFile(args.file_id as string) ? 'File opened.' : 'File not found.'
+                  break
+                case 'ide_delete_file':
+                  output = ctrl.deleteFile(args.file_id as string) ? 'File deleted.' : 'File not found.'
+                  break
+                case 'ide_run_and_fix': {
+                  const af = ctrl.getActiveFile()
+                  if (!af) { output = 'No active file.'; break }
+                  const result = await ctrl.runActiveFile()
+                  let o = ''
+                  if (result.stdout) o += `[stdout]\n${result.stdout}\n`
+                  if (result.stderr) o += `[stderr]\n${result.stderr}\n`
+                  if (result.error) o += `[error]\n${result.error}\n`
+                  if (!o.trim()) o = '(no output)'
+                  const hasErr = !!(result.error || result.stderr)
+                  output = `Ran "${af.filename}" in ${result.elapsed}ms.\n${o}${hasErr ? '\n⚠️ Errors detected. Use ide_replace_text to fix them.' : '\n✅ No errors.'}`
+                  break
+                }
+                case 'ide_find_in_file': {
+                  const matches = ctrl.findInFile(args.query as string)
+                  output = matches.length === 0 ? 'No matches.'
+                    : `Found ${matches.length} match(es):\n${matches.slice(0, 20).map(m => `  Line ${m.line}, Col ${m.column}: ${m.text}`).join('\n')}`
+                  break
+                }
+                case 'ide_toggle_preview':
+                  ctrl.togglePreview()
+                  output = 'Preview toggled.'
+                  break
+              }
+            } catch (e) {
+              output = `IDE error: ${e instanceof Error ? e.message : String(e)}`
+            }
+            const ws = wsRef.current
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+              ws.send(JSON.stringify({ type: 'response.create' }))
+            }
+          })()
+
         } else if (fnName === 'search_huggingface') {
           let args: { query?: string; type?: string } = {}
           try { args = JSON.parse(msg.arguments as string) } catch {}
@@ -1727,32 +2020,97 @@ Assistant: ${ai || ''}`
           })()
 
         } else if (fnName === 'tell_story') {
-          let args: { story_id?: string; source?: string; random?: boolean; genre?: string } = {}
+          let args: { story_id?: string; source?: string; random?: boolean; genre?: string; page?: number } = {}
           try { args = JSON.parse(msg.arguments as string) } catch {}
           if (!callId) break
 
           setS('thinking')
           void (async () => {
+            let output: string
             try {
-              let output: string
-              if (args.random) {
-                output = await getRandomStory(args.genre)
-              } else if (args.story_id && args.source) {
-                output = await getStoryContent(args.story_id, args.source as 'gutenberg' | 'huggingface')
-              } else {
-                output = 'Missing story_id or source. Search for stories first with search_stories, or set random=true.'
-              }
-              const ws = wsRef.current
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
-                ws.send(JSON.stringify({ type: 'response.create' }))
-              }
+              const fetchPromise = args.random
+                ? getRandomStory(args.genre)
+                : args.story_id && args.source
+                  ? getStoryContent(args.story_id, args.source as 'gutenberg' | 'huggingface', args.page || 1)
+                  : Promise.resolve('Missing story_id or source. Search for stories first with search_stories, or set random=true.')
+              const timeout = new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Story fetch timed out after 25 seconds. The server may be slow — please try again.')), 25000))
+              output = await Promise.race([fetchPromise, timeout])
             } catch (e) {
-              const ws = wsRef.current
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Story error: ${e instanceof Error ? e.message : String(e)}` } }))
-                ws.send(JSON.stringify({ type: 'response.create' }))
+              output = `Story error: ${e instanceof Error ? e.message : String(e)}`
+            }
+            autoReadRef.current.pending = output.includes('[AUTO-CONTINUE:')
+            const ws = wsRef.current
+
+            // ElevenLabs: bypass the LLM entirely — send book text straight to TTS
+            if (isEL && ws?.readyState === WebSocket.OPEN) {
+              directTTSRef.current = true // suppress any LLM text deltas
+              // Complete the tool call, then immediately cancel any auto-response
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '[Reading aloud]' } }))
+              ws.send(JSON.stringify({ type: 'response.cancel' }))
+              const rawText = stripStoryMetaForVoice(output, autoReadRef.current.pending)
+                .replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+              if (rawText) {
+                const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
+                elQueueRef.current.push(...chunks)
+                elDoneRef.current = true
+                processElQueueRef.current()
               }
+            } else if (ws?.readyState === WebSocket.OPEN) {
+              // Native audio: must use LLM, use per-response instructions
+              output = stripStoryMetaForVoice(output, autoReadRef.current.pending)
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+              ws.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                  instructions: 'Read the book text from the function output aloud, word for word. Do NOT add any commentary, questions, summaries, or ask if the user wants to continue. Just read the text exactly as written and then stop speaking.',
+                },
+              }))
+            } else {
+              setS('listening')
+            }
+          })()
+
+        } else if (fnName === 'continue_reading') {
+          let args: { page?: number } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch {}
+          if (!callId) break
+
+          setS('thinking')
+          void (async () => {
+            let output: string
+            try {
+              const fetchPromise = typeof args.page === 'number' ? jumpToPage(args.page) : continueReading()
+              const timeout = new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Page fetch timed out. Please try again.')), 25000))
+              output = await Promise.race([fetchPromise, timeout])
+            } catch (e) {
+              output = `Continue reading error: ${e instanceof Error ? e.message : String(e)}`
+            }
+            autoReadRef.current.pending = output.includes('[AUTO-CONTINUE:')
+            const ws = wsRef.current
+
+            if (isEL && ws?.readyState === WebSocket.OPEN) {
+              directTTSRef.current = true // suppress any LLM text deltas
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '[Reading aloud]' } }))
+              ws.send(JSON.stringify({ type: 'response.cancel' }))
+              const rawText = stripStoryMetaForVoice(output, autoReadRef.current.pending)
+                .replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+              if (rawText) {
+                const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
+                elQueueRef.current.push(...chunks)
+                elDoneRef.current = true
+                processElQueueRef.current()
+              }
+            } else if (ws?.readyState === WebSocket.OPEN) {
+              output = stripStoryMetaForVoice(output, autoReadRef.current.pending)
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+              ws.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                  instructions: 'Read the book text from the function output aloud, word for word. Do NOT add any commentary, questions, summaries, or ask if the user wants to continue. Just read the text exactly as written and then stop speaking.',
+                },
+              }))
+            } else {
+              setS('listening')
             }
           })()
 
@@ -1816,6 +2174,26 @@ Assistant: ${ai || ''}`
               const ws = wsRef.current
               if (ws?.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Social media error: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
+        } else if (fnName === 'learning_stats') {
+          if (!callId) break
+          setS('thinking')
+          ;(async () => {
+            try {
+              const output = await getLearningStats()
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Learning stats error: ${e instanceof Error ? e.message : String(e)}` } }))
                 ws.send(JSON.stringify({ type: 'response.create' }))
               }
             }
@@ -1885,11 +2263,13 @@ Assistant: ${ai || ''}`
         const hasBrowser = Boolean(browserRef.current)
         const hasMedia = Boolean(mediaCanvasRef.current)
         const registeredVoiceNames = Array.from(voiceMapRef.current.values()).map(v => v.name)
+        const learnedCtx = await getLearnedContext().catch(() => '')
         const instructions = buildInstructions({
           mem: memory, hasVision: visionAvailable, hasTuneIn, hasRag, hasBrowser,
           browserGuideMode: browserGuideModeRef.current ?? false, hasMedia,
           voiceNames: registeredVoiceNames, isElevenLabs: isEL,
           hasVoiceAnalysis: vaEnabledRef.current,
+          learnedContext: learnedCtx,
         })
 
         const tools: Record<string, unknown>[] = [
@@ -2086,6 +2466,66 @@ Assistant: ${ai || ''}`
           },
           {
             type: 'function',
+            name: 'ide_create_file',
+            description: 'Create a new file in the IDE. Returns the file ID.',
+            parameters: { type: 'object', properties: { filename: { type: 'string' }, code: { type: 'string' }, language: { type: 'string' } }, required: ['filename', 'code', 'language'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_edit_file',
+            description: 'Replace the entire content of a file in the IDE.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string' }, new_code: { type: 'string' } }, required: ['file_id', 'new_code'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_replace_text',
+            description: 'Find and replace text in the active file. Use to fix errors.',
+            parameters: { type: 'object', properties: { search: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['search', 'replace'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_files',
+            description: 'List all files open in the IDE.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_read_file',
+            description: 'Read contents of a file in the IDE.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string' } } },
+          },
+          {
+            type: 'function',
+            name: 'ide_open_file',
+            description: 'Switch the active tab to a specific file.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_delete_file',
+            description: 'Delete/close a file from the IDE.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_run_and_fix',
+            description: 'Run the active file, check for errors, and return results.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_find_in_file',
+            description: 'Search for text in the active file.',
+            parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_preview',
+            description: 'Toggle the live preview panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
             name: 'search_huggingface',
             description: 'Search Hugging Face for datasets or models by keyword.',
             parameters: {
@@ -2180,7 +2620,7 @@ Assistant: ${ai || ''}`
           {
             type: 'function',
             name: 'tell_story',
-            description: 'Fetch and read a story. Use the ID and Source values from search_stories results, or set random=true for a surprise story.',
+            description: 'Start reading a story/book. Use the ID and Source from search_stories results. Books are paginated — use continue_reading for subsequent pages. Set random=true for a surprise.',
             parameters: {
               type: 'object',
               properties: {
@@ -2188,6 +2628,19 @@ Assistant: ${ai || ''}`
                 source: { type: 'string', enum: ['gutenberg', 'huggingface'], description: 'Story source from search_stories results' },
                 random: { type: 'boolean', description: 'Get a random story instead (default: false)' },
                 genre: { type: 'string', description: 'Genre for random stories (adventure, fairy tale, mystery, fantasy, fable, etc.)' },
+                page: { type: 'number', description: 'Page number to start from (default: 1)' },
+              },
+              required: [],
+            },
+          },
+          {
+            type: 'function',
+            name: 'continue_reading',
+            description: 'Continue reading the current book — fetches the next page. You MUST call this automatically after every page when reading a book. Do NOT wait for the user to ask — keep reading until the book ends or the user says stop.',
+            parameters: {
+              type: 'object',
+              properties: {
+                page: { type: 'number', description: 'Optional page number to jump to. If omitted, reads the next page.' },
               },
               required: [],
             },
@@ -2264,11 +2717,18 @@ Assistant: ${ai || ''}`
           },
         )
 
+        tools.push({
+          type: 'function',
+          name: 'learning_stats',
+          description: 'Show what Jarvis has learned about the user over time. Use when the user asks what you have learned or wants to see your learning progress.',
+          parameters: { type: 'object', properties: {}, required: [] },
+        })
+
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],
           instructions,
           input_audio_format: 'pcm16',
-          turn_detection: { type: 'server_vad', threshold: 0.8, prefix_padding_ms: 500, silence_duration_ms: 700 },
+          turn_detection: { type: 'server_vad', threshold: 0.9, prefix_padding_ms: 600, silence_duration_ms: 800 },
           input_audio_transcription: { model: 'whisper-1', language: 'en' },
           tools,
         }
@@ -2317,6 +2777,9 @@ Assistant: ${ai || ''}`
   const close = useCallback(() => {
     const cId = convIdRef.current
     isOpenRef.current = false
+    autoReadRef.current.pending = false
+    directTTSRef.current = false
+    if (bargeInTimerRef.current) { clearTimeout(bargeInTimerRef.current); bargeInTimerRef.current = null }
     stopPlay()
     stopMic()
     wsRef.current?.close()
@@ -2354,6 +2817,18 @@ Assistant: ${ai || ''}`
     setS('listening')
   }, [stopPlay, setS])
 
+  const toggleMicMute = useCallback(() => {
+    const next = !micMutedRef.current
+    micMutedRef.current = next
+    setMicMuted(next)
+    // Also disable the actual mic tracks so the browser mic indicator reflects muted state
+    streamRef.current?.getAudioTracks().forEach(t => { t.enabled = !next })
+    // If we just muted, clear any buffered audio the server may have queued
+    if (next && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input_audio_buffer.clear' }))
+    }
+  }, [])
+
   // ── Vision context injection ────────────────────────────────────────────────
   const prevVisionRef = useRef<string>('')
   useEffect(() => {
@@ -2387,6 +2862,6 @@ Assistant: ${ai || ''}`
   return {
     state, transcript, interimTranscript, aiText,
     isSupported: typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof WebSocket !== 'undefined',
-    errorMessage, open, close, bargeIn,
+    errorMessage, open, close, bargeIn, micMuted, toggleMicMute,
   }
 }

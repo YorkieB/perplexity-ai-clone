@@ -1222,6 +1222,98 @@ async function handleJarvisMemorySummarize(req, res) {
 
 
 
+// ── Self-learning API handlers ──────────────────────────────────────────────
+
+async function handleLearnedContextGet(_req, res) {
+  try {
+    const context = jarvisDb.buildLearnedContext()
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ context }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Error loading learned context' } }))
+  }
+}
+
+async function handleLearnPost(req, res) {
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    const { preferences, corrections, patterns, knowledge } = body
+
+    if (preferences) {
+      for (const p of preferences) {
+        if (p.domain && p.key && p.value) jarvisDb.savePreference(p.domain, p.key, p.value)
+      }
+    }
+    if (corrections) {
+      for (const c of corrections) {
+        if (c.category && c.mistake && c.correction) jarvisDb.saveCorrection(c.category, c.mistake, c.correction, c.context)
+      }
+    }
+    if (patterns) {
+      for (const p of patterns) {
+        if (p.pattern_type && p.description) jarvisDb.savePattern(p.pattern_type, p.description, p.metadata)
+      }
+    }
+    if (knowledge) {
+      for (const k of knowledge) {
+        if (k.topic && k.content) jarvisDb.saveKnowledge(k.topic, k.content, k.source)
+      }
+    }
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Learn error' } }))
+  }
+}
+
+async function handleTrackToolPost(req, res) {
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    jarvisDb.saveToolOutcome(
+      body.tool_name,
+      body.query_type || null,
+      body.success !== false,
+      body.execution_time_ms || null,
+      body.error_message || null,
+    )
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Track tool error' } }))
+  }
+}
+
+async function handleLearningStatsGet(_req, res) {
+  try {
+    const stats = jarvisDb.getLearningStats()
+    const preferences = jarvisDb.loadPreferences(0.2)
+    const corrections = jarvisDb.loadCorrections(15)
+    const patterns = jarvisDb.loadPatterns()
+    const knowledge = jarvisDb.loadAllKnowledge(20)
+    const tool_stats = jarvisDb.getToolStats()
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ stats, preferences, corrections, patterns, knowledge, tool_stats }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Stats error' } }))
+  }
+}
+
 /** Proxy /api/vision/* requests to the Jarvis Visual Engine at localhost:5000 */
 async function handleVisionProxy(req, res) {
   try {
@@ -1884,11 +1976,13 @@ async function handleSunoGenerate(req, res) {
   const key = (env.SUNO_API_KEY || env.VITE_SUNO_API_KEY || '').trim()
   if (!key) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing SUNO_API_KEY' } })); return }
   try {
-    const body = await readBody(req)
+    const raw = await readBody(req)
+    const parsed = JSON.parse(raw)
+    if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
     const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body,
+      body: JSON.stringify(parsed),
     })
     const text = await upstream.text()
     res.statusCode = upstream.status
@@ -2124,8 +2218,8 @@ async function handleStorySearch(req, res) {
 
   try {
     if (source === 'all' || source === 'gutenberg') {
-      const gutRes = await fetch(`https://gutendex.com/books?search=${encodeURIComponent(q)}`)
-      if (gutRes.ok) {
+      const gutRes = await fetchRetry(`https://gutendex.com/books?search=${encodeURIComponent(q)}`, { timeoutMs: 10000 }).catch(() => null)
+      if (gutRes?.ok) {
         const gutData = await gutRes.json()
         for (const b of (gutData.results || []).slice(0, limit)) {
           results.push({
@@ -2194,40 +2288,130 @@ async function handleStorySearch(req, res) {
   }
 }
 
+// ── Retry helper for transient upstream errors ──
+const RETRYABLE_CODES = new Set([502, 503, 504])
+async function fetchRetry(url, opts = {}, retries = 3) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController()
+    const ms = opts.timeoutMs || 15000
+    const timer = setTimeout(() => ctrl.abort(), ms)
+    try {
+      const res = await fetch(url, { ...opts, signal: ctrl.signal })
+      clearTimeout(timer)
+      if (res.ok || !RETRYABLE_CODES.has(res.status) || attempt === retries) return res
+    } catch (e) {
+      clearTimeout(timer)
+      if (attempt === retries) throw e
+    }
+    await new Promise(r => setTimeout(r, 1000 * 2 ** attempt))
+  }
+  return fetch(url, opts) // unreachable fallback
+}
+
+// ── Book cache for paginated reading ──
+const bookCache = new Map() // key: "source:id" → { title, authors, fullText, fetchedAt }
+const BOOK_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+const BOOK_PAGE_SIZE = 4000 // ~4000 chars per page (roughly 1-2 book pages)
+
+function stripGutenbergBoilerplate(text) {
+  let content = text
+  // Strip everything before the "*** START OF" marker
+  const startMatch = content.match(/\*{3}\s*START OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK[^*]*\*{3}/i)
+  if (startMatch) {
+    content = content.slice(startMatch.index + startMatch[0].length)
+  }
+  // Strip everything after the "*** END OF" marker
+  const endMatch = content.match(/\*{3}\s*END OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK/i)
+  if (endMatch) {
+    content = content.slice(0, endMatch.index)
+  }
+  // Also strip common front matter that appears after the START marker
+  // (Produced by, Transcriber's note, etc.)
+  content = content.replace(/^\s*(Produced by|Transcribed by|E-text prepared by)[^\n]*\n*/i, '')
+  return content.trim()
+}
+
+function getCachedBook(source, id) {
+  const key = `${source}:${id}`
+  const entry = bookCache.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.fetchedAt > BOOK_CACHE_TTL) { bookCache.delete(key); return null }
+  return entry
+}
+
+function cacheBook(source, id, title, authors, fullText) {
+  const key = `${source}:${id}`
+  // Cap cache at 20 books to prevent memory bloat
+  if (bookCache.size >= 20) {
+    const oldest = [...bookCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt)[0]
+    if (oldest) bookCache.delete(oldest[0])
+  }
+  bookCache.set(key, { title, authors, fullText, fetchedAt: Date.now() })
+}
+
+function paginateText(fullText, page, pageSize) {
+  const totalPages = Math.ceil(fullText.length / pageSize)
+  const clampedPage = Math.max(1, Math.min(page, totalPages))
+  const start = (clampedPage - 1) * pageSize
+  const end = Math.min(start + pageSize, fullText.length)
+  return {
+    content: fullText.slice(start, end),
+    page: clampedPage,
+    totalPages,
+    totalChars: fullText.length,
+    hasMore: clampedPage < totalPages,
+  }
+}
+
 async function handleStoryContent(req, res) {
   const params = new URL(req.url || '', 'http://localhost').searchParams
   const id = params.get('id') || ''
   const source = params.get('source') || 'gutenberg'
-  const maxChars = parseInt(params.get('maxChars') || '8000', 10)
+  const page = Math.max(1, parseInt(params.get('page') || '1', 10))
 
   try {
     if (source === 'gutenberg') {
-      const metaRes = await fetch(`https://gutendex.com/books/${id}`)
-      if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
-      const meta = await metaRes.json()
-      const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
-      if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available for this book' } })); return }
-      const textRes = await fetch(textUrl)
-      const fullText = await textRes.text()
-      const truncated = fullText.length > maxChars
+      let cached = getCachedBook('gutenberg', id)
+      if (!cached) {
+        const metaRes = await fetchRetry(`https://gutendex.com/books/${id}`, { timeoutMs: 10000 })
+        if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
+        const meta = await metaRes.json()
+        const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
+        if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available for this book' } })); return }
+        const textRes = await fetchRetry(textUrl, { timeoutMs: 20000 })
+        const rawText = await textRes.text()
+        const fullText = stripGutenbergBoilerplate(rawText)
+        const title = meta.title
+        const authors = (meta.authors || []).map(a => a.name)
+        cacheBook('gutenberg', id, title, authors, fullText)
+        cached = getCachedBook('gutenberg', id)
+      }
+      const paginated = paginateText(cached.fullText, page, BOOK_PAGE_SIZE)
       res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({
-        title: meta.title,
-        authors: (meta.authors || []).map(a => a.name),
-        content: truncated ? fullText.slice(0, maxChars) : fullText,
-        truncated,
-        totalChars: fullText.length,
+        title: cached.title,
+        authors: cached.authors,
+        content: paginated.content,
+        page: paginated.page,
+        totalPages: paginated.totalPages,
+        totalChars: paginated.totalChars,
+        hasMore: paginated.hasMore,
+        truncated: paginated.hasMore,
       }))
     } else {
       const rowIdx = id.replace('hf-tinystories-', '')
-      const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`)
+      const hfCtrl = new AbortController()
+      const hfTimeout = setTimeout(() => hfCtrl.abort(), 10000)
+      const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`, { signal: hfCtrl.signal })
+      clearTimeout(hfTimeout)
       if (!hfRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Story not found' } })); return }
       const hfData = await hfRes.json()
       const text = hfData.rows?.[0]?.row?.text || ''
       res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, truncated: false, totalChars: text.length }))
+      res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, page: 1, totalPages: 1, totalChars: text.length, hasMore: false, truncated: false }))
     }
   } catch (e) {
+    console.error('[Stories] Content fetch error:', e instanceof Error ? e.message : e)
     res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Story content error' } }))
   }
@@ -2241,10 +2425,7 @@ async function handleStoryRandom(req, res) {
 
     // Try Gutenberg first
     try {
-      const ctrl = new AbortController()
-      const timeout = setTimeout(() => ctrl.abort(), 10000)
-      const gutRes = await fetch(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { signal: ctrl.signal })
-      clearTimeout(timeout)
+      const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { timeoutMs: 10000 })
       if (gutRes.ok) {
         const gutData = await gutRes.json()
         const books = gutData.results || []
@@ -2252,17 +2433,20 @@ async function handleStoryRandom(req, res) {
           const book = books[Math.floor(Math.random() * books.length)]
           const textUrl = book.formats?.['text/plain; charset=utf-8'] || book.formats?.['text/plain'] || ''
           let content = `(Full text not available in plain text format for this book. Try searching for "${book.title}" to find a readable version.)`
+          let hasMore = false
+          let totalPages = 1
           if (textUrl) {
-            const textCtrl = new AbortController()
-            const textTimeout = setTimeout(() => textCtrl.abort(), 15000)
-            const textRes = await fetch(textUrl, { signal: textCtrl.signal })
-            clearTimeout(textTimeout)
-            const fullText = await textRes.text()
-            content = fullText.slice(0, 6000)
-            if (fullText.length > 6000) content += '\n\n[Truncated — ask for more to continue reading.]'
+            const textRes = await fetchRetry(textUrl, { timeoutMs: 15000 })
+            const rawText = await textRes.text()
+            const fullText = stripGutenbergBoilerplate(rawText)
+            cacheBook('gutenberg', String(book.id), book.title, (book.authors || []).map(a => a.name), fullText)
+            const paginated = paginateText(fullText, 1, BOOK_PAGE_SIZE)
+            content = paginated.content
+            hasMore = paginated.hasMore
+            totalPages = paginated.totalPages
           }
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ title: book.title, authors: (book.authors || []).map(a => a.name), content, source: 'gutenberg' }))
+          res.end(JSON.stringify({ title: book.title, authors: (book.authors || []).map(a => a.name), content, source: 'gutenberg', bookId: String(book.id), page: 1, totalPages, hasMore }))
           return
         }
       }
@@ -2400,6 +2584,23 @@ function createServer() {
 
     if (urlPath === '/api/jarvis-memory/summarize' && req.method === 'POST') {
       void handleJarvisMemorySummarize(req, res)
+      return
+    }
+
+    if (urlPath === '/api/jarvis-memory/learned-context' && req.method === 'GET') {
+      void handleLearnedContextGet(req, res)
+      return
+    }
+    if (urlPath === '/api/jarvis-memory/learn' && req.method === 'POST') {
+      void handleLearnPost(req, res)
+      return
+    }
+    if (urlPath === '/api/jarvis-memory/track-tool' && req.method === 'POST') {
+      void handleTrackToolPost(req, res)
+      return
+    }
+    if (urlPath === '/api/jarvis-memory/learning-stats' && req.method === 'GET') {
+      void handleLearningStatsGet(req, res)
       return
     }
 

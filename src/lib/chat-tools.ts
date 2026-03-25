@@ -20,10 +20,12 @@ import { searchGitHub, fetchGitHubFile } from './github-api'
 import { generateMusic } from './suno-api'
 import { runCode } from './code-runner'
 import { getBalances, getTransactions, getSpendingSummary } from './plaid-api'
-import { searchStories, getStoryContent, getRandomStory } from './story-api'
+import { searchStories, getStoryContent, getRandomStory, continueReading, jumpToPage, getCurrentBook } from './story-api'
 import { postTweet, readSocialFeed, readComments, replyViaBrowser } from './social-api'
 import { schedulePost, listScheduledPostsSummary, cancelScheduledPost } from './social-scheduler'
 import { validateResponse } from './hallucination-guard'
+import { splitThinkingFromModelContent } from './thinking-tags'
+import { trackToolOutcome, analyzeExchangeAsync, getLearningStats } from './learning-engine'
 
 // ── Tool definitions ────────────────────────────────────────────────────────
 
@@ -183,6 +185,147 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
   {
     type: 'function',
     function: {
+      name: 'ide_create_file',
+      description: 'Create a new file in the IDE. Returns the file ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string', description: 'Filename with extension (e.g. "app.py", "index.html")' },
+          code: { type: 'string', description: 'Initial code content' },
+          language: { type: 'string', description: 'Programming language' },
+        },
+        required: ['filename', 'code', 'language'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_edit_file',
+      description: 'Replace the entire content of a file in the IDE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'The file ID to edit' },
+          new_code: { type: 'string', description: 'The new complete code content' },
+        },
+        required: ['file_id', 'new_code'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_replace_text',
+      description: 'Find and replace text within the active file. Use to fix errors, refactor code, or make targeted edits.',
+      parameters: {
+        type: 'object',
+        properties: {
+          search: { type: 'string', description: 'Text to find' },
+          replace: { type: 'string', description: 'Replacement text' },
+          replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' },
+        },
+        required: ['search', 'replace'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_files',
+      description: 'List all files currently open in the IDE.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_read_file',
+      description: 'Read the contents of a file in the IDE. Use the active file if no file_id given.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to read (omit for active file)' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_open_file',
+      description: 'Switch the active tab to a specific file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to open/focus' },
+        },
+        required: ['file_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_delete_file',
+      description: 'Delete/close a file from the IDE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to delete' },
+        },
+        required: ['file_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_rename_file',
+      description: 'Rename a file in the IDE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to rename' },
+          new_name: { type: 'string', description: 'New filename' },
+        },
+        required: ['file_id', 'new_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_run_and_fix',
+      description: 'Run the active file, check for errors, and if there are errors, return them so you can fix them. Use this for iterative development — run, check errors, fix, run again.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_find_in_file',
+      description: 'Search for text in the active file. Returns matching lines with line numbers.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Text to search for' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_preview',
+      description: 'Toggle the live preview panel for HTML/CSS/JS files.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_huggingface',
       description: 'Search Hugging Face for datasets or models by keyword.',
       parameters: {
@@ -315,7 +458,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'tell_story',
-      description: 'Fetch and read a story. Use the ID and Source values from search_stories results. For short stories reads the full text; for long books reads a chapter excerpt. Or set random=true for a surprise story.',
+      description: 'Start reading a story/book. Use the ID and Source values from search_stories results. Books are paginated — use continue_reading to read subsequent pages. For short stories reads the full text. Set random=true for a surprise story.',
       parameters: {
         type: 'object',
         properties: {
@@ -323,6 +466,21 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
           source: { type: 'string', enum: ['gutenberg', 'huggingface'], description: 'Story source from search_stories results' },
           random: { type: 'boolean', description: 'Get a random story instead of by ID (default: false)' },
           genre: { type: 'string', description: 'Genre for random stories (e.g. adventure, fairy tale, mystery, fantasy)' },
+          page: { type: 'number', description: 'Page number to start from (default: 1). Use to jump to a specific page.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'continue_reading',
+      description: 'Continue reading the current book — fetches the next page. You MUST call this automatically after every page when reading a book. Do NOT wait for the user to ask. Keep reading until the book ends or the user says stop.',
+      parameters: {
+        type: 'object',
+        properties: {
+          page: { type: 'number', description: 'Optional specific page number to jump to. If omitted, reads the next page.' },
         },
         required: [],
       },
@@ -422,6 +580,14 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
         },
         required: ['action'],
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'learning_stats',
+      description: 'Show what Jarvis has learned about the user over time — preferences, corrections, patterns, knowledge, and tool performance. Use when the user asks "what have you learned about me?" or wants to see learning progress.',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
 ]
@@ -670,6 +836,106 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         }
       }
 
+      case 'ide_create_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const filename = args.filename as string
+        const code = args.code as string
+        const language = args.language as string
+        if (!filename) return 'Missing filename.'
+        const fileId = codeEditorControl.createFile(filename, code || '', language || 'javascript')
+        return `File "${filename}" created (ID: ${fileId}). It is now the active file in the IDE.`
+      }
+
+      case 'ide_edit_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const fileId = args.file_id as string
+        const newCode = args.new_code as string
+        if (!fileId || newCode == null) return 'Missing file_id or new_code.'
+        const ok = codeEditorControl.editFile(fileId, newCode)
+        return ok ? `File ${fileId} updated successfully.` : `File ${fileId} not found.`
+      }
+
+      case 'ide_replace_text': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const searchStr = args.search as string
+        const replaceStr = args.replace as string
+        if (!searchStr) return 'Missing search text.'
+        const count = codeEditorControl.replaceText(searchStr, replaceStr || '', !!args.replace_all)
+        return count > 0 ? `Replaced ${count} occurrence(s).` : 'No matches found.'
+      }
+
+      case 'ide_get_files': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const files = codeEditorControl.getFiles()
+        if (files.length === 0) return 'No files open in the IDE.'
+        const active = codeEditorControl.getActiveFile()
+        return files.map(f => `${f.id === active?.id ? '→ ' : '  '}${f.filename} [${f.language}] (ID: ${f.id})`).join('\n')
+      }
+
+      case 'ide_read_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const fid = args.file_id as string | undefined
+        if (fid) {
+          const content = codeEditorControl.getFileContent(fid)
+          return content != null ? content : `File ${fid} not found.`
+        }
+        const active = codeEditorControl.getActiveFile()
+        if (!active) return 'No active file.'
+        return `File: ${active.filename} (${active.language})\n---\n${active.code}`
+      }
+
+      case 'ide_open_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const ok = codeEditorControl.openFile(args.file_id as string)
+        return ok ? 'File opened.' : 'File not found.'
+      }
+
+      case 'ide_delete_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const ok = codeEditorControl.deleteFile(args.file_id as string)
+        return ok ? 'File deleted.' : 'File not found.'
+      }
+
+      case 'ide_rename_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const ok = codeEditorControl.renameFile(args.file_id as string, args.new_name as string)
+        return ok ? `File renamed to "${args.new_name}".` : 'File not found.'
+      }
+
+      case 'ide_run_and_fix': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const active = codeEditorControl.getActiveFile()
+        if (!active) return 'No active file to run.'
+        onStatus?.(`Running ${active.filename}...`)
+        try {
+          const result = await codeEditorControl.runActiveFile()
+          let output = ''
+          if (result.stdout) output += `[stdout]\n${result.stdout}\n`
+          if (result.stderr) output += `[stderr]\n${result.stderr}\n`
+          if (result.error) output += `[error]\n${result.error}\n`
+          if (!output.trim()) output = '(no output)'
+          const hasError = !!(result.error || result.stderr)
+          return `Ran "${active.filename}" in ${result.elapsed}ms.\n${output}${hasError ? '\n⚠️ Errors detected — read the error output and use ide_replace_text or ide_edit_file to fix them, then run again.' : '\n✅ No errors.'}`
+        } catch (e) {
+          return `Execution failed: ${e instanceof Error ? e.message : String(e)}\nUse ide_read_file to check the code, then fix with ide_replace_text.`
+        }
+      }
+
+      case 'ide_find_in_file': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const query = args.query as string
+        if (!query) return 'Missing query.'
+        const matches = codeEditorControl.findInFile(query)
+        if (matches.length === 0) return `No matches for "${query}".`
+        return `Found ${matches.length} match(es):\n${matches.slice(0, 20).map(m => `  Line ${m.line}, Col ${m.column}: ${m.text}`).join('\n')}`
+      }
+
+      case 'ide_toggle_preview': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.togglePreview()
+        return 'Preview panel toggled.'
+      }
+
       case 'search_huggingface': {
         const query = args.query as string
         if (!query) return 'Missing query.'
@@ -800,11 +1066,31 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         const storyId = args.story_id as string
         const source = args.source as 'gutenberg' | 'huggingface'
         if (!storyId || !source) return 'Missing story_id or source. Search for stories first with search_stories.'
-        onStatus?.('Fetching story...')
+        const page = typeof args.page === 'number' ? args.page : 1
+        onStatus?.(`Fetching story${page > 1 ? ` (page ${page})` : ''}...`)
         try {
-          return await getStoryContent(storyId, source)
+          return await getStoryContent(storyId, source, page)
         } catch (e) {
           return `Story fetch failed: ${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+
+      case 'continue_reading': {
+        const book = getCurrentBook()
+        if (!book) return 'No book is currently being read. Search for a story first with search_stories, then use tell_story to start reading.'
+        if (typeof args.page === 'number') {
+          onStatus?.(`Jumping to page ${args.page} of "${book.title}"...`)
+          try {
+            return await jumpToPage(args.page)
+          } catch (e) {
+            return `Page jump failed: ${e instanceof Error ? e.message : String(e)}`
+          }
+        }
+        onStatus?.(`Reading page ${book.page + 1} of "${book.title}"...`)
+        try {
+          return await continueReading()
+        } catch (e) {
+          return `Continue reading failed: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 
@@ -895,6 +1181,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         return 'Invalid schedule action.'
       }
 
+      case 'learning_stats':
+        return getLearningStats()
+
       default:
         return `Unknown tool: ${name}`
     }
@@ -924,7 +1213,12 @@ export interface ChatWithToolsOptions {
   onToolCall?: (name: string, args: Record<string, unknown>) => void
 }
 
-export async function runChatWithTools(options: ChatWithToolsOptions): Promise<string> {
+export interface ChatWithToolsResult {
+  content: string
+  reasoning: string
+}
+
+export async function runChatWithTools(options: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
   const {
     systemPrompt,
     userPrompt,
@@ -955,19 +1249,43 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<s
     })
   }
 
-  const executor = createToolExecutor({
+  const toolsUsed: string[] = []
+
+  const rawExecutor = createToolExecutor({
     browserControl, guideMode, onStatus,
     mediaCanvasControl, onMediaGenerating, onMediaGeneratingLabel, openMediaCanvas,
     codeEditorControl, openCodeEditor,
     musicPlayerControl, openMusicPlayer, onMusicGenerating, onMusicGeneratingLabel,
   })
 
+  const trackedExecutor = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    toolsUsed.push(name)
+    const start = Date.now()
+    try {
+      const output = await rawExecutor(name, args)
+      trackToolOutcome({
+        tool_name: name,
+        success: true,
+        execution_time_ms: Date.now() - start,
+      }).catch(() => {})
+      return output
+    } catch (err) {
+      trackToolOutcome({
+        tool_name: name,
+        success: false,
+        execution_time_ms: Date.now() - start,
+        error_message: err instanceof Error ? err.message : 'Unknown error',
+      }).catch(() => {})
+      throw err
+    }
+  }
+
   const messages: LlmToolMessage[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
   ]
 
-  const result = await runToolLoop(messages, model, tools, executor, {
+  const result = await runToolLoop(messages, model, tools, trackedExecutor, {
     maxRounds: 30,
     signal,
     onToolCall,
@@ -982,6 +1300,7 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<s
     .map(m => (typeof m.content === 'string' ? m.content : ''))
     .join('\n')
 
+  let finalContent = result.content
   try {
     onStatus?.('Verifying response accuracy...')
     const validated = await validateResponse({
@@ -991,8 +1310,15 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<s
       toolOutputs,
       strictMode: true,
     })
-    return validated.response
-  } catch {
-    return result.content
+    finalContent = validated.response
+  } catch { /* use original content */ }
+
+  const { answer, thinking } = splitThinkingFromModelContent(finalContent, '')
+
+  analyzeExchangeAsync(userPrompt, answer || finalContent, toolsUsed)
+
+  return {
+    content: answer || finalContent,
+    reasoning: thinking,
   }
 }

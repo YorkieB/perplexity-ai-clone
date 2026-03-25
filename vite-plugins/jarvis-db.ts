@@ -52,6 +52,65 @@ export function getDb(projectRoot?: string): Database.Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_facts_category ON user_facts(category);
+
+    -- Self-learning tables
+    CREATE TABLE IF NOT EXISTS learned_preferences (
+      id              TEXT PRIMARY KEY,
+      domain          TEXT NOT NULL,
+      key             TEXT NOT NULL,
+      value           TEXT NOT NULL,
+      confidence      REAL NOT NULL DEFAULT 0.5,
+      evidence_count  INTEGER NOT NULL DEFAULT 1,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(domain, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_prefs_domain ON learned_preferences(domain);
+
+    CREATE TABLE IF NOT EXISTS corrections (
+      id          TEXT PRIMARY KEY,
+      category    TEXT NOT NULL,
+      mistake     TEXT NOT NULL,
+      correction  TEXT NOT NULL,
+      context     TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_corrections_cat ON corrections(category);
+
+    CREATE TABLE IF NOT EXISTS user_patterns (
+      id            TEXT PRIMARY KEY,
+      pattern_type  TEXT NOT NULL,
+      description   TEXT NOT NULL,
+      frequency     INTEGER NOT NULL DEFAULT 1,
+      last_seen     TEXT NOT NULL DEFAULT (datetime('now')),
+      metadata      TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(pattern_type, description)
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_outcomes (
+      id                TEXT PRIMARY KEY,
+      tool_name         TEXT NOT NULL,
+      query_type        TEXT,
+      success           INTEGER NOT NULL DEFAULT 1,
+      execution_time_ms INTEGER,
+      error_message     TEXT,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_outcomes_name ON tool_outcomes(tool_name);
+
+    CREATE TABLE IF NOT EXISTS learned_knowledge (
+      id               TEXT PRIMARY KEY,
+      topic            TEXT NOT NULL,
+      content          TEXT NOT NULL,
+      source           TEXT NOT NULL DEFAULT 'conversation',
+      confidence       REAL NOT NULL DEFAULT 0.7,
+      times_referenced INTEGER NOT NULL DEFAULT 0,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON learned_knowledge(topic);
   `)
 
   return _db

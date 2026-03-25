@@ -1,5 +1,5 @@
 import { useEffect, useCallback } from 'react'
-import { XIcon, HandWavingIcon, VideoCameraIcon } from '@phosphor-icons/react'
+import { XIcon, HandWavingIcon, VideoCameraIcon, MicrophoneIcon, MicrophoneSlashIcon } from '@phosphor-icons/react'
 import { useRealtimeVoice, VoicePipelineState } from '@/hooks/useRealtimeVoice'
 import { useVision } from '@/hooks/useVision'
 import { useTuneInControl } from '@/contexts/TuneInControlContext'
@@ -170,6 +170,21 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
           </p>
         )}
       </div>
+
+      {/* Mic mute toggle */}
+      <button
+        onClick={pipeline.toggleMicMute}
+        className={cn(
+          'absolute bottom-6 left-6 z-10 flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all',
+          pipeline.micMuted
+            ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+            : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+        )}
+        aria-label={pipeline.micMuted ? 'Unmute microphone' : 'Mute microphone'}
+      >
+        {pipeline.micMuted ? <MicrophoneSlashIcon size={18} /> : <MicrophoneIcon size={18} />}
+        <span>{pipeline.micMuted ? 'Muted' : 'Mic on'}</span>
+      </button>
 
       {/* Bottom hint */}
       <p className="absolute bottom-8 text-white/30 text-xs select-none">

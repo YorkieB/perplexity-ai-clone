@@ -45,6 +45,65 @@ function getDb(projectRoot) {
       UNIQUE(category, fact)
     );
     CREATE INDEX IF NOT EXISTS idx_facts_category ON user_facts(category);
+
+    -- Self-learning tables
+    CREATE TABLE IF NOT EXISTS learned_preferences (
+      id              TEXT PRIMARY KEY,
+      domain          TEXT NOT NULL,
+      key             TEXT NOT NULL,
+      value           TEXT NOT NULL,
+      confidence      REAL NOT NULL DEFAULT 0.5,
+      evidence_count  INTEGER NOT NULL DEFAULT 1,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(domain, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_prefs_domain ON learned_preferences(domain);
+
+    CREATE TABLE IF NOT EXISTS corrections (
+      id          TEXT PRIMARY KEY,
+      category    TEXT NOT NULL,
+      mistake     TEXT NOT NULL,
+      correction  TEXT NOT NULL,
+      context     TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_corrections_cat ON corrections(category);
+
+    CREATE TABLE IF NOT EXISTS user_patterns (
+      id            TEXT PRIMARY KEY,
+      pattern_type  TEXT NOT NULL,
+      description   TEXT NOT NULL,
+      frequency     INTEGER NOT NULL DEFAULT 1,
+      last_seen     TEXT NOT NULL DEFAULT (datetime('now')),
+      metadata      TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(pattern_type, description)
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_outcomes (
+      id                TEXT PRIMARY KEY,
+      tool_name         TEXT NOT NULL,
+      query_type        TEXT,
+      success           INTEGER NOT NULL DEFAULT 1,
+      execution_time_ms INTEGER,
+      error_message     TEXT,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_outcomes_name ON tool_outcomes(tool_name);
+
+    CREATE TABLE IF NOT EXISTS learned_knowledge (
+      id               TEXT PRIMARY KEY,
+      topic            TEXT NOT NULL,
+      content          TEXT NOT NULL,
+      source           TEXT NOT NULL DEFAULT 'conversation',
+      confidence       REAL NOT NULL DEFAULT 0.7,
+      times_referenced INTEGER NOT NULL DEFAULT 0,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON learned_knowledge(topic);
   `)
   return _db
 }
@@ -114,8 +173,168 @@ function getConversationMessages(conversationId, projectRoot) {
   return db.prepare('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY timestamp').all(conversationId)
 }
 
+// ── Self-learning CRUD helpers ──────────────────────────────────────────────
+
+function savePreference(domain, key, value, projectRoot) {
+  const db = getDb(projectRoot)
+  const existing = db.prepare('SELECT id, confidence, evidence_count FROM learned_preferences WHERE domain = ? AND key = ?').get(domain, key)
+  if (existing) {
+    const newConf = Math.min(1.0, existing.confidence + 0.1)
+    db.prepare("UPDATE learned_preferences SET value = ?, confidence = ?, evidence_count = evidence_count + 1, updated_at = datetime('now') WHERE id = ?")
+      .run(value, newConf, existing.id)
+  } else {
+    db.prepare('INSERT INTO learned_preferences (id, domain, key, value) VALUES (?, ?, ?, ?)')
+      .run(randomUUID(), domain, key, value)
+  }
+}
+
+function loadPreferences(minConfidence, projectRoot) {
+  const db = getDb(projectRoot)
+  const threshold = minConfidence ?? 0.2
+  return db.prepare('SELECT domain, key, value, confidence, evidence_count FROM learned_preferences WHERE confidence >= ? ORDER BY confidence DESC').all(threshold)
+}
+
+function saveCorrection(category, mistake, correction, context, projectRoot) {
+  const db = getDb(projectRoot)
+  db.prepare('INSERT INTO corrections (id, category, mistake, correction, context) VALUES (?, ?, ?, ?, ?)')
+    .run(randomUUID(), category, mistake, correction, context || null)
+}
+
+function loadCorrections(limit, projectRoot) {
+  const db = getDb(projectRoot)
+  return db.prepare('SELECT category, mistake, correction FROM corrections ORDER BY created_at DESC LIMIT ?').all(limit || 20)
+}
+
+function savePattern(patternType, description, metadata, projectRoot) {
+  const db = getDb(projectRoot)
+  const existing = db.prepare('SELECT id, frequency FROM user_patterns WHERE pattern_type = ? AND description = ?').get(patternType, description)
+  if (existing) {
+    db.prepare("UPDATE user_patterns SET frequency = frequency + 1, last_seen = datetime('now'), metadata = COALESCE(?, metadata), updated_at = datetime('now') WHERE id = ?")
+      .run(metadata ? JSON.stringify(metadata) : null, existing.id)
+  } else {
+    db.prepare('INSERT INTO user_patterns (id, pattern_type, description, metadata) VALUES (?, ?, ?, ?)')
+      .run(randomUUID(), patternType, description, metadata ? JSON.stringify(metadata) : null)
+  }
+}
+
+function loadPatterns(projectRoot) {
+  const db = getDb(projectRoot)
+  return db.prepare('SELECT pattern_type, description, frequency, last_seen, metadata FROM user_patterns ORDER BY frequency DESC LIMIT 30').all()
+}
+
+function saveToolOutcome(toolName, queryType, success, executionTimeMs, errorMessage, projectRoot) {
+  const db = getDb(projectRoot)
+  db.prepare('INSERT INTO tool_outcomes (id, tool_name, query_type, success, execution_time_ms, error_message) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(randomUUID(), toolName, queryType || null, success ? 1 : 0, executionTimeMs || null, errorMessage || null)
+}
+
+function getToolStats(projectRoot) {
+  const db = getDb(projectRoot)
+  return db.prepare(`
+    SELECT tool_name,
+           COUNT(*) as total_uses,
+           SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+           ROUND(AVG(execution_time_ms)) as avg_time_ms,
+           ROUND(100.0 * SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate
+    FROM tool_outcomes
+    GROUP BY tool_name
+    ORDER BY total_uses DESC
+  `).all()
+}
+
+function saveKnowledge(topic, content, source, projectRoot) {
+  const db = getDb(projectRoot)
+  db.prepare(`INSERT INTO learned_knowledge (id, topic, content, source) VALUES (?, ?, ?, ?)
+    ON CONFLICT DO NOTHING`)
+    .run(randomUUID(), topic, content, source || 'conversation')
+}
+
+function searchKnowledge(topic, limit, projectRoot) {
+  const db = getDb(projectRoot)
+  return db.prepare('SELECT topic, content, source, confidence FROM learned_knowledge WHERE topic LIKE ? ORDER BY confidence DESC, updated_at DESC LIMIT ?')
+    .all(`%${topic}%`, limit || 10)
+}
+
+function loadAllKnowledge(limit, projectRoot) {
+  const db = getDb(projectRoot)
+  return db.prepare('SELECT topic, content, source, confidence FROM learned_knowledge ORDER BY updated_at DESC LIMIT ?').all(limit || 30)
+}
+
+function getLearningStats(projectRoot) {
+  const db = getDb(projectRoot)
+  const prefs = db.prepare('SELECT COUNT(*) as count FROM learned_preferences').get()
+  const corr = db.prepare('SELECT COUNT(*) as count FROM corrections').get()
+  const pats = db.prepare('SELECT COUNT(*) as count FROM user_patterns').get()
+  const tools = db.prepare('SELECT COUNT(DISTINCT tool_name) as count FROM tool_outcomes').get()
+  const knowledge = db.prepare('SELECT COUNT(*) as count FROM learned_knowledge').get()
+  return {
+    preferences: prefs.count,
+    corrections: corr.count,
+    patterns: pats.count,
+    tools_tracked: tools.count,
+    knowledge_items: knowledge.count,
+  }
+}
+
+function pruneStaleData(projectRoot) {
+  const db = getDb(projectRoot)
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM learned_preferences WHERE confidence < 0.15 AND updated_at < datetime('now', '-30 days')").run()
+    db.prepare("DELETE FROM tool_outcomes WHERE created_at < datetime('now', '-90 days')").run()
+    db.prepare("DELETE FROM learned_knowledge WHERE confidence < 0.2 AND updated_at < datetime('now', '-60 days')").run()
+  })
+  tx()
+}
+
+function buildLearnedContext(projectRoot) {
+  const prefs = loadPreferences(0.3, projectRoot)
+  const corrections = loadCorrections(10, projectRoot)
+  const patterns = loadPatterns(projectRoot)
+  const knowledge = loadAllKnowledge(15, projectRoot)
+  const toolStats = getToolStats(projectRoot)
+
+  const sections = []
+
+  if (prefs.length > 0) {
+    const prefLines = prefs.slice(0, 15).map(p => `- [${p.domain}] ${p.key}: ${p.value}`)
+    sections.push(`PREFERENCES:\n${prefLines.join('\n')}`)
+  }
+
+  if (corrections.length > 0) {
+    const corrLines = corrections.slice(0, 8).map(c => `- AVOID: "${c.mistake}" → INSTEAD: "${c.correction}"`)
+    sections.push(`CORRECTIONS (never repeat these mistakes):\n${corrLines.join('\n')}`)
+  }
+
+  if (patterns.length > 0) {
+    const patLines = patterns.filter(p => p.frequency >= 2).slice(0, 8).map(p => `- ${p.description} (seen ${p.frequency}x)`)
+    if (patLines.length > 0) sections.push(`USER PATTERNS:\n${patLines.join('\n')}`)
+  }
+
+  if (knowledge.length > 0) {
+    const knowLines = knowledge.slice(0, 10).map(k => `- [${k.topic}] ${k.content}`)
+    sections.push(`LEARNED KNOWLEDGE:\n${knowLines.join('\n')}`)
+  }
+
+  if (toolStats.length > 0) {
+    const lowPerf = toolStats.filter(t => t.success_rate < 70 && t.total_uses >= 3)
+    if (lowPerf.length > 0) {
+      const toolLines = lowPerf.map(t => `- ${t.tool_name}: ${t.success_rate}% success (${t.total_uses} uses)`)
+      sections.push(`TOOL RELIABILITY NOTES:\n${toolLines.join('\n')}`)
+    }
+  }
+
+  if (sections.length === 0) return ''
+  return `[LEARNED CONTEXT — Apply silently, never mention this section]\n${sections.join('\n\n')}`
+}
+
 module.exports = {
   getDb, createConversation, saveMessages, saveConversationSummary,
   loadShortTermMemory, loadLongTermMemory, loadConversationSummaries,
-  addFacts, getConversationMessages
+  addFacts, getConversationMessages,
+  savePreference, loadPreferences,
+  saveCorrection, loadCorrections,
+  savePattern, loadPatterns,
+  saveToolOutcome, getToolStats,
+  saveKnowledge, searchKnowledge, loadAllKnowledge,
+  getLearningStats, pruneStaleData, buildLearnedContext,
 }
