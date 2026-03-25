@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import Editor, { type Monaco } from '@monaco-editor/react'
+import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react'
 import type * as monacoNs from 'monaco-editor'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { useCodeEditorRegister, useCodeEditorItems, useCodeEditorRunning, type CodeEditorControl, type CodeItem } from '@/contexts/CodeEditorContext'
@@ -12,286 +12,534 @@ interface CodeEditorModalProps {
   readonly onOpenChange: (open: boolean) => void
 }
 
-// ── Language configuration ──────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONFIG — Languages, icons, extensions, themes, templates, snippets
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 const MONACO_LANGS = [
   'javascript', 'typescript', 'python', 'html', 'css', 'json', 'markdown',
   'cpp', 'c', 'java', 'rust', 'sql', 'xml', 'php', 'go', 'ruby', 'swift',
-  'kotlin', 'scala', 'r', 'shell', 'yaml', 'dockerfile', 'graphql',
+  'kotlin', 'scala', 'r', 'shell', 'yaml', 'dockerfile', 'graphql', 'scss', 'less',
 ] as const
 
-const LANG_ICONS: Record<string, string> = {
+const LI: Record<string, string> = {
   python: '🐍', javascript: 'JS', typescript: 'TS', jsx: '⚛', tsx: '⚛',
   html: '🌐', css: '🎨', json: '{}', markdown: 'MD', rust: '🦀',
   cpp: 'C++', c: 'C', java: '☕', sql: '🗄', xml: '📄', php: '🐘',
   go: 'Go', ruby: '💎', swift: '🐦', kotlin: 'K', yaml: '📝',
-  shell: '🖥', dockerfile: '🐳', graphql: 'GQL', r: 'R', scala: 'S',
+  shell: '🖥', dockerfile: '🐳', graphql: 'GQL', r: 'R', scala: 'S', scss: '🎨', less: '🎨',
 }
 
-const FILE_EXT_MAP: Record<string, string> = {
+const EXT2LANG: Record<string, string> = {
   py: 'python', js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
   html: 'html', htm: 'html', css: 'css', json: 'json', md: 'markdown',
   rs: 'rust', cpp: 'cpp', cc: 'cpp', c: 'c', h: 'c', java: 'java',
   sql: 'sql', xml: 'xml', php: 'php', go: 'go', rb: 'ruby', swift: 'swift',
   kt: 'kotlin', scala: 'scala', r: 'r', sh: 'shell', bash: 'shell',
-  yml: 'yaml', yaml: 'yaml', graphql: 'graphql', gql: 'graphql',
+  yml: 'yaml', yaml: 'yaml', graphql: 'graphql', gql: 'graphql', scss: 'scss', less: 'less',
+}
+
+const LANG2EXT: Record<string, string> = {
+  python: 'py', javascript: 'js', typescript: 'ts', html: 'html', css: 'css',
+  json: 'json', markdown: 'md', rust: 'rs', cpp: 'cpp', c: 'c', java: 'java',
+  sql: 'sql', xml: 'xml', php: 'php', go: 'go', ruby: 'rb', swift: 'swift',
+  kotlin: 'kt', scala: 'scala', r: 'r', shell: 'sh', yaml: 'yml', graphql: 'graphql', scss: 'scss', less: 'less',
 }
 
 const RUNNABLE = new Set(['python', 'py', 'javascript', 'js', 'typescript', 'ts'])
-const PREVIEWABLE = new Set(['html', 'htm'])
+const PREVIEWABLE = new Set(['html', 'htm', 'markdown', 'md'])
 
-function detectLang(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || ''
-  return FILE_EXT_MAP[ext] || 'javascript'
-}
+function detectLang(f: string) { return EXT2LANG[f.split('.').pop()?.toLowerCase() || ''] || 'javascript' }
+function getExt(l: string) { return LANG2EXT[l] || l }
+function mLang(l: string) { const m: Record<string, string> = { jsx: 'javascript', tsx: 'typescript' }; return m[l] || l }
 
-function getFileExt(lang: string): string {
-  const map: Record<string, string> = {
-    python: 'py', javascript: 'js', typescript: 'ts', html: 'html', css: 'css',
-    json: 'json', markdown: 'md', rust: 'rs', cpp: 'cpp', c: 'c', java: 'java',
-    sql: 'sql', xml: 'xml', php: 'php', go: 'go', ruby: 'rb', swift: 'swift',
-    kotlin: 'kt', scala: 'scala', r: 'r', shell: 'sh', yaml: 'yml', graphql: 'graphql',
+/* ── Themes ── */
+interface ThemeDef { id: string; label: string; base: 'vs-dark' | 'vs' | 'hc-black'; colors: Record<string, string> }
+
+const THEMES: ThemeDef[] = [
+  { id: 'jarvis-dark', label: 'Jarvis Dark', base: 'vs-dark', colors: { 'editor.background': '#1e1e1e', 'editor.lineHighlightBackground': '#2a2d2e' } },
+  { id: 'monokai', label: 'Monokai', base: 'vs-dark', colors: { 'editor.background': '#272822', 'editor.foreground': '#f8f8f2', 'editor.lineHighlightBackground': '#3e3d32' } },
+  { id: 'dracula', label: 'Dracula', base: 'vs-dark', colors: { 'editor.background': '#282a36', 'editor.foreground': '#f8f8f2', 'editor.lineHighlightBackground': '#44475a' } },
+  { id: 'github-dark', label: 'GitHub Dark', base: 'vs-dark', colors: { 'editor.background': '#0d1117', 'editor.foreground': '#c9d1d9', 'editor.lineHighlightBackground': '#161b22' } },
+  { id: 'one-dark', label: 'One Dark Pro', base: 'vs-dark', colors: { 'editor.background': '#282c34', 'editor.foreground': '#abb2bf', 'editor.lineHighlightBackground': '#2c313c' } },
+  { id: 'solarized-dark', label: 'Solarized Dark', base: 'vs-dark', colors: { 'editor.background': '#002b36', 'editor.foreground': '#839496', 'editor.lineHighlightBackground': '#073642' } },
+  { id: 'nord', label: 'Nord', base: 'vs-dark', colors: { 'editor.background': '#2e3440', 'editor.foreground': '#d8dee9', 'editor.lineHighlightBackground': '#3b4252' } },
+  { id: 'cobalt2', label: 'Cobalt2', base: 'vs-dark', colors: { 'editor.background': '#193549', 'editor.foreground': '#e1efff', 'editor.lineHighlightBackground': '#1f4662' } },
+  { id: 'vs-light', label: 'VS Light', base: 'vs', colors: {} },
+  { id: 'hc-black', label: 'High Contrast', base: 'hc-black', colors: {} },
+]
+
+const FONT_FAMILIES = [
+  "'Cascadia Code', Consolas, monospace",
+  "'Fira Code', monospace",
+  "'JetBrains Mono', monospace",
+  "'Source Code Pro', monospace",
+  "Consolas, monospace",
+  "'Courier New', monospace",
+  "'IBM Plex Mono', monospace",
+  "'Ubuntu Mono', monospace",
+]
+
+/* ── Templates ── */
+const FILE_TEMPLATES = [
+  { name: 'HTML Page', filename: 'index.html', language: 'html', code: '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>My Page</title>\n  <style>\n    * { margin: 0; padding: 0; box-sizing: border-box; }\n    body { font-family: system-ui, sans-serif; padding: 2rem; background: #f5f5f5; color: #333; }\n    h1 { color: #007acc; margin-bottom: 1rem; }\n    .card { background: white; border-radius: 12px; padding: 2rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 600px; }\n    button { background: #007acc; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }\n    button:hover { background: #005f99; }\n  </style>\n</head>\n<body>\n  <div class="card">\n    <h1>Hello World</h1>\n    <p>Start building your page here.</p>\n    <br>\n    <button onclick="alert(\'It works!\')">Click Me</button>\n  </div>\n  <script>\n    console.log("Page loaded!");\n  </script>\n</body>\n</html>' },
+  { name: 'React Component', filename: 'Component.tsx', language: 'typescript', code: 'import React, { useState, useEffect } from "react";\n\ninterface Props {\n  title: string;\n  initialCount?: number;\n}\n\nexport function Component({ title, initialCount = 0 }: Props) {\n  const [count, setCount] = useState(initialCount);\n  const [items, setItems] = useState<string[]>([]);\n\n  useEffect(() => {\n    console.log(`Count changed to ${count}`);\n  }, [count]);\n\n  const addItem = () => {\n    setItems(prev => [...prev, `Item ${prev.length + 1}`]);\n  };\n\n  return (\n    <div style={{ padding: "2rem", fontFamily: "system-ui" }}>\n      <h1>{title}</h1>\n      <p>Count: {count}</p>\n      <div style={{ display: "flex", gap: "8px", margin: "1rem 0" }}>\n        <button onClick={() => setCount(c => c - 1)}>-</button>\n        <button onClick={() => setCount(c => c + 1)}>+</button>\n        <button onClick={addItem}>Add Item</button>\n      </div>\n      <ul>\n        {items.map((item, i) => (\n          <li key={i}>{item}</li>\n        ))}\n      </ul>\n    </div>\n  );\n}' },
+  { name: 'Python Script', filename: 'main.py', language: 'python', code: '"""Main script."""\nimport json\nfrom datetime import datetime\n\n\ndef main():\n    print("Hello, World!")\n    print(f"Current time: {datetime.now()}")\n    \n    data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n    total = sum(data)\n    average = total / len(data)\n    even = [x for x in data if x % 2 == 0]\n    odd = [x for x in data if x % 2 != 0]\n    \n    result = {\n        "total": total,\n        "average": average,\n        "even_numbers": even,\n        "odd_numbers": odd,\n        "count": len(data),\n    }\n    \n    print(json.dumps(result, indent=2))\n\n\nif __name__ == "__main__":\n    main()' },
+  { name: 'Express Server', filename: 'server.js', language: 'javascript', code: 'const express = require("express");\nconst app = express();\nconst PORT = 3000;\n\napp.use(express.json());\napp.use((req, res, next) => {\n  console.log(`${req.method} ${req.url}`);\n  next();\n});\n\nlet items = [\n  { id: 1, name: "Item 1", done: false },\n  { id: 2, name: "Item 2", done: true },\n];\n\napp.get("/", (req, res) => res.json({ message: "API running!", version: "1.0" }));\napp.get("/api/items", (req, res) => res.json({ items, total: items.length }));\napp.get("/api/items/:id", (req, res) => {\n  const item = items.find(i => i.id === parseInt(req.params.id));\n  item ? res.json(item) : res.status(404).json({ error: "Not found" });\n});\napp.post("/api/items", (req, res) => {\n  const item = { id: items.length + 1, name: req.body.name, done: false };\n  items.push(item);\n  res.status(201).json(item);\n});\napp.delete("/api/items/:id", (req, res) => {\n  items = items.filter(i => i.id !== parseInt(req.params.id));\n  res.json({ message: "Deleted" });\n});\n\napp.listen(PORT, () => console.log(`Server: http://localhost:${PORT}`));' },
+  { name: 'CSS Stylesheet', filename: 'styles.css', language: 'css', code: ':root {\n  --primary: #007acc;\n  --primary-hover: #005f99;\n  --bg: #1e1e1e;\n  --surface: #252526;\n  --text: #cccccc;\n  --text-muted: #888888;\n  --border: #333333;\n  --radius: 8px;\n  --shadow: 0 2px 8px rgba(0,0,0,0.3);\n}\n\n* { margin: 0; padding: 0; box-sizing: border-box; }\n\nbody {\n  font-family: system-ui, -apple-system, sans-serif;\n  background: var(--bg);\n  color: var(--text);\n  line-height: 1.6;\n}\n\n.container { max-width: 1200px; margin: 0 auto; padding: 2rem; }\n\n.card {\n  background: var(--surface);\n  border: 1px solid var(--border);\n  border-radius: var(--radius);\n  padding: 1.5rem;\n  box-shadow: var(--shadow);\n}\n\n.btn {\n  display: inline-flex; align-items: center; gap: 6px;\n  padding: 8px 16px; border: none; border-radius: var(--radius);\n  background: var(--primary); color: white;\n  cursor: pointer; font-size: 14px; font-weight: 500;\n  transition: all 0.2s ease;\n}\n.btn:hover { background: var(--primary-hover); transform: translateY(-1px); }\n.btn:active { transform: translateY(0); }\n\n.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }\n\n.flex { display: flex; align-items: center; gap: 0.75rem; }\n\ninput, textarea {\n  width: 100%; padding: 8px 12px;\n  background: var(--bg); color: var(--text);\n  border: 1px solid var(--border); border-radius: var(--radius);\n  font-size: 14px; outline: none;\n}\ninput:focus, textarea:focus { border-color: var(--primary); }' },
+  { name: 'JSON Config', filename: 'config.json', language: 'json', code: '{\n  "name": "my-project",\n  "version": "1.0.0",\n  "description": "A new project",\n  "author": "Developer",\n  "license": "MIT",\n  "settings": {\n    "theme": "dark",\n    "language": "en",\n    "debug": false,\n    "port": 3000\n  },\n  "database": {\n    "host": "localhost",\n    "port": 5432,\n    "name": "mydb"\n  },\n  "features": [\n    "authentication",\n    "api",\n    "dashboard"\n  ]\n}' },
+  { name: 'Markdown README', filename: 'README.md', language: 'markdown', code: '# Project Name\n\nA brief description of your project.\n\n## Features\n\n- Feature 1 — does something cool\n- Feature 2 — does something else\n- Feature 3 — the best feature\n\n## Getting Started\n\n```bash\nnpm install\nnpm start\n```\n\n## API Reference\n\n| Endpoint | Method | Description |\n|----------|--------|-------------|\n| `/api/items` | GET | Get all items |\n| `/api/items/:id` | GET | Get item by ID |\n| `/api/items` | POST | Create new item |\n| `/api/items/:id` | DELETE | Delete an item |\n\n## Environment Variables\n\n| Variable | Description | Default |\n|----------|-------------|---------|\n| `PORT` | Server port | `3000` |\n| `DB_URL` | Database URL | `localhost` |\n\n## Contributing\n\n1. Fork the repository\n2. Create your feature branch (`git checkout -b feature/amazing`)\n3. Commit your changes (`git commit -m "Add amazing feature"`)\n4. Push to the branch (`git push origin feature/amazing`)\n5. Open a Pull Request\n\n## License\n\nMIT' },
+  { name: 'Python Flask API', filename: 'app.py', language: 'python', code: 'from flask import Flask, jsonify, request\nfrom functools import wraps\n\napp = Flask(__name__)\n\nitems = [\n    {"id": 1, "name": "Item 1", "price": 9.99},\n    {"id": 2, "name": "Item 2", "price": 19.99},\n]\n\ndef validate_json(f):\n    @wraps(f)\n    def decorated(*args, **kwargs):\n        if not request.is_json:\n            return jsonify({"error": "Content-Type must be application/json"}), 400\n        return f(*args, **kwargs)\n    return decorated\n\n@app.route("/")\ndef index():\n    return jsonify({"message": "Flask API running!", "version": "1.0"})\n\n@app.route("/api/items")\ndef get_items():\n    return jsonify({"items": items, "total": len(items)})\n\n@app.route("/api/items/<int:item_id>")\ndef get_item(item_id):\n    item = next((i for i in items if i["id"] == item_id), None)\n    if not item:\n        return jsonify({"error": "Not found"}), 404\n    return jsonify(item)\n\n@app.route("/api/items", methods=["POST"])\n@validate_json\ndef add_item():\n    data = request.get_json()\n    new_item = {"id": len(items) + 1, "name": data["name"], "price": data.get("price", 0)}\n    items.append(new_item)\n    return jsonify(new_item), 201\n\n@app.route("/api/items/<int:item_id>", methods=["DELETE"])\ndef delete_item(item_id):\n    global items\n    items = [i for i in items if i["id"] != item_id]\n    return jsonify({"message": "Deleted"})\n\nif __name__ == "__main__":\n    app.run(debug=True, port=5000)' },
+  { name: 'TypeScript Interface', filename: 'types.ts', language: 'typescript', code: 'export interface User {\n  id: string;\n  name: string;\n  email: string;\n  role: "admin" | "user" | "moderator";\n  createdAt: Date;\n  updatedAt: Date;\n}\n\nexport interface ApiResponse<T> {\n  data: T;\n  success: boolean;\n  message?: string;\n  pagination?: {\n    page: number;\n    limit: number;\n    total: number;\n    totalPages: number;\n  };\n}\n\nexport interface Config {\n  apiUrl: string;\n  timeout: number;\n  retries: number;\n  debug: boolean;\n}\n\nexport type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";\n\nexport async function fetchApi<T>(\n  url: string,\n  method: HttpMethod = "GET",\n  body?: unknown\n): Promise<ApiResponse<T>> {\n  const response = await fetch(url, {\n    method,\n    headers: { "Content-Type": "application/json" },\n    body: body ? JSON.stringify(body) : undefined,\n  });\n  return response.json();\n}' },
+  { name: 'Tailwind Component', filename: 'Button.tsx', language: 'typescript', code: 'import React from "react";\n\ntype Variant = "primary" | "secondary" | "danger" | "ghost";\ntype Size = "sm" | "md" | "lg";\n\ninterface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {\n  variant?: Variant;\n  size?: Size;\n  loading?: boolean;\n  icon?: React.ReactNode;\n}\n\nconst variants: Record<Variant, string> = {\n  primary: "bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800",\n  secondary: "bg-gray-200 text-gray-800 hover:bg-gray-300 active:bg-gray-400",\n  danger: "bg-red-600 text-white hover:bg-red-700 active:bg-red-800",\n  ghost: "bg-transparent text-gray-600 hover:bg-gray-100 active:bg-gray-200",\n};\n\nconst sizes: Record<Size, string> = {\n  sm: "px-3 py-1.5 text-sm",\n  md: "px-4 py-2 text-base",\n  lg: "px-6 py-3 text-lg",\n};\n\nexport function Button({\n  variant = "primary",\n  size = "md",\n  loading = false,\n  icon,\n  children,\n  className = "",\n  disabled,\n  ...props\n}: ButtonProps) {\n  return (\n    <button\n      className={`inline-flex items-center justify-center gap-2 rounded-lg font-medium\n        transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed\n        ${variants[variant]} ${sizes[size]} ${className}`}\n      disabled={disabled || loading}\n      {...props}\n    >\n      {loading ? (\n        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">\n          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"\n            fill="none" opacity="0.25" />\n          <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />\n        </svg>\n      ) : icon}\n      {children}\n    </button>\n  );\n}' },
+]
+
+/* ── Snippets ── */
+function registerSnippets(m: Monaco) {
+  const mkSnip = (label: string, insert: string, doc: string, range: monacoNs.IRange) => ({
+    label, kind: m.languages.CompletionItemKind.Snippet,
+    insertText: insert, insertTextRules: m.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+    documentation: doc, range,
+  })
+  const provider = (lang: string, snips: Array<[string, string, string]>) => {
+    m.languages.registerCompletionItemProvider(lang, {
+      provideCompletionItems: (model, pos) => {
+        const w = model.getWordUntilPosition(pos)
+        const range = { startLineNumber: pos.lineNumber, endLineNumber: pos.lineNumber, startColumn: w.startColumn, endColumn: w.endColumn } as monacoNs.IRange
+        return { suggestions: snips.map(([l, i, d]) => mkSnip(l, i, d, range)) }
+      },
+    })
   }
-  return map[lang] || lang
+  provider('javascript', [
+    ['log', 'console.log(${1:value});', 'Console log'],
+    ['warn', 'console.warn(${1:value});', 'Console warn'],
+    ['error', 'console.error(${1:value});', 'Console error'],
+    ['fn', 'function ${1:name}(${2:params}) {\n\t${3}\n}', 'Function'],
+    ['afn', 'const ${1:name} = async (${2:params}) => {\n\t${3}\n};', 'Async arrow fn'],
+    ['arrow', 'const ${1:name} = (${2:params}) => ${3};', 'Arrow fn'],
+    ['iife', '(async () => {\n\t${1}\n})();', 'IIFE'],
+    ['trycatch', 'try {\n\t${1}\n} catch (${2:error}) {\n\tconsole.error(${2:error});\n}', 'Try-catch'],
+    ['tryfinally', 'try {\n\t${1}\n} catch (${2:error}) {\n\tconsole.error(${2:error});\n} finally {\n\t${3}\n}', 'Try-catch-finally'],
+    ['forof', 'for (const ${1:item} of ${2:iterable}) {\n\t${3}\n}', 'For-of'],
+    ['forin', 'for (const ${1:key} in ${2:object}) {\n\t${3}\n}', 'For-in'],
+    ['forloop', 'for (let ${1:i} = 0; ${1:i} < ${2:length}; ${1:i}++) {\n\t${3}\n}', 'For loop'],
+    ['while', 'while (${1:condition}) {\n\t${2}\n}', 'While loop'],
+    ['map', '${1:array}.map((${2:item}) => {\n\t${3}\n})', 'Array map'],
+    ['filter', '${1:array}.filter((${2:item}) => ${3:condition})', 'Array filter'],
+    ['reduce', '${1:array}.reduce((${2:acc}, ${3:item}) => {\n\t${4}\n}, ${5:initial})', 'Array reduce'],
+    ['find', '${1:array}.find((${2:item}) => ${3:condition})', 'Array find'],
+    ['fetch', 'const response = await fetch("${1:url}");\nconst data = await response.json();\nconsole.log(data);', 'Fetch API'],
+    ['class', 'class ${1:Name} {\n\tconstructor(${2:params}) {\n\t\t${3}\n\t}\n\n\t${4:method}() {\n\t\t${5}\n\t}\n}', 'Class'],
+    ['promise', 'new Promise((resolve, reject) => {\n\t${1}\n})', 'Promise'],
+    ['settimeout', 'setTimeout(() => {\n\t${1}\n}, ${2:1000});', 'setTimeout'],
+    ['setinterval', 'setInterval(() => {\n\t${1}\n}, ${2:1000});', 'setInterval'],
+    ['destructure', 'const { ${1:prop} } = ${2:object};', 'Destructure'],
+    ['ternary', '${1:condition} ? ${2:ifTrue} : ${3:ifFalse}', 'Ternary'],
+    ['switch', 'switch (${1:key}) {\n\tcase ${2:value}:\n\t\t${3}\n\t\tbreak;\n\tdefault:\n\t\t${4}\n}', 'Switch'],
+    ['import', 'import { ${2:module} } from "${1:package}";', 'Import'],
+    ['export', 'export { ${1:module} };', 'Export'],
+    ['exportdefault', 'export default ${1:value};', 'Export default'],
+  ])
+  provider('typescript', [
+    ['interface', 'interface ${1:Name} {\n\t${2:prop}: ${3:type};\n}', 'Interface'],
+    ['type', 'type ${1:Name} = ${2:type};', 'Type alias'],
+    ['enum', 'enum ${1:Name} {\n\t${2:Value},\n}', 'Enum'],
+    ['generic', 'function ${1:name}<${2:T}>(${3:param}: ${2:T}): ${2:T} {\n\t${4}\n}', 'Generic fn'],
+    ['asyncfn', 'async function ${1:name}(${2:params}): Promise<${3:void}> {\n\t${4}\n}', 'Async function'],
+    ['readonly', 'readonly ${1:prop}: ${2:type};', 'Readonly prop'],
+    ['partial', 'Partial<${1:Type}>', 'Partial'],
+    ['record', 'Record<${1:string}, ${2:unknown}>', 'Record'],
+    ['usestate', 'const [${1:state}, set${2:State}] = useState<${3:type}>(${4:initial});', 'useState'],
+    ['useeffect', 'useEffect(() => {\n\t${1}\n\treturn () => {\n\t\t${2}\n\t};\n}, [${3}]);', 'useEffect'],
+    ['usememo', 'const ${1:value} = useMemo(() => {\n\t${2}\n}, [${3}]);', 'useMemo'],
+    ['usecallback', 'const ${1:fn} = useCallback((${2:params}) => {\n\t${3}\n}, [${4}]);', 'useCallback'],
+    ['useref', 'const ${1:ref} = useRef<${2:HTMLDivElement}>(${3:null});', 'useRef'],
+  ])
+  provider('python', [
+    ['def', 'def ${1:name}(${2:params}):\n\t${3:pass}', 'Function'],
+    ['adef', 'async def ${1:name}(${2:params}):\n\t${3:pass}', 'Async function'],
+    ['class', 'class ${1:Name}:\n\tdef __init__(self${2:, params}):\n\t\t${3:pass}\n\n\tdef ${4:method}(self):\n\t\t${5:pass}', 'Class'],
+    ['dataclass', '@dataclass\nclass ${1:Name}:\n\t${2:field}: ${3:str}\n\t${4:field2}: ${5:int} = ${6:0}', 'Dataclass'],
+    ['ifmain', 'if __name__ == "__main__":\n\t${1:main()}', 'Main guard'],
+    ['tryexcept', 'try:\n\t${1:pass}\nexcept ${2:Exception} as e:\n\tprint(f"Error: {e}")', 'Try-except'],
+    ['with', 'with open("${1:file}", "${2:r}") as f:\n\t${3:data = f.read()}', 'With open'],
+    ['listcomp', '[${1:expr} for ${2:item} in ${3:iterable}]', 'List comprehension'],
+    ['dictcomp', '{${1:key}: ${2:value} for ${3:item} in ${4:iterable}}', 'Dict comprehension'],
+    ['lambda', 'lambda ${1:x}: ${2:x}', 'Lambda'],
+    ['fstring', 'f"${1:text} {${2:var}}"', 'F-string'],
+    ['decorator', 'def ${1:decorator}(func):\n\t@wraps(func)\n\tdef wrapper(*args, **kwargs):\n\t\t${2}\n\t\treturn func(*args, **kwargs)\n\treturn wrapper', 'Decorator'],
+    ['generator', 'def ${1:gen}(${2:params}):\n\tfor ${3:item} in ${4:iterable}:\n\t\tyield ${3:item}', 'Generator'],
+    ['contextmanager', '@contextmanager\ndef ${1:name}(${2:params}):\n\t${3:setup}\n\ttry:\n\t\tyield ${4}\n\tfinally:\n\t\t${5:cleanup}', 'Context manager'],
+  ])
+  provider('html', [
+    ['!html5', '<!DOCTYPE html>\n<html lang="en">\n<head>\n\t<meta charset="UTF-8">\n\t<meta name="viewport" content="width=device-width, initial-scale=1.0">\n\t<title>${1:Document}</title>\n\t<style>\n\t\t${2}\n\t</style>\n</head>\n<body>\n\t${3}\n\t<script>\n\t\t${4}\n\t</script>\n</body>\n</html>', 'HTML5 boilerplate'],
+    ['div', '<div class="${1:class}">\n\t${2}\n</div>', 'Div'],
+    ['section', '<section id="${1:id}">\n\t${2}\n</section>', 'Section'],
+    ['link:css', '<link rel="stylesheet" href="${1:styles.css}">', 'CSS link'],
+    ['script:src', '<script src="${1:script.js}"><\/script>', 'Script'],
+    ['img', '<img src="${1:src}" alt="${2:alt}" />', 'Image'],
+    ['a', '<a href="${1:url}">${2:text}</a>', 'Anchor'],
+    ['ul', '<ul>\n\t<li>${1}</li>\n\t<li>${2}</li>\n</ul>', 'Unordered list'],
+    ['form', '<form action="${1:url}" method="${2:post}">\n\t<label for="${3:input}">${4:Label}</label>\n\t<input type="${5:text}" id="${3:input}" name="${3:input}" />\n\t<button type="submit">Submit</button>\n</form>', 'Form'],
+    ['table', '<table>\n\t<thead>\n\t\t<tr><th>${1:Header}</th></tr>\n\t</thead>\n\t<tbody>\n\t\t<tr><td>${2:Data}</td></tr>\n\t</tbody>\n</table>', 'Table'],
+    ['meta:og', '<meta property="og:title" content="${1:title}" />\n<meta property="og:description" content="${2:description}" />\n<meta property="og:image" content="${3:image}" />', 'Open Graph meta'],
+  ])
+  provider('css', [
+    ['flex', 'display: flex;\nalign-items: ${1:center};\njustify-content: ${2:center};\ngap: ${3:1rem};', 'Flexbox'],
+    ['grid', 'display: grid;\ngrid-template-columns: repeat(${1:3}, 1fr);\ngap: ${2:1rem};', 'Grid'],
+    ['center', 'display: flex;\nalign-items: center;\njustify-content: center;', 'Center'],
+    ['transition', 'transition: ${1:all} ${2:0.3s} ${3:ease};', 'Transition'],
+    ['animation', '@keyframes ${1:name} {\n\tfrom { ${2} }\n\tto { ${3} }\n}\n\n.${4:element} {\n\tanimation: ${1:name} ${5:1s} ${6:ease} ${7:infinite};\n}', 'Animation'],
+    ['media', '@media (max-width: ${1:768px}) {\n\t${2}\n}', 'Media query'],
+    ['var', '--${1:name}: ${2:value};', 'CSS variable'],
+    ['shadow', 'box-shadow: ${1:0} ${2:2px} ${3:8px} rgba(0, 0, 0, ${4:0.1});', 'Box shadow'],
+    ['gradient', 'background: linear-gradient(${1:135deg}, ${2:#667eea} 0%, ${3:#764ba2} 100%);', 'Gradient'],
+    ['reset', '* { margin: 0; padding: 0; box-sizing: border-box; }', 'Reset'],
+    ['clamp', 'font-size: clamp(${1:1rem}, ${2:2.5vw}, ${3:2rem});', 'Clamp'],
+    ['scrollbar', '::-webkit-scrollbar { width: ${1:8px}; }\n::-webkit-scrollbar-track { background: ${2:#f1f1f1}; }\n::-webkit-scrollbar-thumb { background: ${3:#888}; border-radius: 4px; }\n::-webkit-scrollbar-thumb:hover { background: ${4:#555}; }', 'Custom scrollbar'],
+  ])
 }
 
-function monacoLang(lang: string): string {
-  const map: Record<string, string> = {
-    python: 'python', javascript: 'javascript', typescript: 'typescript',
-    jsx: 'javascript', tsx: 'typescript', html: 'html', css: 'css',
-    json: 'json', markdown: 'markdown', rust: 'rust', cpp: 'cpp', c: 'c',
-    java: 'java', sql: 'sql', xml: 'xml', php: 'php', go: 'go',
-    ruby: 'ruby', swift: 'swift', kotlin: 'kotlin', scala: 'scala',
-    r: 'r', shell: 'shell', yaml: 'yaml', dockerfile: 'dockerfile', graphql: 'graphql',
+/* ── Problem parsing ── */
+interface Problem { line: number; column: number; severity: 'error' | 'warning' | 'info'; message: string; source: string }
+function parseProblems(result: { stdout: string; stderr: string; error?: string } | null, filename: string): Problem[] {
+  if (!result) return []
+  const problems: Problem[] = []
+  const text = [result.error, result.stderr].filter(Boolean).join('\n')
+  const re = /(?:line |Line |Ln |:)(\d+)(?::(\d+))?/gi
+  let m
+  while ((m = re.exec(text)) !== null) {
+    problems.push({ line: Number.parseInt(m[1]), column: m[2] ? Number.parseInt(m[2]) : 1, severity: 'error', message: text.slice(Math.max(0, m.index - 40), m.index + m[0].length + 80).trim(), source: filename })
   }
-  return map[lang] || lang
+  if (problems.length === 0 && (result.error || result.stderr)) {
+    problems.push({ line: 1, column: 1, severity: 'error', message: (result.error || result.stderr) ?? '', source: filename })
+  }
+  return problems
 }
 
-// ── Main IDE Component ──────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════════
+   MAIN IDE COMPONENT
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
   const { register, unregister } = useCodeEditorRegister()
   const { items, addItem, removeItem, updateItem, activeItemId, setActiveItemId } = useCodeEditorItems()
   const { running, setRunning, runResult, setRunResult } = useCodeEditorRunning()
 
+  // Editor state
   const [editedCode, setEditedCode] = useState('')
   const [editedLang, setEditedLang] = useState('javascript')
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 })
+  const [selectionInfo, setSelectionInfo] = useState('')
+  const [modified, setModified] = useState(false)
+  const [wordCount, setWordCount] = useState({ words: 0, lines: 0, chars: 0 })
+  const [eol, setEol] = useState<'LF' | 'CRLF'>('LF')
+
+  // Panels
   const [showExplorer, setShowExplorer] = useState(true)
   const [showPreview, setShowPreview] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
+  const [showProblems, setShowProblems] = useState(false)
+  const [showOutline, setShowOutline] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
+  const [zenMode, setZenMode] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+
+  // Editor settings
   const [showMinimap, setShowMinimap] = useState(true)
   const [wordWrap, setWordWrap] = useState<'on' | 'off'>('off')
   const [fontSize, setFontSize] = useState(14)
+  const [tabSize, setTabSize] = useState(2)
+  const [theme, setTheme] = useState('jarvis-dark')
+  const [autoSave, setAutoSave] = useState(true)
+  const [renderWhitespace, setRenderWhitespace] = useState<'none' | 'selection' | 'all'>('selection')
+  const [lineHeight, setLineHeight] = useState(20)
+  const [cursorStyle, setCursorStyle] = useState<'line' | 'block' | 'underline'>('line')
+  const [fontFamily, setFontFamily] = useState(FONT_FAMILIES[0])
+  const [fontLigatures, setFontLigatures] = useState(true)
+  const [bracketPairColorization, setBracketPairColorization] = useState(true)
+  const [stickyScroll, setStickyScroll] = useState(true)
+  const [rulers, setRulers] = useState(true)
+  const [lineNumbers, setLineNumbers] = useState<'on' | 'off' | 'relative'>('on')
+
+  // Diff & split
+  const [diffMode, setDiffMode] = useState(false)
+  const [diffTargetId, setDiffTargetId] = useState<string | null>(null)
+  const [splitEditor, setSplitEditor] = useState(false)
+  const [splitFileId, setSplitFileId] = useState<string | null>(null)
+
+  // Terminal & problems
   const [terminalHistory, setTerminalHistory] = useState<Array<{ type: 'stdout' | 'stderr' | 'error' | 'info'; text: string; time: number }>>([])
+  const [problems, setProblems] = useState<Problem[]>([])
+  const [bottomTab, setBottomTab] = useState<'terminal' | 'problems' | 'output'>('terminal')
+
+  // Dialogs
   const [newFileDialog, setNewFileDialog] = useState(false)
   const [newFileName, setNewFileName] = useState('')
+  const [renameDialog, setRenameDialog] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandFilter, setCommandFilter] = useState('')
+  const [templateDialog, setTemplateDialog] = useState(false)
+  const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
 
+  // Search
+  const [searchQuery, setSearchQuery] = useState('')
+  const [replaceQuery, setReplaceQuery] = useState('')
+  const [showReplace, setShowReplace] = useState(false)
+  const [searchResults, setSearchResults] = useState<Array<{ fileId: string; filename: string; line: number; text: string }>>([])
+
+  // Outline
+  const [outlineSymbols, setOutlineSymbols] = useState<Array<{ name: string; kind: string; line: number }>>([])
+
+  // Pinned tabs
+  const [pinnedTabs, setPinnedTabs] = useState<Set<string>>(new Set())
+
+  // Refs
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
   const previewRef = useRef<HTMLIFrameElement>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savedCodeRef = useRef('')
 
   const activeItem = useMemo(() => items.find(i => i.id === activeItemId), [items, activeItemId])
+  const splitFile = useMemo(() => splitFileId ? items.find(i => i.id === splitFileId) : null, [items, splitFileId])
 
-  // Sync editor when active item changes
+  // Sync editor on active item change
   useEffect(() => {
     if (activeItem) {
       setEditedCode(activeItem.code)
       setEditedLang(activeItem.language)
+      savedCodeRef.current = activeItem.code
+      setModified(false)
       setRunResult(null)
     }
   }, [activeItem, setRunResult])
 
-  // Refs for automation callbacks
-  const itemsRef = useRef(items)
-  itemsRef.current = items
-  const activeItemIdRef = useRef(activeItemId)
-  activeItemIdRef.current = activeItemId
-  const editedCodeRef = useRef(editedCode)
-  editedCodeRef.current = editedCode
-  const editedLangRef = useRef(editedLang)
-  editedLangRef.current = editedLang
-  const runResultRef = useRef(runResult)
-  runResultRef.current = runResult
+  // Track modifications
+  useEffect(() => { setModified(editedCode !== savedCodeRef.current) }, [editedCode])
 
-  // Register full automation control for Jarvis
+  // Word count
+  useEffect(() => {
+    const lines = editedCode.split('\n')
+    setWordCount({ words: editedCode.trim() ? editedCode.trim().split(/\s+/).length : 0, lines: lines.length, chars: editedCode.length })
+    setEol(editedCode.includes('\r\n') ? 'CRLF' : 'LF')
+  }, [editedCode])
+
+  // Auto-save
+  useEffect(() => {
+    if (!autoSave || !activeItemId) return
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(() => {
+      updateItem(activeItemId, { code: editedCode })
+      savedCodeRef.current = editedCode
+      setModified(false)
+    }, 1000)
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
+  }, [editedCode, autoSave, activeItemId, updateItem])
+
+  // Automation refs
+  const itemsRef = useRef(items); itemsRef.current = items
+  const activeItemIdRef = useRef(activeItemId); activeItemIdRef.current = activeItemId
+  const editedCodeRef = useRef(editedCode); editedCodeRef.current = editedCode
+  const editedLangRef = useRef(editedLang); editedLangRef.current = editedLang
+  const runResultRef = useRef(runResult); runResultRef.current = runResult
+  const themeRef = useRef(theme); themeRef.current = theme
+  const fontSizeRef = useRef(fontSize); fontSizeRef.current = fontSize
+  const tabSizeRef = useRef(tabSize); tabSizeRef.current = tabSize
+  const wordWrapRef = useRef(wordWrap); wordWrapRef.current = wordWrap
+  const showMinimapRef = useRef(showMinimap); showMinimapRef.current = showMinimap
+  const autoSaveRef = useRef(autoSave); autoSaveRef.current = autoSave
+  const problemsRef = useRef(problems); problemsRef.current = problems
+  const terminalHistoryRef = useRef(terminalHistory); terminalHistoryRef.current = terminalHistory
+  const outlineSymbolsRef = useRef(outlineSymbols); outlineSymbolsRef.current = outlineSymbols
+
+  // ── Register Jarvis automation control ──
   useEffect(() => {
     const mkId = () => `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
     const control: CodeEditorControl = {
-      showCode(code, language, filename) {
-        addItem({ id: mkId(), code, language, filename, createdAt: Date.now() })
-        onOpenChange(true)
-      },
+      showCode(code, language, filename) { addItem({ id: mkId(), code, language, filename, createdAt: Date.now() }); onOpenChange(true) },
       isOpen: () => open,
       openEditor: () => onOpenChange(true),
-
-      createFile(filename, code, language) {
-        const id = mkId()
-        addItem({ id, code, language, filename, createdAt: Date.now() })
-        onOpenChange(true)
-        return id
-      },
-      editFile(fileId, newCode) {
-        const file = itemsRef.current.find(i => i.id === fileId)
-        if (!file) return false
-        updateItem(fileId, { code: newCode })
-        if (activeItemIdRef.current === fileId) setEditedCode(newCode)
-        return true
-      },
-      deleteFile(fileId) {
-        if (!itemsRef.current.find(i => i.id === fileId)) return false
-        removeItem(fileId)
-        return true
-      },
-      openFile(fileId) {
-        if (!itemsRef.current.find(i => i.id === fileId)) return false
-        setActiveItemId(fileId)
-        onOpenChange(true)
-        return true
-      },
-      renameFile(fileId, newName) {
-        if (!itemsRef.current.find(i => i.id === fileId)) return false
-        updateItem(fileId, { filename: newName, language: detectLang(newName) })
-        return true
-      },
-      getFiles() {
-        return itemsRef.current.map(i => ({
-          id: i.id, filename: i.filename || `untitled.${getFileExt(i.language)}`, language: i.language,
-        }))
-      },
-      getActiveFile() {
-        const id = activeItemIdRef.current
-        if (!id) return null
-        const item = itemsRef.current.find(i => i.id === id)
-        if (!item) return null
-        return { id: item.id, filename: item.filename || `untitled.${getFileExt(item.language)}`, language: item.language, code: editedCodeRef.current || item.code }
-      },
-      getFileContent(fileId) {
-        if (activeItemIdRef.current === fileId) return editedCodeRef.current
-        const item = itemsRef.current.find(i => i.id === fileId)
-        return item?.code ?? null
-      },
-      async runActiveFile() {
-        const code = editedCodeRef.current
-        const lang = editedLangRef.current
-        setRunning(true)
-        setRunResult(null)
-        setShowTerminal(true)
-        try {
-          const result = await runCode(code, lang)
-          setRunResult(result)
-          return result
-        } finally {
-          setRunning(false)
-        }
-      },
+      createFile(filename, code, language) { const id = mkId(); addItem({ id, code, language, filename, createdAt: Date.now() }); onOpenChange(true); return id },
+      editFile(fileId, newCode) { if (!itemsRef.current.some(i => i.id === fileId)) return false; updateItem(fileId, { code: newCode }); if (activeItemIdRef.current === fileId) setEditedCode(newCode); return true },
+      deleteFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) return false; removeItem(fileId); return true },
+      openFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) return false; setActiveItemId(fileId); onOpenChange(true); return true },
+      renameFile(fileId, newName) { if (!itemsRef.current.some(i => i.id === fileId)) return false; updateItem(fileId, { filename: newName, language: detectLang(newName) }); return true },
+      getFiles() { return itemsRef.current.map(i => ({ id: i.id, filename: i.filename || `untitled.${getExt(i.language)}`, language: i.language })) },
+      getActiveFile() { const id = activeItemIdRef.current; if (!id) return null; const item = itemsRef.current.find(i => i.id === id); if (!item) return null; return { id: item.id, filename: item.filename || `untitled.${getExt(item.language)}`, language: item.language, code: editedCodeRef.current || item.code } },
+      getFileContent(fileId) { if (activeItemIdRef.current === fileId) return editedCodeRef.current; return itemsRef.current.find(i => i.id === fileId)?.code ?? null },
+      insertText(text, position = 'end') { const ed = editorRef.current; if (!ed) return false; const model = ed.getModel(); if (!model) return false; let pos: monacoNs.IPosition; if (position === 'start') pos = { lineNumber: 1, column: 1 }; else if (position === 'cursor') pos = ed.getPosition() || { lineNumber: 1, column: 1 }; else { const l = model.getLineCount(); pos = { lineNumber: l, column: model.getLineMaxColumn(l) } }; ed.executeEdits('jarvis', [{ range: new (monacoRef.current!.Range)(pos.lineNumber, pos.column, pos.lineNumber, pos.column), text }]); setEditedCode(model.getValue()); return true },
+      replaceText(s, r, all = false) { const model = editorRef.current?.getModel(); if (!model) return 0; const c = model.getValue(); let count = 0; let nc: string; if (all) { nc = c.split(s).join(r); count = c !== nc ? c.split(s).length - 1 : 0 } else { const idx = c.indexOf(s); if (idx === -1) return 0; nc = c.slice(0, idx) + r + c.slice(idx + s.length); count = 1 }; model.setValue(nc); setEditedCode(nc); return count },
+      findInFile(query) { const code = editedCodeRef.current; const res: Array<{ line: number; column: number; text: string }> = []; const lines = code.split('\n'); const lq = query.toLowerCase(); for (let i = 0; i < lines.length; i++) { const ll = lines[i].toLowerCase(); let col = ll.indexOf(lq); while (col !== -1) { res.push({ line: i + 1, column: col + 1, text: lines[i].trim() }); col = ll.indexOf(lq, col + 1) } }; return res },
+      setLanguage(lang) { setEditedLang(lang); const id = activeItemIdRef.current; if (id) updateItem(id, { language: lang }) },
+      async runActiveFile() { const code = editedCodeRef.current; const lang = editedLangRef.current; setRunning(true); setRunResult(null); setShowTerminal(true); try { const result = await runCode(code, lang); setRunResult(result); return result } finally { setRunning(false) } },
       getLastRunResult() { return runResultRef.current },
-      setLanguage(lang) {
-        setEditedLang(lang)
-        const id = activeItemIdRef.current
-        if (id) updateItem(id, { language: lang })
-      },
       togglePreview() { setShowPreview(p => !p) },
       toggleTerminal() { setShowTerminal(p => !p) },
-      insertText(text, position = 'end') {
-        const editor = editorRef.current
-        if (!editor) return false
-        const model = editor.getModel()
-        if (!model) return false
-        let pos: monacoNs.IPosition
-        if (position === 'start') pos = { lineNumber: 1, column: 1 }
-        else if (position === 'cursor') pos = editor.getPosition() || { lineNumber: 1, column: 1 }
-        else { const lastLine = model.getLineCount(); pos = { lineNumber: lastLine, column: model.getLineMaxColumn(lastLine) } }
-        editor.executeEdits('jarvis', [{ range: new (monacoRef.current!.Range)(pos.lineNumber, pos.column, pos.lineNumber, pos.column), text }])
-        setEditedCode(model.getValue())
-        return true
-      },
-      replaceText(searchStr, replaceStr, all = false) {
-        const editor = editorRef.current
-        const model = editor?.getModel()
-        if (!model) return 0
-        const content = model.getValue()
-        let count = 0; let newContent: string
-        if (all) {
-          newContent = content.split(searchStr).join(replaceStr)
-          count = content !== newContent ? content.split(searchStr).length - 1 : 0
-        } else {
-          const idx = content.indexOf(searchStr)
-          if (idx === -1) return 0
-          newContent = content.slice(0, idx) + replaceStr + content.slice(idx + searchStr.length)
-          count = 1
-        }
-        model.setValue(newContent)
-        setEditedCode(newContent)
-        return count
-      },
-      findInFile(query) {
-        const code = editedCodeRef.current
-        const results: Array<{ line: number; column: number; text: string }> = []
-        const lines = code.split('\n')
-        const lowerQuery = query.toLowerCase()
-        for (let i = 0; i < lines.length; i++) {
-          const lowerLine = lines[i].toLowerCase()
-          let col = lowerLine.indexOf(lowerQuery)
-          while (col !== -1) {
-            results.push({ line: i + 1, column: col + 1, text: lines[i].trim() })
-            col = lowerLine.indexOf(lowerQuery, col + 1)
-          }
-        }
-        return results
-      },
+      toggleZenMode() { setZenMode(p => !p) },
+      toggleSplitEditor(fileId) { setSplitEditor(p => !p); if (fileId) setSplitFileId(fileId); else if (!splitFileId && activeItemIdRef.current) setSplitFileId(activeItemIdRef.current) },
+      toggleDiffEditor(targetFileId) { setDiffMode(p => !p); if (targetFileId) setDiffTargetId(targetFileId); else if (!diffTargetId) { const o = itemsRef.current.find(i => i.id !== activeItemIdRef.current); if (o) setDiffTargetId(o.id) } },
+      toggleExplorer() { setShowExplorer(p => !p) },
+      toggleProblemsPanel() { setShowProblems(p => !p); setShowTerminal(true); setBottomTab('problems') },
+      toggleSearchPanel() { setShowSearch(p => !p); setShowExplorer(true) },
+      toggleOutlinePanel() { setShowOutline(p => !p); setShowExplorer(true) },
+      toggleSettingsPanel() { setShowSettings(p => !p); setShowExplorer(true) },
+      setTheme(t) { setTheme(t) },
+      getTheme() { return themeRef.current },
+      getAvailableThemes() { return THEMES.map(t => ({ id: t.id, label: t.label })) },
+      setFontSize(s) { setFontSize(Math.max(10, Math.min(32, s))) },
+      getFontSize() { return fontSizeRef.current },
+      setTabSize(s) { setTabSize(s) },
+      setWordWrap(on) { setWordWrap(on ? 'on' : 'off') },
+      setMinimap(on) { setShowMinimap(on) },
+      setAutoSave(on) { setAutoSave(on) },
+      getSettings() { return { theme: themeRef.current, fontSize: fontSizeRef.current, tabSize: tabSizeRef.current, wordWrap: wordWrapRef.current, minimap: showMinimapRef.current, autoSave: autoSaveRef.current } },
+      searchAllFiles(query) { const q = query.toLowerCase(); const res: Array<{ fileId: string; filename: string; line: number; text: string }> = []; for (const item of itemsRef.current) { const code = item.id === activeItemIdRef.current ? editedCodeRef.current : item.code; const lines = code.split('\n'); for (let i = 0; i < lines.length; i++) { if (lines[i].toLowerCase().includes(q)) res.push({ fileId: item.id, filename: item.filename || `${item.language} snippet`, line: i + 1, text: lines[i].trim() }) } }; return res.slice(0, 100) },
+      getOutlineSymbols() { return outlineSymbolsRef.current },
+      getProblems() { return problemsRef.current },
+      getTerminalOutput() { return terminalHistoryRef.current.map(e => e.text).join('\n') },
+      createFromTemplate(n) { const t = FILE_TEMPLATES.find(t => t.name.toLowerCase() === n.toLowerCase()); if (!t) return null; const id = mkId(); addItem({ id, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); onOpenChange(true); return id },
+      getAvailableTemplates() { return FILE_TEMPLATES.map(t => t.name) },
+      goToLine(line) { editorRef.current?.setPosition({ lineNumber: line, column: 1 }); editorRef.current?.revealLineInCenter(line) },
+      revealLine(line) { editorRef.current?.revealLineInCenter(line) },
+      formatDocument() { editorRef.current?.getAction('editor.action.formatDocument')?.run() },
     }
     register(control)
     return () => unregister()
-  }, [open, register, unregister, addItem, removeItem, updateItem, onOpenChange, setActiveItemId, setRunning, setRunResult])
+  }, [open, register, unregister, addItem, removeItem, updateItem, onOpenChange, setActiveItemId, setRunning, setRunResult, splitFileId, diffTargetId])
+
+  // Live preview
+  const writePreview = useCallback((code: string, lang: string) => {
+    const iframe = previewRef.current
+    if (!iframe) return
+    const doc = iframe.contentDocument
+    if (!doc) return
+    doc.open() // NOSONAR
+    if (lang === 'html' || lang === 'htm') {
+      doc.write(code)
+    } else if (lang === 'markdown' || lang === 'md') {
+      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui,-apple-system,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.7;color:#333}h1{border-bottom:2px solid #eee;padding-bottom:0.3em}h2{border-bottom:1px solid #eee;padding-bottom:0.2em}h1,h2,h3,h4{margin:1.5rem 0 0.5rem;font-weight:600}code{background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:0.9em;font-family:'Cascadia Code',Consolas,monospace}pre{background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:8px;overflow-x:auto;margin:1rem 0}pre code{background:none;padding:0;color:inherit}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5;font-weight:600}tr:nth-child(even){background:#fafafa}blockquote{border-left:4px solid #007acc;margin:1rem 0;padding:0.5rem 1rem;color:#555;background:#f8f9fa}img{max-width:100%;border-radius:4px}a{color:#007acc;text-decoration:none}a:hover{text-decoration:underline}ul,ol{padding-left:1.5rem;margin:0.5rem 0}li{margin:0.25rem 0}hr{border:none;border-top:2px solid #eee;margin:2rem 0}</style></head><body>${simpleMarkdown(code)}</body></html>`)
+    } else if (lang === 'css' || lang === 'scss' || lang === 'less') {
+      doc.write(`<!DOCTYPE html><html><head><style>${code}</style></head><body>
+<div class="preview"><h1>CSS Preview</h1><p>Your styles are applied to this sample content.</p>
+<div class="card"><h2>Card Title</h2><p>This is a card with some content inside it.</p></div>
+<div class="container"><div class="flex"><button class="btn">Primary Button</button><button class="btn secondary">Secondary</button></div></div>
+<div class="grid"><div class="item">Grid Item 1</div><div class="item">Grid Item 2</div><div class="item">Grid Item 3</div></div>
+<a href="#">Sample Link</a> <span>|</span> <input type="text" placeholder="Input field" /> <span>|</span> <input type="checkbox" checked /> <label>Checkbox</label>
+<ul><li>List item 1</li><li>List item 2</li><li>List item 3</li></ul>
+<table><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>Row 1</td><td>Data</td></tr><tr><td>Row 2</td><td>Data</td></tr></tbody></table>
+</div></body></html>`)
+    } else if (lang === 'javascript' || lang === 'typescript') {
+      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;line-height:1.6;margin:0}#output{white-space:pre-wrap;word-break:break-word}.log{color:#d4d4d4}.warn{color:#e8ab6a}.error{color:#f44747}.info{color:#569cd6}.group{border-left:2px solid #444;padding-left:12px;margin:4px 0}.time{color:#888;font-size:11px}</style></head><body><div id="output"></div><` + `script>
+const _out=document.getElementById('output');
+const _ts=()=>new Date().toLocaleTimeString();
+function _log(cls,...args){const d=document.createElement('div');d.className=cls;d.textContent=args.map(a=>typeof a==='object'?JSON.stringify(a,null,2):String(a)).join(' ');const t=document.createElement('span');t.className='time';t.textContent=_ts()+' ';d.prepend(t);_out.appendChild(d);_out.scrollTop=_out.scrollHeight;}
+console.log=function(...a){_log('log',...a)};
+console.warn=function(...a){_log('warn','⚠ ',...a)};
+console.error=function(...a){_log('error','✕ ',...a)};
+console.info=function(...a){_log('info','ℹ ',...a)};
+console.table=function(a){if(Array.isArray(a)){a.forEach((r,i)=>_log('log','['+i+']',r))}else{_log('log',a)}};
+try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.message)}
+<` + `/script></body></html>`)
+    } else if (lang === 'json') {
+      try {
+        const formatted = JSON.stringify(JSON.parse(code), null, 2)
+        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;margin:0}pre{white-space:pre-wrap;word-break:break-word;margin:0}.string{color:#ce9178}.number{color:#b5cea8}.boolean{color:#569cd6}.null{color:#569cd6}.key{color:#9cdcfe}</style></head><body><pre>${syntaxHighlightJson(formatted)}</pre></body></html>`)
+      } catch {
+        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:Consolas,monospace;padding:20px;background:#1e1e1e;color:#f44747}</style></head><body><pre>Invalid JSON:\n${escapeHtml(code)}</pre></body></html>`)
+      }
+    } else {
+      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui;padding:2rem;background:#1e1e1e;color:#888;display:flex;align-items:center;justify-content:center;height:80vh;margin:0;text-align:center}p{font-size:14px}</style></head><body><div><p>Preview not available for <strong style="color:#ccc">${lang}</strong> files.</p><p style="font-size:12px;color:#555">Supported: HTML, CSS, JavaScript, TypeScript, Markdown, JSON</p></div></body></html>`)
+    }
+    doc.close() // NOSONAR
+  }, [])
+
+  useEffect(() => {
+    if (!showPreview) return
+    const timer = setTimeout(() => writePreview(editedCode, editedLang), 150)
+    return () => clearTimeout(timer)
+  }, [editedCode, editedLang, showPreview, writePreview])
+
+  // Search across files
+  useEffect(() => {
+    if (!searchQuery.trim()) { setSearchResults([]); return }
+    const q = searchQuery.toLowerCase()
+    const res: typeof searchResults = []
+    for (const item of items) {
+      const code = item.id === activeItemId ? editedCode : item.code
+      const lines = code.split('\n')
+      for (let i = 0; i < lines.length; i++) { if (lines[i].toLowerCase().includes(q)) res.push({ fileId: item.id, filename: item.filename || `${item.language} snippet`, line: i + 1, text: lines[i].trim() }) }
+    }
+    setSearchResults(res.slice(0, 100))
+  }, [searchQuery, items, activeItemId, editedCode])
+
+  // Outline symbols
+  useEffect(() => {
+    const lines = editedCode.split('\n')
+    const syms: typeof outlineSymbols = []
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]
+      if (/^\s*(export\s+)?(function|const|let|var|class|interface|type|enum|import|def |async\s+def |async\s+function)\s/i.test(l)) {
+        const name = l.trim().slice(0, 60)
+        const kind = /class /i.test(l) ? 'class' : /function |def /i.test(l) ? 'function' : /interface |type |enum /i.test(l) ? 'type' : /import /i.test(l) ? 'import' : 'variable'
+        syms.push({ name, kind, line: i + 1 })
+      }
+    }
+    setOutlineSymbols(syms)
+  }, [editedCode])
+
+  useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory])
+  useEffect(() => { if (!tabContextMenu) return; const h = () => setTabContextMenu(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [tabContextMenu])
+  useEffect(() => { if (!openMenuId) return; const h = () => setOpenMenuId(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [openMenuId])
 
   // Keyboard shortcuts
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !commandPaletteOpen) { onOpenChange(false); return }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') { e.preventDefault(); setShowExplorer(p => !p) }
-      if ((e.ctrlKey || e.metaKey) && e.key === '`') { e.preventDefault(); setShowTerminal(p => !p) }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n' && !e.shiftKey) { e.preventDefault(); setNewFileDialog(true) }
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSaveActiveFile(); toast.success('Saved') }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'P' || e.key === 'p')) { e.preventDefault(); setCommandPaletteOpen(true); setCommandFilter('') }
-      if ((e.ctrlKey || e.metaKey) && e.key === '+') { e.preventDefault(); setFontSize(s => Math.min(s + 1, 30)) }
-      if ((e.ctrlKey || e.metaKey) && e.key === '-') { e.preventDefault(); setFontSize(s => Math.max(s - 1, 10)) }
+      if (e.key === 'Escape') {
+        if (commandPaletteOpen) { setCommandPaletteOpen(false); return }
+        if (showShortcuts) { setShowShortcuts(false); return }
+        if (zenMode) { setZenMode(false); return }
+        if (tabContextMenu) { setTabContextMenu(null); return }
+        if (openMenuId) { setOpenMenuId(null); return }
+        onOpenChange(false); return
+      }
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key === 'b') { e.preventDefault(); setShowExplorer(p => !p) }
+      if (mod && e.key === '`') { e.preventDefault(); setShowTerminal(p => !p) }
+      if (mod && e.key === 'n' && !e.shiftKey) { e.preventDefault(); setNewFileDialog(true) }
+      if (mod && e.key === 's') { e.preventDefault(); handleSave(); toast.success('Saved') }
+      if (mod && e.shiftKey && (e.key === 'P' || e.key === 'p')) { e.preventDefault(); setCommandPaletteOpen(true); setCommandFilter('') }
+      if (mod && e.key === '=') { e.preventDefault(); setFontSize(s => Math.min(s + 1, 32)) }
+      if (mod && e.key === '-') { e.preventDefault(); setFontSize(s => Math.max(s - 1, 10)) }
+      if (mod && e.key === '0') { e.preventDefault(); setFontSize(14) }
+      if (mod && e.shiftKey && (e.key === 'F' || e.key === 'f')) { e.preventDefault(); setShowSearch(true); setShowExplorer(true) }
+      if (e.key === 'F11') { e.preventDefault(); setZenMode(p => !p) }
+      if (mod && e.key === 'j') { e.preventDefault(); setShowTerminal(p => !p) }
+      if (mod && e.key === '\\') { e.preventDefault(); setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) }
+      if (mod && e.key === 'z' && !e.shiftKey) { editorRef.current?.trigger('keyboard', 'undo', null) }
+      if (mod && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { editorRef.current?.trigger('keyboard', 'redo', null) }
+      if (mod && e.key === 'w') { e.preventDefault(); if (activeItemId) handleCloseTab(activeItemId) }
+      if (mod && e.key === 'd') { e.preventDefault(); if (activeItemId) handleDuplicate(activeItemId) }
     }
     globalThis.addEventListener('keydown', handler)
     return () => globalThis.removeEventListener('keydown', handler)
-  }, [open, onOpenChange, commandPaletteOpen])
-
-  // Auto-scroll terminal
-  useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory])
-
-  // Live preview
-  useEffect(() => {
-    if (!showPreview || !previewRef.current) return
-    if (!PREVIEWABLE.has(editedLang)) return
-    const doc = previewRef.current.contentDocument
-    if (!doc) return
-    doc.open() // NOSONAR — required for iframe preview
-    doc.write(editedCode) // NOSONAR — sandboxed iframe
-    doc.close()
-  }, [editedCode, editedLang, showPreview])
+  }, [open, onOpenChange, commandPaletteOpen, showShortcuts, zenMode, tabContextMenu, openMenuId, activeItemId, editedCode, splitFileId])
 
   const logToTerminal = useCallback((type: 'stdout' | 'stderr' | 'error' | 'info', text: string) => {
     setTerminalHistory(prev => [...prev, { type, text, time: Date.now() }])
   }, [])
 
-  const handleSaveActiveFile = useCallback(() => {
-    if (activeItemId) updateItem(activeItemId, { code: editedCode })
+  const handleSave = useCallback(() => {
+    if (activeItemId) { updateItem(activeItemId, { code: editedCode }); savedCodeRef.current = editedCode; setModified(false) }
   }, [activeItemId, editedCode, updateItem])
 
   const handleRun = useCallback(async () => {
-    setShowTerminal(true)
-    setRunning(true)
-    setRunResult(null)
+    setShowTerminal(true); setBottomTab('terminal'); setRunning(true); setRunResult(null)
     logToTerminal('info', `▶ Running ${editedLang}...`)
     try {
       const result = await runCode(editedCode, editedLang)
@@ -301,352 +549,530 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
       if (result.error) logToTerminal('error', result.error)
       if (!result.stdout && !result.stderr && !result.error) logToTerminal('info', '(no output)')
       logToTerminal('info', `✓ Finished in ${result.elapsed}ms`)
+      const p = parseProblems(result, activeItem?.filename || 'untitled')
+      setProblems(p)
+      if (p.length > 0) setShowProblems(true)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logToTerminal('error', msg)
       setRunResult({ stdout: '', stderr: '', error: msg, elapsed: 0 })
-    } finally {
-      setRunning(false)
-    }
-  }, [editedCode, editedLang, setRunning, setRunResult, logToTerminal])
+    } finally { setRunning(false) }
+  }, [editedCode, editedLang, setRunning, setRunResult, logToTerminal, activeItem])
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(editedCode).then(
-      () => toast.success('Copied to clipboard'),
-      () => toast.error('Failed to copy'),
-    )
-  }, [editedCode])
-
+  const handleCopy = useCallback(() => { navigator.clipboard.writeText(editedCode).then(() => toast.success('Copied to clipboard')) }, [editedCode])
   const handleDownload = useCallback(() => {
-    const ext = getFileExt(editedLang)
-    const filename = activeItem?.filename || `code.${ext}`
-    const blob = new Blob([editedCode], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success(`Downloaded ${filename}`)
+    const fn = activeItem?.filename || `code.${getExt(editedLang)}`
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([editedCode], { type: 'text/plain' })); a.download = fn; a.click(); toast.success(`Downloaded ${fn}`)
   }, [editedCode, editedLang, activeItem])
+  const handleNewFile = useCallback(() => { if (!newFileName.trim()) return; addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: '', language: detectLang(newFileName), filename: newFileName.trim(), createdAt: Date.now() }); setNewFileName(''); setNewFileDialog(false) }, [newFileName, addItem])
+  const handleRename = useCallback(() => { if (!renameDialog || !renameValue.trim()) return; updateItem(renameDialog, { filename: renameValue.trim(), language: detectLang(renameValue) }); setRenameDialog(null); setRenameValue('') }, [renameDialog, renameValue, updateItem])
 
-  const handleNewFile = useCallback(() => {
-    if (!newFileName.trim()) return
-    const lang = detectLang(newFileName)
-    addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: '', language: lang, filename: newFileName.trim(), createdAt: Date.now() })
-    setNewFileName('')
-    setNewFileDialog(false)
-  }, [newFileName, addItem])
-
-  const handleCloseTab = useCallback((id: string, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    if (pinnedTabs.has(id)) return
     const idx = items.findIndex(i => i.id === id)
-    if (id === activeItemId) {
-      const next = items[idx + 1] || items[idx - 1]
-      setActiveItemId(next?.id || null)
-    }
+    if (id === activeItemId) { const next = items[idx + 1] || items[idx - 1]; setActiveItemId(next?.id || null) }
     removeItem(id)
-  }, [items, activeItemId, setActiveItemId, removeItem])
+  }, [items, activeItemId, setActiveItemId, removeItem, pinnedTabs])
 
-  const handleFormat = useCallback(() => {
-    const editor = editorRef.current
-    if (editor) {
-      editor.getAction('editor.action.formatDocument')?.run()
-      toast.success('Formatted')
+  const handleDuplicate = useCallback((id: string) => {
+    const item = items.find(i => i.id === id)
+    if (!item) return
+    const newId = `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const newName = item.filename ? item.filename.replace(/(\.[^.]+)$/, ' (copy)$1') : `${item.language} copy`
+    addItem({ id: newId, code: item.code, language: item.language, filename: newName, createdAt: Date.now() })
+  }, [items, addItem])
+
+  const handleFormat = useCallback(() => { editorRef.current?.getAction('editor.action.formatDocument')?.run(); toast.success('Formatted') }, [])
+
+  const handleReplaceAll = useCallback(() => {
+    if (!searchQuery) return
+    let count = 0
+    for (const item of items) {
+      const code = item.id === activeItemId ? editedCode : item.code
+      if (code.includes(searchQuery)) {
+        const newCode = code.split(searchQuery).join(replaceQuery)
+        count += code.split(searchQuery).length - 1
+        if (item.id === activeItemId) {
+          setEditedCode(newCode)
+          editorRef.current?.getModel()?.setValue(newCode)
+        } else {
+          updateItem(item.id, { code: newCode })
+        }
+      }
     }
-  }, [])
+    toast.success(`Replaced ${count} occurrence(s)`)
+  }, [searchQuery, replaceQuery, items, activeItemId, editedCode, updateItem])
 
   const handleEditorMount = useCallback((editor: monacoNs.editor.IStandaloneCodeEditor, monaco: Monaco) => {
-    editorRef.current = editor
-    monacoRef.current = monaco
-
-    // Track cursor position
-    editor.onDidChangeCursorPosition((e) => {
-      setCursorPos({ line: e.position.lineNumber, col: e.position.column })
+    editorRef.current = editor; monacoRef.current = monaco
+    editor.onDidChangeCursorPosition(e => setCursorPos({ line: e.position.lineNumber, col: e.position.column }))
+    editor.onDidChangeCursorSelection(e => {
+      const sel = e.selection
+      if (sel.startLineNumber === sel.endLineNumber && sel.startColumn === sel.endColumn) { setSelectionInfo(''); return }
+      const text = editor.getModel()?.getValueInRange(sel) || ''
+      setSelectionInfo(`(${text.split('\n').length} lines, ${text.length} chars)`)
     })
+    editor.addAction({ id: 'run-code', label: 'Run Code', keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter], run: () => { handleRun() } })
+    for (const t of THEMES) monaco.editor.defineTheme(t.id, { base: t.base, inherit: true, rules: [], colors: t.colors })
+    monaco.editor.setTheme(theme)
+    registerSnippets(monaco)
+  }, [handleRun, theme])
 
-    // Add keyboard shortcuts within Monaco
-    editor.addAction({
-      id: 'run-code', label: 'Run Code', keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-      run: () => { handleRun() },
-    })
-
-    // VS Code dark theme with slight customization
-    monaco.editor.defineTheme('jarvis-dark', {
-      base: 'vs-dark',
-      inherit: true,
-      rules: [],
-      colors: {
-        'editor.background': '#1e1e1e',
-        'editorGutter.background': '#1e1e1e',
-        'editor.lineHighlightBackground': '#2a2d2e',
-        'editorLineNumber.foreground': '#858585',
-        'editorLineNumber.activeForeground': '#c6c6c6',
-      },
-    })
-    monaco.editor.setTheme('jarvis-dark')
-  }, [handleRun])
-
-  const handlePreviewToggle = useCallback(() => {
-    if (!showPreview && !PREVIEWABLE.has(editedLang) && editedLang !== 'javascript' && editedLang !== 'css') {
-      toast.info('Preview is available for HTML, CSS, and JavaScript files.')
-      return
-    }
-    setShowPreview(p => !p)
-  }, [showPreview, editedLang])
+  useEffect(() => { monacoRef.current?.editor.setTheme(theme) }, [theme])
 
   const canRun = RUNNABLE.has(editedLang.toLowerCase())
-  const canPreview = PREVIEWABLE.has(editedLang) || editedLang === 'javascript' || editedLang === 'css'
+  const canPreview = PREVIEWABLE.has(editedLang) || editedLang === 'javascript' || editedLang === 'css' || editedLang === 'markdown'
+  const bgColor = THEMES.find(t => t.id === theme)?.colors['editor.background'] || '#1e1e1e'
+  const isLight = theme === 'vs-light'
+  const tc = isLight ? '#333' : '#ccc'
+  const bc = isLight ? '#e0e0e0' : '#252526'
+  const sb = isLight ? '#f3f3f3' : '#252526'
+  const ab = isLight ? '#e8e8e8' : '#333333'
+  const tb = isLight ? '#f3f3f3' : '#252526'
+  const tl = isLight ? '#dddddd' : '#323233'
 
-  // Command palette commands
+  // ── Dropdown menus ──
+  const fileMenu = [
+    { label: 'New File', shortcut: 'Ctrl+N', action: () => setNewFileDialog(true) },
+    { label: 'New from Template...', action: () => setTemplateDialog(true) },
+    { label: '─' },
+    { label: 'Save', shortcut: 'Ctrl+S', action: handleSave },
+    { label: 'Save As...', action: handleDownload },
+    { label: '─' },
+    { label: 'Close File', shortcut: 'Ctrl+W', action: () => { if (activeItemId) handleCloseTab(activeItemId) } },
+    { label: 'Close All', action: () => { items.forEach(i => removeItem(i.id)); setActiveItemId(null) } },
+  ]
+  const editMenu = [
+    { label: 'Undo', shortcut: 'Ctrl+Z', action: () => editorRef.current?.trigger('keyboard', 'undo', null) },
+    { label: 'Redo', shortcut: 'Ctrl+Y', action: () => editorRef.current?.trigger('keyboard', 'redo', null) },
+    { label: '─' },
+    { label: 'Cut', shortcut: 'Ctrl+X', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardCutAction', null) },
+    { label: 'Copy', shortcut: 'Ctrl+C', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardCopyAction', null) },
+    { label: 'Paste', shortcut: 'Ctrl+V', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardPasteAction', null) },
+    { label: 'Copy All', action: handleCopy },
+    { label: '─' },
+    { label: 'Find', shortcut: 'Ctrl+F', action: () => editorRef.current?.getAction('actions.find')?.run() },
+    { label: 'Find and Replace', shortcut: 'Ctrl+H', action: () => editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run() },
+    { label: 'Search in Files', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(true); setShowExplorer(true) } },
+    { label: '─' },
+    { label: 'Select All', shortcut: 'Ctrl+A', action: () => editorRef.current?.trigger('keyboard', 'editor.action.selectAll', null) },
+    { label: 'Format Document', shortcut: 'Shift+Alt+F', action: handleFormat },
+  ]
+  const viewMenu = [
+    { label: showExplorer ? '✓ Explorer' : '  Explorer', shortcut: 'Ctrl+B', action: () => setShowExplorer(p => !p) },
+    { label: showSearch ? '✓ Search' : '  Search', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(p => !p); setShowExplorer(true) } },
+    { label: showOutline ? '✓ Outline' : '  Outline', action: () => { setShowOutline(p => !p); setShowExplorer(true) } },
+    { label: showTerminal ? '✓ Terminal' : '  Terminal', shortcut: 'Ctrl+`', action: () => setShowTerminal(p => !p) },
+    { label: showPreview ? '✓ Preview' : '  Preview', action: () => setShowPreview(p => !p) },
+    { label: '─' },
+    { label: showMinimap ? '✓ Minimap' : '  Minimap', action: () => setShowMinimap(p => !p) },
+    { label: wordWrap === 'on' ? '✓ Word Wrap' : '  Word Wrap', shortcut: 'Alt+Z', action: () => setWordWrap(w => w === 'on' ? 'off' : 'on') },
+    { label: stickyScroll ? '✓ Sticky Scroll' : '  Sticky Scroll', action: () => setStickyScroll(p => !p) },
+    { label: '─' },
+    { label: splitEditor ? '✓ Split Editor' : '  Split Editor', shortcut: 'Ctrl+\\', action: () => { setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) } },
+    { label: diffMode ? '✓ Diff Editor' : '  Diff Editor', action: () => { setDiffMode(p => !p); if (!diffTargetId) { const o = items.find(i => i.id !== activeItemId); if (o) setDiffTargetId(o.id) } } },
+    { label: zenMode ? '✓ Zen Mode' : '  Zen Mode', shortcut: 'F11', action: () => setZenMode(p => !p) },
+    { label: '─' },
+    { label: 'Settings', action: () => { setShowSettings(true); setShowExplorer(true) } },
+    { label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
+    { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { setCommandPaletteOpen(true); setCommandFilter('') } },
+  ]
+  const runMenu = [
+    { label: 'Run File', shortcut: 'Ctrl+Enter', action: handleRun, disabled: !canRun },
+    { label: '─' },
+    { label: showProblems ? '✓ Problems Panel' : '  Problems Panel', action: () => { setShowTerminal(true); setBottomTab('problems') } },
+    { label: 'Clear Terminal', action: () => setTerminalHistory([]) },
+    { label: 'Clear Problems', action: () => setProblems([]) },
+  ]
+  const helpMenu = [
+    { label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
+    { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { setCommandPaletteOpen(true); setCommandFilter('') } },
+    { label: 'Monaco Command Palette', shortcut: 'F1', action: () => editorRef.current?.getAction('editor.action.quickCommand')?.run() },
+    { label: '─' },
+    { label: 'About Jarvis IDE', action: () => toast.info('Jarvis IDE — Full-featured code editor powered by Monaco') },
+  ]
+  const allMenus: Record<string, Array<{ label: string; shortcut?: string; action?: () => void; disabled?: boolean }>> = { File: fileMenu, Edit: editMenu, View: viewMenu, Run: runMenu, Help: helpMenu }
+
+  // ── Command palette commands ──
   const commands = useMemo(() => {
     const cmds = [
       { id: 'new-file', label: 'New File', shortcut: 'Ctrl+N', action: () => setNewFileDialog(true) },
+      { id: 'template', label: 'New File from Template...', action: () => setTemplateDialog(true) },
+      { id: 'save', label: 'Save', shortcut: 'Ctrl+S', action: handleSave },
       { id: 'run', label: 'Run Code', shortcut: 'Ctrl+Enter', action: handleRun, disabled: !canRun },
       { id: 'format', label: 'Format Document', shortcut: 'Shift+Alt+F', action: handleFormat },
-      { id: 'copy', label: 'Copy All', shortcut: '', action: handleCopy },
-      { id: 'download', label: 'Download File', shortcut: '', action: handleDownload },
-      { id: 'toggle-explorer', label: 'Toggle Explorer', shortcut: 'Ctrl+B', action: () => setShowExplorer(p => !p) },
-      { id: 'toggle-terminal', label: 'Toggle Terminal', shortcut: 'Ctrl+`', action: () => setShowTerminal(p => !p) },
-      { id: 'toggle-preview', label: 'Toggle Preview', shortcut: '', action: handlePreviewToggle },
-      { id: 'toggle-minimap', label: 'Toggle Minimap', shortcut: '', action: () => setShowMinimap(p => !p) },
-      { id: 'toggle-wordwrap', label: 'Toggle Word Wrap', shortcut: 'Alt+Z', action: () => setWordWrap(w => w === 'on' ? 'off' : 'on') },
-      { id: 'increase-font', label: 'Increase Font Size', shortcut: 'Ctrl++', action: () => setFontSize(s => Math.min(s + 1, 30)) },
-      { id: 'decrease-font', label: 'Decrease Font Size', shortcut: 'Ctrl+-', action: () => setFontSize(s => Math.max(s - 1, 10)) },
+      { id: 'copy', label: 'Copy All', action: handleCopy },
+      { id: 'download', label: 'Download File', action: handleDownload },
+      { id: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', action: () => editorRef.current?.trigger('keyboard', 'undo', null) },
+      { id: 'redo', label: 'Redo', shortcut: 'Ctrl+Y', action: () => editorRef.current?.trigger('keyboard', 'redo', null) },
       { id: 'find', label: 'Find', shortcut: 'Ctrl+F', action: () => editorRef.current?.getAction('actions.find')?.run() },
       { id: 'replace', label: 'Find and Replace', shortcut: 'Ctrl+H', action: () => editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run() },
       { id: 'go-to-line', label: 'Go to Line', shortcut: 'Ctrl+G', action: () => editorRef.current?.getAction('editor.action.gotoLine')?.run() },
-      { id: 'command-palette', label: 'Command Palette', shortcut: 'F1', action: () => editorRef.current?.getAction('editor.action.quickCommand')?.run() },
-      ...items.map(item => ({
-        id: `open-${item.id}`, label: `Open: ${item.filename || item.language}`, shortcut: '',
-        action: () => setActiveItemId(item.id),
-      })),
+      { id: 'fold-all', label: 'Fold All', action: () => editorRef.current?.getAction('editor.foldAll')?.run() },
+      { id: 'unfold-all', label: 'Unfold All', action: () => editorRef.current?.getAction('editor.unfoldAll')?.run() },
+      { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+A', action: () => editorRef.current?.trigger('keyboard', 'editor.action.selectAll', null) },
+      { id: 'split', label: splitEditor ? 'Close Split Editor' : 'Split Editor Right', shortcut: 'Ctrl+\\', action: () => { setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) } },
+      { id: 'diff', label: diffMode ? 'Close Diff Editor' : 'Compare Files (Diff)', action: () => { if (items.length < 2) { toast.info('Need 2+ files'); return }; setDiffMode(p => !p); if (!diffTargetId) { const o = items.find(i => i.id !== activeItemId); if (o) setDiffTargetId(o.id) } } },
+      { id: 'zen', label: zenMode ? 'Exit Zen Mode' : 'Zen Mode', shortcut: 'F11', action: () => setZenMode(p => !p) },
+      { id: 'toggle-explorer', label: 'Toggle Explorer', shortcut: 'Ctrl+B', action: () => setShowExplorer(p => !p) },
+      { id: 'toggle-terminal', label: 'Toggle Terminal', shortcut: 'Ctrl+`', action: () => setShowTerminal(p => !p) },
+      { id: 'toggle-preview', label: 'Toggle Preview', action: () => setShowPreview(p => !p) },
+      { id: 'toggle-outline', label: 'Toggle Outline', action: () => { setShowOutline(p => !p); setShowExplorer(true) } },
+      { id: 'toggle-problems', label: 'Toggle Problems', action: () => { setShowTerminal(true); setBottomTab('problems') } },
+      { id: 'toggle-minimap', label: `Minimap: ${showMinimap ? 'Off' : 'On'}`, action: () => setShowMinimap(p => !p) },
+      { id: 'toggle-wordwrap', label: `Word Wrap: ${wordWrap === 'on' ? 'Off' : 'On'}`, shortcut: 'Alt+Z', action: () => setWordWrap(w => w === 'on' ? 'off' : 'on') },
+      { id: 'toggle-autosave', label: `Auto Save: ${autoSave ? 'Off' : 'On'}`, action: () => setAutoSave(p => !p) },
+      { id: 'toggle-ligatures', label: `Ligatures: ${fontLigatures ? 'Off' : 'On'}`, action: () => setFontLigatures(p => !p) },
+      { id: 'toggle-brackets', label: `Bracket Colors: ${bracketPairColorization ? 'Off' : 'On'}`, action: () => setBracketPairColorization(p => !p) },
+      { id: 'toggle-sticky', label: `Sticky Scroll: ${stickyScroll ? 'Off' : 'On'}`, action: () => setStickyScroll(p => !p) },
+      { id: 'font+', label: 'Increase Font Size', shortcut: 'Ctrl+=', action: () => setFontSize(s => Math.min(s + 1, 32)) },
+      { id: 'font-', label: 'Decrease Font Size', shortcut: 'Ctrl+-', action: () => setFontSize(s => Math.max(s - 1, 10)) },
+      { id: 'font0', label: 'Reset Font Size', shortcut: 'Ctrl+0', action: () => setFontSize(14) },
+      { id: 'settings', label: 'Open Settings', action: () => { setShowSettings(true); setShowExplorer(true) } },
+      { id: 'shortcuts', label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
+      { id: 'clear-terminal', label: 'Clear Terminal', action: () => setTerminalHistory([]) },
+      { id: 'clear-problems', label: 'Clear Problems', action: () => setProblems([]) },
+      { id: 'search-files', label: 'Search Across Files', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(true); setShowExplorer(true) } },
+      { id: 'close-file', label: 'Close File', shortcut: 'Ctrl+W', action: () => { if (activeItemId) handleCloseTab(activeItemId) } },
+      { id: 'duplicate', label: 'Duplicate File', shortcut: 'Ctrl+D', action: () => { if (activeItemId) handleDuplicate(activeItemId) } },
+      { id: 'monaco-palette', label: 'Monaco Command Palette', shortcut: 'F1', action: () => editorRef.current?.getAction('editor.action.quickCommand')?.run() },
+      ...THEMES.map(t => ({ id: `theme-${t.id}`, label: `Theme: ${t.label}`, action: () => setTheme(t.id) })),
+      ...items.map(item => ({ id: `open-${item.id}`, label: `Open: ${item.filename || item.language}`, action: () => setActiveItemId(item.id) })),
     ]
-    if (!commandFilter) return cmds
     const f = commandFilter.toLowerCase()
-    return cmds.filter(c => c.label.toLowerCase().includes(f))
-  }, [commandFilter, items, canRun, handleRun, handleFormat, handleCopy, handleDownload, handlePreviewToggle, setActiveItemId])
+    return f ? cmds.filter(c => c.label.toLowerCase().includes(f)) : cmds
+  }, [commandFilter, items, canRun, handleRun, handleFormat, handleCopy, handleDownload, handleSave, setActiveItemId, showMinimap, wordWrap, autoSave, fontLigatures, bracketPairColorization, stickyScroll, zenMode, splitEditor, diffMode, activeItemId, splitFileId, diffTargetId, handleCloseTab, handleDuplicate])
 
   if (!open) return null
+  if (items.length === 0) addItem({ id: 'welcome', code: '// Welcome to Jarvis IDE\n// ========================\n//\n// Features:\n//   - Full Monaco Editor (VS Code engine)\n//   - 10 themes (Ctrl+Shift+P > "theme")\n//   - Split editor, diff view\n//   - File templates (File > New from Template)\n//   - Code snippets for JS, TS, Python, HTML, CSS\n//   - Live preview for HTML/CSS/JS/Markdown\n//   - Problems panel, terminal, output\n//   - Search across files\n//   - Code outline & symbols\n//   - Settings panel with 15+ options\n//   - 40+ keyboard shortcuts\n//   - Zen mode (F11)\n//   - Auto-save\n//   - Jarvis has full autonomous control\n//\n// Press Ctrl+Shift+P for the Command Palette\n// Press F1 for Monaco\'s built-in commands\n\nconsole.log("Hello from Jarvis IDE!");\n', language: 'javascript', filename: 'welcome.js', createdAt: Date.now() })
 
-  if (items.length === 0) {
-    addItem({ id: 'welcome', code: '// Welcome to Jarvis IDE\n// Create a new file or let Jarvis write code for you\n\nconsole.log("Hello, World!");\n', language: 'javascript', filename: 'index.js', createdAt: Date.now() })
+  const editorOptions: monacoNs.editor.IStandaloneEditorConstructionOptions = {
+    fontSize, fontFamily, fontLigatures, lineHeight, tabSize, insertSpaces: true,
+    minimap: { enabled: showMinimap }, wordWrap, smoothScrolling: true,
+    cursorBlinking: 'smooth', cursorSmoothCaretAnimation: 'on', cursorStyle,
+    bracketPairColorization: { enabled: bracketPairColorization },
+    guides: { bracketPairs: true, indentation: true, highlightActiveBracketPair: true, bracketPairsHorizontal: true },
+    renderLineHighlight: 'all', scrollBeyondLastLine: false, automaticLayout: true,
+    suggestOnTriggerCharacters: true, quickSuggestions: true,
+    parameterHints: { enabled: true }, formatOnPaste: true, formatOnType: true,
+    renderWhitespace, folding: true, foldingHighlight: true, showFoldingControls: 'always',
+    matchBrackets: 'always', occurrencesHighlight: 'singleFile', selectionHighlight: true,
+    links: true, colorDecorators: true, mouseWheelZoom: true, multiCursorModifier: 'ctrlCmd',
+    dragAndDrop: true, lineNumbers, glyphMargin: true,
+    rulers: rulers ? [80, 120] : [], stickyScroll: { enabled: stickyScroll },
+    inlineSuggest: { enabled: true }, linkedEditing: true, autoClosingBrackets: 'always',
+    autoClosingQuotes: 'always', autoSurround: 'languageDefined',
+    suggest: { showMethods: true, showFunctions: true, showConstructors: true, showFields: true, showVariables: true, showClasses: true, showStructs: true, showInterfaces: true, showModules: true, showProperties: true, showEvents: true, showOperators: true, showUnits: true, showValues: true, showConstants: true, showEnums: true, showEnumMembers: true, showKeywords: true, showWords: true, showColors: true, showFiles: true, showReferences: true, showSnippets: true },
+    accessibilitySupport: 'off', padding: { top: 8 },
+    scrollbar: { verticalSliderSize: 10, horizontalSliderSize: 10 },
+    overviewRulerLanes: 3, find: { seedSearchStringFromSelection: 'always', autoFindInSelection: 'multiline' },
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-[#1e1e1e] flex flex-col text-[#cccccc] select-none">
-      {/* ── Title bar ── */}
-      <div className="h-9 bg-[#323233] flex items-center px-3 gap-2 text-xs flex-shrink-0 border-b border-[#252526]">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[#569cd6] font-bold text-sm">⟨/⟩</span>
-          <span className="text-[#cccccc]/80 font-medium">Jarvis IDE</span>
-          <span className="text-[#cccccc]/30 text-[10px] ml-1">powered by Monaco</span>
-        </div>
-        <div className="flex items-center gap-0.5 ml-4">
-          {['File', 'Edit', 'View', 'Run'].map(m => (
-            <button key={m}
-              className="px-2 py-0.5 rounded text-[#cccccc]/70 hover:text-[#cccccc] hover:bg-[#505050]/50 text-xs"
-              onClick={() => {
-                if (m === 'File') setNewFileDialog(true)
-                if (m === 'Edit') editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run()
-                if (m === 'View') { setCommandPaletteOpen(true); setCommandFilter('toggle') }
-                if (m === 'Run' && canRun) handleRun()
-              }}
-            >{m}</button>
-          ))}
-        </div>
-        <div className="flex-1" />
-        <button onClick={() => onOpenChange(false)}
-                className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#c42b1c] text-[#cccccc]/60 hover:text-white transition-colors"
-                aria-label="Close IDE">✕</button>
-      </div>
+  const showBottom = showTerminal || showProblems
+  const sortedItems = [...items].sort((a, b) => { const ap = pinnedTabs.has(a.id) ? 0 : 1; const bp = pinnedTabs.has(b.id) ? 0 : 1; return ap - bp })
 
-      {/* ── Main content ── */}
-      <div className="flex-1 flex min-h-0">
-        {/* Activity bar */}
-        <div className="w-12 bg-[#333333] flex flex-col items-center py-2 gap-1 flex-shrink-0 border-r border-[#252526]">
-          <ActivityBarButton icon="📁" label="Explorer (Ctrl+B)" active={showExplorer} onClick={() => setShowExplorer(p => !p)} />
-          <ActivityBarButton icon="🔍" label="Search (Ctrl+F)" active={false} onClick={() => editorRef.current?.getAction('actions.find')?.run()} />
-          <ActivityBarButton icon="🖥" label="Terminal (Ctrl+`)" active={showTerminal} onClick={() => setShowTerminal(p => !p)} />
-          <ActivityBarButton icon="👁" label="Preview" active={showPreview} onClick={handlePreviewToggle} />
-          <div className="flex-1" />
-          <ActivityBarButton icon="⌨" label="Command Palette" active={false} onClick={() => { setCommandPaletteOpen(true); setCommandFilter('') }} />
-          <ActivityBarButton icon="⚙" label="Settings" active={false} onClick={() => { setCommandPaletteOpen(true); setCommandFilter('toggle') }} />
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col select-none" style={{ background: bgColor, color: tc }}>
+      {/* ═══ TITLE BAR ═══ */}
+      {!zenMode && (
+        <div className="h-9 flex items-center px-2 gap-1 text-xs flex-shrink-0 border-b" style={{ background: tl, borderColor: bc }}>
+          <span className="text-[#569cd6] font-bold text-sm mr-1">⟨/⟩</span>
+          {/* Menu bar */}
+          {Object.entries(allMenus).map(([label, menuItems]) => (
+            <div key={label} className="relative">
+              <button className={cn('px-2 py-0.5 rounded text-xs', openMenuId === label ? 'bg-white/15' : 'hover:bg-white/10')}
+                style={{ color: `${tc}b0` }}
+                onClick={e => { e.stopPropagation(); setOpenMenuId(openMenuId === label ? null : label) }}
+                onMouseEnter={() => { if (openMenuId) setOpenMenuId(label) }}>
+                {label}
+              </button>
+              {openMenuId === label && (
+                <div className="absolute left-0 top-full mt-0.5 z-[70] rounded shadow-xl py-1 border text-[12px] min-w-[220px]" style={{ background: sb, borderColor: bc }}>
+                  {menuItems.map((item, i) =>
+                    item.label === '─' ? <div key={`s${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} /> : (
+                      <button key={item.label} disabled={item.disabled} className={cn('w-full px-3 py-1 text-left flex items-center justify-between', item.disabled ? 'opacity-30' : 'hover:bg-white/10')} style={{ color: tc }}
+                        onClick={() => { item.action?.(); setOpenMenuId(null) }}>
+                        <span>{item.label}</span>
+                        {item.shortcut && <span className="text-[10px] ml-4" style={{ color: `${tc}40` }}>{item.shortcut}</span>}
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="flex-1 text-center">
+            <span style={{ color: `${tc}60` }} className="text-[11px]">
+              {activeItem?.filename || 'Jarvis IDE'}{modified ? ' ●' : ''}
+            </span>
+          </div>
+          <select value={theme} onChange={e => setTheme(e.target.value)} className="h-5 px-1 text-[10px] rounded border-0 outline-none cursor-pointer" style={{ background: `${tc}20`, color: tc }}>
+            {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          <button onClick={() => onOpenChange(false)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#c42b1c] hover:text-white transition-colors ml-1" style={{ color: `${tc}90` }} aria-label="Close">✕</button>
         </div>
+      )}
+
+      <div className="flex-1 flex min-h-0">
+        {/* ═══ ACTIVITY BAR ═══ */}
+        {!zenMode && (
+          <div className="w-12 flex flex-col items-center py-2 gap-1 flex-shrink-0 border-r" style={{ background: ab, borderColor: bc }}>
+            <ABBtn icon="📁" tip="Explorer (Ctrl+B)" active={showExplorer && !showSearch && !showSettings} onClick={() => { setShowExplorer(p => !p); setShowSearch(false); setShowSettings(false) }} />
+            <ABBtn icon="🔍" tip="Search (Ctrl+Shift+F)" active={showSearch} onClick={() => { setShowSearch(p => !p); setShowExplorer(true); setShowSettings(false) }} />
+            <ABBtn icon="📐" tip="Outline" active={showOutline} onClick={() => { setShowOutline(p => !p); setShowExplorer(true); setShowSettings(false) }} />
+            <ABBtn icon="🖥" tip="Terminal (Ctrl+`)" active={showTerminal} onClick={() => setShowTerminal(p => !p)} />
+            <ABBtn icon="👁" tip="Preview" active={showPreview} onClick={() => setShowPreview(p => !p)} badge={canPreview ? undefined : '!'} />
+            <ABBtn icon="⚡" tip="Problems" active={showProblems} onClick={() => { setShowProblems(p => !p); if (!showTerminal) setShowTerminal(true); setBottomTab('problems') }} badge={problems.length > 0 ? String(problems.length) : undefined} />
+            <div className="flex-1" />
+            <ABBtn icon="⌨" tip="Commands (Ctrl+Shift+P)" active={false} onClick={() => { setCommandPaletteOpen(true); setCommandFilter('') }} />
+            <ABBtn icon="⚙" tip="Settings" active={showSettings} onClick={() => { setShowSettings(p => !p); setShowExplorer(true); setShowSearch(false) }} />
+          </div>
+        )}
 
         <ResizablePanelGroup direction="horizontal" className="flex-1">
-          {/* ── File Explorer ── */}
-          {showExplorer && (
+          {/* ═══ SIDEBAR ═══ */}
+          {showExplorer && !zenMode && (
             <>
-              <ResizablePanel defaultSize={18} minSize={12} maxSize={35}>
-                <div className="h-full bg-[#252526] flex flex-col">
-                  <div className="h-9 px-4 flex items-center justify-between text-[11px] uppercase tracking-wider text-[#bbbbbb]/60 font-semibold flex-shrink-0">
-                    <span>Explorer</span>
-                    <button onClick={() => setNewFileDialog(true)} className="text-[#cccccc]/50 hover:text-[#cccccc] text-base leading-none" title="New File (Ctrl+N)">+</button>
-                  </div>
-                  <div className="flex-1 overflow-y-auto px-1">
-                    <div className="px-2 py-1 text-[11px] uppercase tracking-wider text-[#bbbbbb]/40 font-semibold">Open Files</div>
-                    {items.map(item => (
-                      <FileExplorerItem key={item.id} item={item} active={item.id === activeItemId} onClick={() => setActiveItemId(item.id)} />
-                    ))}
-                  </div>
+              <ResizablePanel defaultSize={20} minSize={14} maxSize={35}>
+                <div className="h-full flex flex-col" style={{ background: sb }}>
+                  {showSettings ? (
+                    <SettingsPanel fontSize={fontSize} setFontSize={setFontSize} tabSize={tabSize} setTabSize={setTabSize}
+                      showMinimap={showMinimap} setShowMinimap={setShowMinimap} wordWrap={wordWrap} setWordWrap={setWordWrap}
+                      autoSave={autoSave} setAutoSave={setAutoSave} fontLigatures={fontLigatures} setFontLigatures={setFontLigatures}
+                      bracketPairColorization={bracketPairColorization} setBracketPairColorization={setBracketPairColorization}
+                      stickyScroll={stickyScroll} setStickyScroll={setStickyScroll} rulers={rulers} setRulers={setRulers}
+                      renderWhitespace={renderWhitespace} setRenderWhitespace={setRenderWhitespace}
+                      cursorStyle={cursorStyle} setCursorStyle={setCursorStyle}
+                      lineHeight={lineHeight} setLineHeight={setLineHeight}
+                      lineNumbers={lineNumbers} setLineNumbers={setLineNumbers}
+                      fontFamily={fontFamily} setFontFamily={setFontFamily}
+                      tc={tc} />
+                  ) : showSearch ? (
+                    <div className="flex flex-col h-full">
+                      <div className="h-8 px-4 flex items-center text-[11px] uppercase tracking-wider font-semibold flex-shrink-0" style={{ color: `${tc}60` }}>Search</div>
+                      <div className="px-3 pb-1 space-y-1">
+                        <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search in all files..."
+                          className="w-full h-7 px-2 text-xs rounded border outline-none" style={{ background: `${tc}15`, borderColor: `${tc}20`, color: tc }} />
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => setShowReplace(p => !p)} className="text-[10px] px-1 rounded" style={{ color: `${tc}50` }}>{showReplace ? '▼' : '▶'} Replace</button>
+                        </div>
+                        {showReplace && (
+                          <div className="flex gap-1">
+                            <input value={replaceQuery} onChange={e => setReplaceQuery(e.target.value)} placeholder="Replace with..."
+                              className="flex-1 h-7 px-2 text-xs rounded border outline-none" style={{ background: `${tc}15`, borderColor: `${tc}20`, color: tc }} />
+                            <button onClick={handleReplaceAll} className="text-[10px] px-2 h-7 rounded" style={{ background: `${tc}15`, color: tc }}>All</button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 overflow-y-auto px-1 text-[11px]">
+                        {searchResults.length > 0 && <div className="px-3 py-1" style={{ color: `${tc}40` }}>{searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</div>}
+                        {searchResults.length === 0 && searchQuery && <div className="px-3 py-2" style={{ color: `${tc}40` }}>No results</div>}
+                        {searchResults.map((r, i) => (
+                          <button key={`${r.fileId}-${r.line}-${i}`} onClick={() => { setActiveItemId(r.fileId); setTimeout(() => editorRef.current?.revealLineInCenter(r.line), 100) }}
+                            className="w-full text-left px-3 py-1 rounded-sm hover:bg-white/10 truncate" style={{ color: `${tc}90` }}>
+                            <span style={{ color: `${tc}50` }}>{r.filename}:{r.line}</span> {r.text}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col h-full">
+                      <div className="h-8 px-4 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold flex-shrink-0" style={{ color: `${tc}60` }}>
+                        <span>Explorer</span>
+                        <div className="flex gap-1">
+                          <button onClick={() => setTemplateDialog(true)} title="New from Template" className="hover:opacity-100 opacity-50 text-sm">📋</button>
+                          <button onClick={() => setNewFileDialog(true)} title="New File" className="hover:opacity-100 opacity-50 text-sm font-bold">+</button>
+                        </div>
+                      </div>
+                      <div className="flex-1 overflow-y-auto px-1">
+                        <div className="px-2 py-1 text-[10px] uppercase tracking-wider font-semibold" style={{ color: `${tc}40` }}>Open Files ({items.length})</div>
+                        {sortedItems.map(item => (
+                          <button key={item.id} onClick={() => setActiveItemId(item.id)}
+                            onContextMenu={e => { e.preventDefault(); setTabContextMenu({ x: e.clientX, y: e.clientY, id: item.id }) }}
+                            className={cn('w-full flex items-center gap-2 px-3 py-1 text-[12px] rounded-sm transition-colors text-left', item.id === activeItemId ? 'bg-white/10' : 'hover:bg-white/5')}
+                            style={{ color: item.id === activeItemId ? tc : `${tc}b0` }}>
+                            {pinnedTabs.has(item.id) && <span className="text-[8px]">📌</span>}
+                            <span className="text-[10px] flex-shrink-0">{LI[item.language] || '📄'}</span>
+                            <span className="truncate">{item.filename || `${item.language} snippet`}</span>
+                            {item.id === activeItemId && modified && <span className="ml-auto text-[10px]" style={{ color: '#e8ab6a' }}>●</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {showOutline && (
+                        <div className="border-t flex-shrink-0 max-h-[40%] overflow-y-auto" style={{ borderColor: bc }}>
+                          <div className="px-4 py-1 text-[10px] uppercase tracking-wider font-semibold" style={{ color: `${tc}40` }}>Outline ({outlineSymbols.length})</div>
+                          {outlineSymbols.length === 0 && <div className="px-4 py-2 text-[11px]" style={{ color: `${tc}30` }}>No symbols found</div>}
+                          {outlineSymbols.map((sym, i) => (
+                            <button key={`${sym.line}-${i}`} onClick={() => editorRef.current?.revealLineInCenter(sym.line)}
+                              className="w-full text-left px-3 py-0.5 text-[11px] hover:bg-white/10 truncate flex items-center gap-1.5" style={{ color: `${tc}70` }}>
+                              <span className="text-[9px] flex-shrink-0" style={{ color: sym.kind === 'class' ? '#4ec9b0' : sym.kind === 'function' ? '#dcdcaa' : sym.kind === 'type' ? '#4fc1ff' : sym.kind === 'import' ? '#c586c0' : '#9cdcfe' }}>
+                                {sym.kind === 'class' ? '◆' : sym.kind === 'function' ? 'ƒ' : sym.kind === 'type' ? 'T' : sym.kind === 'import' ? '↓' : '●'}
+                              </span>
+                              {sym.name}
+                              <span className="ml-auto text-[9px]" style={{ color: `${tc}30` }}>:{sym.line}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </ResizablePanel>
               <ResizableHandle />
             </>
           )}
 
-          {/* ── Editor + Preview area ── */}
-          <ResizablePanel defaultSize={showExplorer ? 82 : 100}>
+          {/* ═══ EDITOR AREA ═══ */}
+          <ResizablePanel defaultSize={showExplorer && !zenMode ? 80 : 100}>
             <ResizablePanelGroup direction="vertical">
-              <ResizablePanel defaultSize={showTerminal ? 65 : 100}>
+              <ResizablePanel defaultSize={showBottom ? 65 : 100}>
                 <ResizablePanelGroup direction="horizontal">
-                  {/* Editor */}
-                  <ResizablePanel defaultSize={showPreview ? 55 : 100}>
-                    <div className="h-full flex flex-col bg-[#1e1e1e]">
+                  <ResizablePanel defaultSize={showPreview || splitEditor ? 55 : 100}>
+                    <div className="h-full flex flex-col" style={{ background: bgColor }}>
                       {/* Tabs */}
-                      <div className="h-9 bg-[#252526] flex items-center overflow-x-auto flex-shrink-0 border-b border-[#1e1e1e]">
-                        {items.map(item => (
-                          <EditorTab key={item.id} item={item} active={item.id === activeItemId}
-                                     onClick={() => setActiveItemId(item.id)} onClose={(e) => handleCloseTab(item.id, e)} />
-                        ))}
-                      </div>
-
-                      {/* Breadcrumbs */}
-                      {activeItem && (
-                        <div className="h-6 px-4 flex items-center gap-1 text-[11px] text-[#cccccc]/50 bg-[#1e1e1e] border-b border-[#252526] flex-shrink-0">
-                          <span>workspace</span><span className="text-[#cccccc]/30">›</span>
-                          <span>{activeItem.filename || 'untitled'}</span>
+                      {!zenMode && (
+                        <div className="h-9 flex items-center overflow-x-auto flex-shrink-0 scrollbar-thin" style={{ background: sb, borderBottom: `1px solid ${bc}` }}>
+                          {sortedItems.map(item => (
+                            <button key={item.id} onClick={() => setActiveItemId(item.id)}
+                              onContextMenu={e => { e.preventDefault(); setTabContextMenu({ x: e.clientX, y: e.clientY, id: item.id }) }}
+                              className="group flex items-center gap-1.5 px-3 h-full text-[12px] min-w-0 flex-shrink-0"
+                              style={{ background: item.id === activeItemId ? bgColor : 'transparent', color: item.id === activeItemId ? tc : `${tc}70`, borderRight: `1px solid ${bc}`, borderTop: item.id === activeItemId ? '2px solid #007acc' : '2px solid transparent' }}>
+                              {pinnedTabs.has(item.id) && <span className="text-[7px]">📌</span>}
+                              <span className="text-[9px] flex-shrink-0">{LI[item.language] || '📄'}</span>
+                              <span className="truncate max-w-[120px]">{item.filename || `${item.language}`}</span>
+                              {item.id === activeItemId && modified && <span className="text-[10px] ml-0.5" style={{ color: '#e8ab6a' }}>●</span>}
+                              {!pinnedTabs.has(item.id) && (
+                                <span onClick={e => handleCloseTab(item.id, e)} className="ml-1 w-4 h-4 flex items-center justify-center rounded text-[10px] opacity-0 group-hover:opacity-100 hover:bg-white/20 flex-shrink-0">✕</span>
+                              )}
+                            </button>
+                          ))}
+                          <button onClick={() => setNewFileDialog(true)} className="h-full px-2 flex items-center text-lg hover:bg-white/5 flex-shrink-0" style={{ color: `${tc}40` }} title="New File">+</button>
                         </div>
                       )}
-
+                      {/* Breadcrumbs */}
+                      {!zenMode && activeItem && (
+                        <div className="h-6 px-4 flex items-center gap-1 text-[11px] flex-shrink-0" style={{ color: `${tc}50`, borderBottom: `1px solid ${bc}` }}>
+                          <span style={{ color: `${tc}30` }}>workspace</span> <span style={{ color: `${tc}20` }}>›</span>
+                          <span>{activeItem.filename || 'untitled'}</span>
+                          {autoSave && <span className="ml-1 text-[9px]" style={{ color: `${tc}20` }}>[auto-save]</span>}
+                          {modified && <span className="text-[9px]" style={{ color: '#e8ab6a' }}>(modified)</span>}
+                        </div>
+                      )}
                       {/* Toolbar */}
-                      <div className="h-8 px-2 flex items-center gap-1 bg-[#252526] border-b border-[#1e1e1e] flex-shrink-0">
-                        <ToolbarButton icon="▶" label="Run (Ctrl+Enter)" onClick={handleRun} disabled={!canRun || running} highlight />
-                        <ToolbarDivider />
-                        <ToolbarButton icon="📋" label="Copy" onClick={handleCopy} />
-                        <ToolbarButton icon="💾" label="Download" onClick={handleDownload} />
-                        <ToolbarButton icon="🎨" label="Format (Shift+Alt+F)" onClick={handleFormat} />
-                        <ToolbarDivider />
-                        <ToolbarButton icon="👁" label="Preview" onClick={handlePreviewToggle} active={showPreview} disabled={!canPreview} />
-                        <ToolbarButton icon="🖥" label="Terminal" onClick={() => setShowTerminal(p => !p)} active={showTerminal} />
-                        <div className="flex-1" />
-                        <select value={editedLang} onChange={e => { setEditedLang(e.target.value); if (activeItemId) updateItem(activeItemId, { language: e.target.value }) }}
-                                className="h-6 px-2 text-[11px] bg-[#3c3c3c] border border-[#3c3c3c] rounded text-[#cccccc] outline-none cursor-pointer hover:border-[#505050]">
-                          {MONACO_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
-                        </select>
-                      </div>
-
-                      {/* Monaco Editor */}
+                      {!zenMode && (
+                        <div className="h-8 px-2 flex items-center gap-0.5 flex-shrink-0" style={{ background: tb, borderBottom: `1px solid ${bc}` }}>
+                          <TBtn icon="▶" label="Run" onClick={handleRun} disabled={!canRun || running} highlight tc={tc} />
+                          <div className="w-px h-4 mx-1" style={{ background: bc }} />
+                          <TBtn icon="↩" label="Undo" onClick={() => editorRef.current?.trigger('keyboard', 'undo', null)} tc={tc} />
+                          <TBtn icon="↪" label="Redo" onClick={() => editorRef.current?.trigger('keyboard', 'redo', null)} tc={tc} />
+                          <div className="w-px h-4 mx-1" style={{ background: bc }} />
+                          <TBtn icon="📋" label="Copy" onClick={handleCopy} tc={tc} />
+                          <TBtn icon="💾" label="Save" onClick={handleSave} tc={tc} />
+                          <TBtn icon="⬇" label="Download" onClick={handleDownload} tc={tc} />
+                          <TBtn icon="🎨" label="Format" onClick={handleFormat} tc={tc} />
+                          <div className="w-px h-4 mx-1" style={{ background: bc }} />
+                          <TBtn icon="↔" label="Split" onClick={() => { setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) }} active={splitEditor} tc={tc} />
+                          <TBtn icon="⇄" label="Diff" onClick={() => { setDiffMode(p => !p); if (!diffTargetId) { const o = items.find(i => i.id !== activeItemId); if (o) setDiffTargetId(o.id) } }} active={diffMode} tc={tc} disabled={items.length < 2} />
+                          <TBtn icon="👁" label="Preview" onClick={() => setShowPreview(p => !p)} active={showPreview} disabled={!canPreview} tc={tc} />
+                          <div className="flex-1" />
+                          <select value={editedLang} onChange={e => { setEditedLang(e.target.value); if (activeItemId) updateItem(activeItemId, { language: e.target.value }) }}
+                            className="h-6 px-2 text-[11px] rounded border-0 outline-none cursor-pointer" style={{ background: `${tc}15`, color: tc }}>
+                            {MONACO_LANGS.map(l => <option key={l} value={l}>{l}</option>)}
+                          </select>
+                        </div>
+                      )}
+                      {/* Editor */}
                       <div className="flex-1 min-h-0">
-                        <Editor
-                          language={monacoLang(editedLang)}
-                          value={editedCode}
-                          onChange={(val) => setEditedCode(val || '')}
-                          onMount={handleEditorMount}
-                          theme="jarvis-dark"
-                          options={{
-                            fontSize,
-                            fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, 'Courier New', monospace",
-                            fontLigatures: true,
-                            minimap: { enabled: showMinimap },
-                            wordWrap,
-                            smoothScrolling: true,
-                            cursorBlinking: 'smooth',
-                            cursorSmoothCaretAnimation: 'on',
-                            bracketPairColorization: { enabled: true },
-                            guides: { bracketPairs: true, indentation: true },
-                            renderLineHighlight: 'all',
-                            scrollBeyondLastLine: false,
-                            automaticLayout: true,
-                            suggestOnTriggerCharacters: true,
-                            quickSuggestions: true,
-                            parameterHints: { enabled: true },
-                            formatOnPaste: true,
-                            formatOnType: true,
-                            tabSize: 2,
-                            insertSpaces: true,
-                            renderWhitespace: 'selection',
-                            folding: true,
-                            foldingHighlight: true,
-                            showFoldingControls: 'always',
-                            matchBrackets: 'always',
-                            occurrencesHighlight: 'singleFile',
-                            selectionHighlight: true,
-                            links: true,
-                            colorDecorators: true,
-                            mouseWheelZoom: true,
-                            multiCursorModifier: 'ctrlCmd',
-                            dragAndDrop: true,
-                            accessibilitySupport: 'off',
-                            lineNumbers: 'on',
-                            glyphMargin: true,
-                            rulers: [80, 120],
-                            stickyScroll: { enabled: true },
-                            inlineSuggest: { enabled: true },
-                          }}
-                        />
+                        {diffMode && diffTargetId ? (
+                          <DiffEditor original={items.find(i => i.id === diffTargetId)?.code || ''} modified={editedCode}
+                            language={mLang(editedLang)} theme={theme} options={{ ...editorOptions, renderSideBySide: true, readOnly: false }} />
+                        ) : (
+                          <Editor language={mLang(editedLang)} value={editedCode} onChange={val => setEditedCode(val || '')}
+                            onMount={handleEditorMount} theme={theme} options={editorOptions} />
+                        )}
                       </div>
                     </div>
                   </ResizablePanel>
 
-                  {/* Preview panel */}
-                  {showPreview && (
+                  {(showPreview || splitEditor) && (
                     <>
                       <ResizableHandle withHandle />
-                      <ResizablePanel defaultSize={45} minSize={20}>
-                        <div className="h-full flex flex-col bg-[#1e1e1e]">
-                          <div className="h-9 bg-[#252526] flex items-center px-4 gap-2 text-xs flex-shrink-0 border-b border-[#1e1e1e]">
-                            <span className="text-[#cccccc]/60">Preview</span>
-                            <div className="flex-1" />
-                            <button onClick={() => {
-                              if (previewRef.current?.contentDocument) {
-                                previewRef.current.contentDocument.open() // NOSONAR
-                                previewRef.current.contentDocument.write(editedCode) // NOSONAR
-                                previewRef.current.contentDocument.close()
-                              }
-                            }} className="text-[10px] px-2 py-0.5 rounded bg-[#3c3c3c] hover:bg-[#505050] text-[#cccccc]/70">↻ Refresh</button>
+                      <ResizablePanel defaultSize={splitEditor ? 50 : 45} minSize={20}>
+                        {splitEditor && !showPreview ? (
+                          <div className="h-full flex flex-col" style={{ background: bgColor }}>
+                            <div className="h-9 flex items-center px-3 text-xs flex-shrink-0" style={{ background: sb, borderBottom: `1px solid ${bc}` }}>
+                              <select value={splitFileId || ''} onChange={e => setSplitFileId(e.target.value)} className="text-[11px] rounded border-0 outline-none" style={{ background: 'transparent', color: tc }}>
+                                {items.map(i => <option key={i.id} value={i.id}>{i.filename || i.language}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex-1 min-h-0">
+                              <Editor language={mLang(splitFile?.language || 'javascript')} value={splitFile?.code || ''} theme={theme}
+                                onChange={val => { if (splitFileId) updateItem(splitFileId, { code: val || '' }) }}
+                                options={{ ...editorOptions, readOnly: false }} />
+                            </div>
                           </div>
-                          <div className="flex-1 bg-white">
-                            {PREVIEWABLE.has(editedLang) ? (
+                        ) : (
+                          <div className="h-full flex flex-col" style={{ background: bgColor }}>
+                            <div className="h-9 flex items-center px-4 gap-2 text-xs flex-shrink-0" style={{ background: sb, borderBottom: `1px solid ${bc}` }}>
+                              <span style={{ color: `${tc}60` }}>Preview — {editedLang.toUpperCase()}</span>
+                              <div className="flex-1" />
+                              <button onClick={() => writePreview(editedCode, editedLang)}
+                                className="text-[10px] px-2 py-0.5 rounded" style={{ background: `${tc}20`, color: `${tc}70` }}>↻ Refresh</button>
+                            </div>
+                            <div className="flex-1" style={{ background: editedLang === 'javascript' || editedLang === 'typescript' || editedLang === 'json' ? '#1e1e1e' : 'white' }}>
                               <iframe ref={previewRef} className="w-full h-full border-none" title="Preview" sandbox="allow-scripts allow-same-origin" />
-                            ) : (
-                              <PreviewFromJS code={editedCode} lang={editedLang} />
-                            )}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </ResizablePanel>
                     </>
                   )}
                 </ResizablePanelGroup>
               </ResizablePanel>
 
-              {/* Terminal panel */}
-              {showTerminal && (
+              {/* ═══ BOTTOM PANEL ═══ */}
+              {showBottom && (
                 <>
                   <ResizableHandle withHandle />
-                  <ResizablePanel defaultSize={35} minSize={15} maxSize={60}>
-                    <div className="h-full flex flex-col bg-[#1e1e1e]">
-                      <div className="h-9 bg-[#252526] flex items-center px-4 gap-3 text-xs flex-shrink-0 border-t border-[#1e1e1e]">
-                        <button className="text-[#cccccc] border-b-2 border-[#569cd6] pb-0.5 px-1">Terminal</button>
-                        <button className="text-[#cccccc]/50 hover:text-[#cccccc] pb-0.5 px-1">Output</button>
+                  <ResizablePanel defaultSize={35} minSize={12} maxSize={60}>
+                    <div className="h-full flex flex-col" style={{ background: bgColor }}>
+                      <div className="h-9 flex items-center px-4 gap-3 text-xs flex-shrink-0" style={{ background: sb, borderTop: `1px solid ${bc}` }}>
+                        {(['terminal', 'problems', 'output'] as const).map(tab => (
+                          <button key={tab} onClick={() => setBottomTab(tab)} className="pb-0.5 px-1 flex items-center gap-1"
+                            style={{ color: bottomTab === tab ? tc : `${tc}50`, borderBottom: bottomTab === tab ? '2px solid #569cd6' : '2px solid transparent' }}>
+                            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                            {tab === 'problems' && problems.length > 0 && <span className="text-[9px] px-1 rounded-full bg-red-500 text-white">{problems.length}</span>}
+                          </button>
+                        ))}
                         <div className="flex-1" />
-                        <button onClick={() => setTerminalHistory([])} className="text-[10px] px-2 py-0.5 rounded bg-[#3c3c3c] hover:bg-[#505050] text-[#cccccc]/70" title="Clear">Clear</button>
-                        <button onClick={() => setShowTerminal(false)} className="text-[#cccccc]/40 hover:text-[#cccccc] text-sm" title="Close">✕</button>
+                        <button onClick={() => { if (bottomTab === 'terminal') setTerminalHistory([]); if (bottomTab === 'problems') setProblems([]) }}
+                          className="text-[10px] px-2 py-0.5 rounded" style={{ background: `${tc}15`, color: `${tc}50` }}>Clear</button>
+                        <button onClick={() => { setShowTerminal(false); setShowProblems(false) }} style={{ color: `${tc}40` }} className="text-sm hover:opacity-80">✕</button>
                       </div>
                       <div className="flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-5">
-                        {terminalHistory.length === 0 && <span className="text-[#cccccc]/30">Terminal ready. Press ▶ Run or Ctrl+Enter to execute code.</span>}
-                        {terminalHistory.map((entry, i) => (
-                          <div key={`${entry.time}-${i}`} className={cn(
-                            'whitespace-pre-wrap',
-                            entry.type === 'stdout' && 'text-[#cccccc]',
-                            entry.type === 'stderr' && 'text-[#ce9178]',
-                            entry.type === 'error' && 'text-[#f44747]',
-                            entry.type === 'info' && 'text-[#569cd6]',
-                          )}>{entry.text}</div>
-                        ))}
-                        {running && <div className="text-[#569cd6] animate-pulse">Executing...</div>}
-                        <div ref={terminalEndRef} />
+                        {bottomTab === 'terminal' && (<>
+                          {terminalHistory.length === 0 && <span style={{ color: `${tc}30` }}>Terminal ready. Run code with Ctrl+Enter.</span>}
+                          {terminalHistory.map((e, i) => <div key={`${e.time}-${i}`} className="whitespace-pre-wrap" style={{ color: e.type === 'stdout' ? tc : e.type === 'stderr' ? '#ce9178' : e.type === 'error' ? '#f44747' : '#569cd6' }}>{e.text}</div>)}
+                          {running && <div className="text-[#569cd6] animate-pulse">Executing...</div>}
+                          <div ref={terminalEndRef} />
+                        </>)}
+                        {bottomTab === 'problems' && (<>
+                          {problems.length === 0 && <span style={{ color: `${tc}30` }}>No problems detected.</span>}
+                          {problems.map((p, i) => (
+                            <button key={`p${i}`} onClick={() => editorRef.current?.revealLineInCenter(p.line)} className="w-full text-left flex items-start gap-2 py-0.5 hover:bg-white/5 rounded">
+                              <span className="text-red-400 text-[10px] mt-0.5">●</span>
+                              <span style={{ color: `${tc}50` }} className="text-[11px] flex-shrink-0">{p.source}:{p.line}:{p.column}</span>
+                              <span style={{ color: `${tc}90` }}>{p.message}</span>
+                            </button>
+                          ))}
+                        </>)}
+                        {bottomTab === 'output' && (<>
+                          {!runResult && <span style={{ color: `${tc}30` }}>Run code to see output.</span>}
+                          {runResult?.stdout && <div style={{ color: tc }} className="whitespace-pre-wrap">{runResult.stdout}</div>}
+                          {runResult?.stderr && <div className="text-[#ce9178] whitespace-pre-wrap">{runResult.stderr}</div>}
+                          {runResult?.error && <div className="text-[#f44747] whitespace-pre-wrap">{runResult.error}</div>}
+                        </>)}
                       </div>
                     </div>
                   </ResizablePanel>
@@ -657,145 +1083,255 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
         </ResizablePanelGroup>
       </div>
 
-      {/* ── Status bar ── */}
-      <div className="h-6 bg-[#007acc] flex items-center px-3 text-[11px] text-white/90 flex-shrink-0 gap-4">
-        <span className="flex items-center gap-1">{LANG_ICONS[editedLang] || '📄'} {editedLang}</span>
-        <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
-        <span>Spaces: 2</span>
-        <span>UTF-8</span>
-        <span className="cursor-pointer hover:text-white" onClick={() => setShowMinimap(p => !p)}>Minimap: {showMinimap ? 'On' : 'Off'}</span>
-        <span className="cursor-pointer hover:text-white" onClick={() => setWordWrap(w => w === 'on' ? 'off' : 'on')}>Wrap: {wordWrap === 'on' ? 'On' : 'Off'}</span>
-        <span className="cursor-pointer hover:text-white" onClick={() => setFontSize(s => Math.min(s + 1, 30))}>Font: {fontSize}px</span>
-        <div className="flex-1" />
-        {running && <span className="animate-pulse">● Running...</span>}
-        <span className="text-white/60">{items.length} file{items.length !== 1 ? 's' : ''}</span>
-        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-300" />Jarvis IDE</span>
-      </div>
-
-      {/* ── New file dialog ── */}
-      {newFileDialog && (
-        <div className="fixed inset-0 z-[60] bg-black/50 flex items-start justify-center pt-[20vh]" onClick={() => setNewFileDialog(false)}>
-          <div className="bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-2xl w-[400px] overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="px-4 py-3 text-xs text-[#cccccc]/60">New File</div>
-            <div className="px-4 pb-4">
-              <input autoFocus value={newFileName} onChange={e => setNewFileName(e.target.value)}
-                     onKeyDown={e => { if (e.key === 'Enter') handleNewFile(); if (e.key === 'Escape') setNewFileDialog(false) }}
-                     placeholder="Enter filename (e.g. index.html, app.py)"
-                     className="w-full h-8 px-3 bg-[#3c3c3c] border border-[#007acc] rounded text-sm text-[#cccccc] outline-none placeholder:text-[#cccccc]/30" />
-              <div className="flex justify-end gap-2 mt-3">
-                <button onClick={() => setNewFileDialog(false)} className="px-3 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#505050] text-[#cccccc]/70">Cancel</button>
-                <button onClick={handleNewFile} className="px-3 py-1 text-xs rounded bg-[#007acc] hover:bg-[#0069b3] text-white">Create</button>
-              </div>
-            </div>
-          </div>
+      {/* ═══ STATUS BAR ═══ */}
+      {!zenMode && (
+        <div className="h-6 bg-[#007acc] flex items-center px-3 text-[11px] text-white/90 flex-shrink-0 gap-3 cursor-default">
+          <span className="flex items-center gap-1">{LI[editedLang] || '📄'} {editedLang}</span>
+          <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
+          {selectionInfo && <span>{selectionInfo}</span>}
+          <span>Spaces: {tabSize}</span>
+          <span>{eol}</span>
+          <span>UTF-8</span>
+          <button className="hover:text-white text-white/70" onClick={() => setShowMinimap(p => !p)}>Minimap: {showMinimap ? 'On' : 'Off'}</button>
+          <button className="hover:text-white text-white/70" onClick={() => setWordWrap(w => w === 'on' ? 'off' : 'on')}>Wrap: {wordWrap === 'on' ? 'On' : 'Off'}</button>
+          <button className="hover:text-white text-white/70" onClick={() => setAutoSave(p => !p)}>Auto-save: {autoSave ? 'On' : 'Off'}</button>
+          <div className="flex-1" />
+          <span className="text-white/50">{wordCount.lines} lines, {wordCount.words} words, {wordCount.chars} chars</span>
+          {modified && <span className="text-yellow-200">● Modified</span>}
+          {running && <span className="animate-pulse">● Running...</span>}
+          {problems.length > 0 && <span>⚠ {problems.length}</span>}
+          <span className="text-white/50">{items.length} file{items.length !== 1 ? 's' : ''}</span>
+          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-300" />Jarvis IDE</span>
         </div>
       )}
 
-      {/* ── Command Palette ── */}
-      {commandPaletteOpen && (
-        <div className="fixed inset-0 z-[60] bg-black/30 flex items-start justify-center pt-[12vh]" onClick={() => setCommandPaletteOpen(false)}>
-          <div className="bg-[#252526] border border-[#007acc] rounded-lg shadow-2xl w-[520px] overflow-hidden" onClick={e => e.stopPropagation()}>
-            <input autoFocus value={commandFilter} onChange={e => setCommandFilter(e.target.value)}
-                   onKeyDown={e => { if (e.key === 'Escape') setCommandPaletteOpen(false) }}
-                   placeholder="Type a command..."
-                   className="w-full h-9 px-4 bg-[#3c3c3c] border-b border-[#252526] text-sm text-[#cccccc] outline-none placeholder:text-[#cccccc]/30" />
-            <div className="max-h-[300px] overflow-y-auto">
-              {commands.map(cmd => (
-                <button key={cmd.id} disabled={cmd.disabled}
-                        onClick={() => { cmd.action(); setCommandPaletteOpen(false) }}
-                        className={cn('w-full px-4 py-2 text-left text-[13px] flex items-center justify-between', cmd.disabled ? 'text-[#cccccc]/30 cursor-not-allowed' : 'text-[#cccccc]/80 hover:bg-[#04395e]')}>
-                  <span>{cmd.label}</span>
-                  {cmd.shortcut && <span className="text-[10px] text-[#cccccc]/40 font-mono">{cmd.shortcut}</span>}
+      {/* ═══ DIALOGS ═══ */}
+      {newFileDialog && <InputDialog title="New File" placeholder="filename (e.g. index.html, app.py)" value={newFileName} onChange={setNewFileName} onSubmit={handleNewFile} onClose={() => setNewFileDialog(false)} bg={sb} tc={tc} bc={bc} />}
+      {renameDialog && <InputDialog title="Rename File" placeholder="New filename" value={renameValue} onChange={setRenameValue} onSubmit={handleRename} onClose={() => setRenameDialog(null)} bg={sb} tc={tc} bc={bc} />}
+
+      {templateDialog && (
+        <Overlay onClose={() => setTemplateDialog(false)}>
+          <div className="rounded-lg shadow-2xl w-[520px] overflow-hidden border" style={{ background: sb, borderColor: bc }}>
+            <div className="px-4 py-3 text-xs font-semibold" style={{ color: `${tc}60` }}>New from Template ({FILE_TEMPLATES.length} templates)</div>
+            <div className="max-h-[450px] overflow-y-auto">
+              {FILE_TEMPLATES.map(t => (
+                <button key={t.name} onClick={() => { addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); setTemplateDialog(false) }}
+                  className="w-full px-4 py-2.5 text-left hover:bg-white/10 flex items-center gap-3 border-b" style={{ borderColor: `${tc}08` }}>
+                  <span className="text-lg w-7 text-center">{LI[t.language] || '📄'}</span>
+                  <div><div className="text-sm font-medium" style={{ color: tc }}>{t.name}</div><div className="text-[11px]" style={{ color: `${tc}40` }}>{t.filename}</div></div>
                 </button>
               ))}
             </div>
           </div>
+        </Overlay>
+      )}
+
+      {commandPaletteOpen && (
+        <Overlay onClose={() => setCommandPaletteOpen(false)}>
+          <div className="rounded-lg shadow-2xl w-[560px] overflow-hidden border" style={{ background: sb, borderColor: '#007acc' }}>
+            <input autoFocus value={commandFilter} onChange={e => setCommandFilter(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setCommandPaletteOpen(false); if (e.key === 'Enter' && commands[0]) { commands[0].action?.(); setCommandPaletteOpen(false) } }}
+              placeholder="> Type a command..." className="w-full h-10 px-4 text-sm outline-none border-b" style={{ background: `${tc}10`, borderColor: bc, color: tc }} />
+            <div className="max-h-[380px] overflow-y-auto">
+              {commands.map(cmd => (
+                <button key={cmd.id} disabled={cmd.disabled} onClick={() => { cmd.action?.(); setCommandPaletteOpen(false) }}
+                  className={cn('w-full px-4 py-2 text-left text-[13px] flex items-center justify-between', cmd.disabled ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white/10')}
+                  style={{ color: `${tc}c0` }}>
+                  <span>{cmd.label}</span>
+                  {cmd.shortcut && <span className="text-[10px] font-mono" style={{ color: `${tc}30` }}>{cmd.shortcut}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </Overlay>
+      )}
+
+      {showShortcuts && (
+        <Overlay onClose={() => setShowShortcuts(false)}>
+          <div className="rounded-lg shadow-2xl w-[500px] max-h-[80vh] overflow-y-auto border" style={{ background: sb, borderColor: bc }}>
+            <div className="px-4 py-3 text-sm font-semibold border-b flex items-center justify-between" style={{ color: tc, borderColor: bc }}>
+              <span>Keyboard Shortcuts</span>
+              <button onClick={() => setShowShortcuts(false)} className="text-sm" style={{ color: `${tc}50` }}>✕</button>
+            </div>
+            <div className="p-4 space-y-3 text-[12px]">
+              {[
+                ['General', [['Ctrl+Shift+P', 'Command Palette'], ['F1', 'Monaco Commands'], ['Ctrl+N', 'New File'], ['Ctrl+S', 'Save'], ['Ctrl+W', 'Close File'], ['Ctrl+D', 'Duplicate File'], ['F11', 'Zen Mode'], ['Esc', 'Close IDE']]],
+                ['Editor', [['Ctrl+Z', 'Undo'], ['Ctrl+Y', 'Redo'], ['Ctrl+F', 'Find'], ['Ctrl+H', 'Replace'], ['Ctrl+G', 'Go to Line'], ['Ctrl+Enter', 'Run Code'], ['Shift+Alt+F', 'Format'], ['Ctrl+A', 'Select All']]],
+                ['View', [['Ctrl+B', 'Toggle Explorer'], ['Ctrl+`', 'Toggle Terminal'], ['Ctrl+J', 'Toggle Terminal'], ['Ctrl+Shift+F', 'Search Files'], ['Ctrl+\\', 'Split Editor'], ['Ctrl+=', 'Font +'], ['Ctrl+-', 'Font -'], ['Ctrl+0', 'Reset Font'], ['Alt+Z', 'Word Wrap']]],
+              ].map(([section, shortcuts]) => (
+                <div key={section as string}>
+                  <div className="font-semibold mb-1" style={{ color: `${tc}60` }}>{section as string}</div>
+                  {(shortcuts as string[][]).map(([key, desc]) => (
+                    <div key={key} className="flex items-center justify-between py-0.5">
+                      <span style={{ color: `${tc}80` }}>{desc}</span>
+                      <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: `${tc}15`, color: `${tc}90` }}>{key}</kbd>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </Overlay>
+      )}
+
+      {tabContextMenu && (
+        <div className="fixed z-[70] rounded shadow-xl py-1 border text-[12px] min-w-[200px]" style={{ left: tabContextMenu.x, top: tabContextMenu.y, background: sb, borderColor: bc }}>
+          {[
+            { label: 'Close', action: () => handleCloseTab(tabContextMenu.id) },
+            { label: 'Close Others', action: () => { items.forEach(i => { if (i.id !== tabContextMenu.id && !pinnedTabs.has(i.id)) removeItem(i.id) }); setActiveItemId(tabContextMenu.id) } },
+            { label: 'Close All', action: () => { items.forEach(i => { if (!pinnedTabs.has(i.id)) removeItem(i.id) }); setActiveItemId(null) } },
+            { label: '─' },
+            { label: pinnedTabs.has(tabContextMenu.id) ? 'Unpin' : 'Pin', action: () => { setPinnedTabs(prev => { const n = new Set(prev); if (n.has(tabContextMenu.id)) n.delete(tabContextMenu.id); else n.add(tabContextMenu.id); return n }) } },
+            { label: 'Duplicate', action: () => handleDuplicate(tabContextMenu.id) },
+            { label: 'Rename...', action: () => { const item = items.find(i => i.id === tabContextMenu.id); setRenameValue(item?.filename || ''); setRenameDialog(tabContextMenu.id) } },
+            { label: '─' },
+            { label: 'Copy Filename', action: () => { navigator.clipboard.writeText(items.find(i => i.id === tabContextMenu.id)?.filename || ''); toast.success('Copied') } },
+            { label: 'Open in Split', action: () => { setSplitEditor(true); setSplitFileId(tabContextMenu.id) } },
+            { label: 'Compare with Active...', action: () => { setDiffMode(true); setDiffTargetId(tabContextMenu.id) } },
+          ].map((item, i) => item.label === '─' ? <div key={`d${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} /> : (
+            <button key={item.label} onClick={() => { item.action?.(); setTabContextMenu(null) }} className="w-full px-3 py-1 text-left hover:bg-white/10" style={{ color: tc }}>{item.label}</button>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-// ── Sub-components ──────────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUB-COMPONENTS
+   ═══════════════════════════════════════════════════════════════════════════ */
 
-function ActivityBarButton({ icon, label, active, onClick }: Readonly<{
-  icon: string; label: string; active: boolean; onClick: () => void
-}>) {
+function ABBtn({ icon, tip, active, onClick, badge }: Readonly<{ icon: string; tip: string; active: boolean; onClick: () => void; badge?: string }>) {
   return (
-    <button onClick={onClick} title={label}
-      className={cn('w-10 h-10 flex items-center justify-center rounded text-base transition-colors',
-        active ? 'text-white bg-[#505050]/60 border-l-2 border-white' : 'text-[#cccccc]/40 hover:text-[#cccccc]')}>
+    <button onClick={onClick} title={tip} className={cn('w-10 h-10 flex items-center justify-center rounded text-base transition-colors relative', active ? 'text-white bg-white/15 border-l-2 border-white' : 'text-white/40 hover:text-white/70')}>
       {icon}
+      {badge && <span className="absolute -top-0.5 -right-0.5 text-[8px] px-1 rounded-full bg-red-500 text-white leading-tight">{badge}</span>}
     </button>
   )
 }
 
-function FileExplorerItem({ item, active, onClick }: Readonly<{
-  item: CodeItem; active: boolean; onClick: () => void
+function TBtn({ icon, label, onClick, disabled, active, highlight, tc }: Readonly<{ icon: string; label: string; onClick: () => void; disabled?: boolean; active?: boolean; highlight?: boolean; tc: string }>) {
+  return <button onClick={onClick} disabled={disabled} title={label}
+    className={cn('h-6 w-7 flex items-center justify-center rounded text-[12px] transition-colors', disabled && 'opacity-30 cursor-not-allowed', active && 'bg-white/15')}
+    style={{ color: highlight && !disabled ? 'white' : `${tc}b0`, background: highlight && !disabled ? '#388a34' : undefined }}>
+    {icon}
+  </button>
+}
+
+function Overlay({ children, onClose }: Readonly<{ children: React.ReactNode; onClose: () => void }>) {
+  return <div className="fixed inset-0 z-[60] bg-black/30 flex items-start justify-center pt-[10vh]" onClick={onClose}><div onClick={e => e.stopPropagation()}>{children}</div></div>
+}
+
+function InputDialog({ title, placeholder, value, onChange, onSubmit, onClose, bg, tc, bc }: Readonly<{
+  title: string; placeholder: string; value: string; onChange: (v: string) => void; onSubmit: () => void; onClose: () => void; bg: string; tc: string; bc: string
 }>) {
   return (
-    <button onClick={onClick}
-      className={cn('w-full flex items-center gap-2 px-3 py-1 text-[12px] rounded-sm transition-colors text-left',
-        active ? 'bg-[#37373d] text-[#cccccc]' : 'text-[#cccccc]/70 hover:bg-[#2a2d2e]')}>
-      <span className="text-[10px] flex-shrink-0">{LANG_ICONS[item.language] || '📄'}</span>
-      <span className="truncate">{item.filename || `${item.language} snippet`}</span>
-    </button>
+    <Overlay onClose={onClose}>
+      <div className="rounded-lg shadow-2xl w-[400px] overflow-hidden border" style={{ background: bg, borderColor: bc }}>
+        <div className="px-4 py-3 text-xs" style={{ color: `${tc}60` }}>{title}</div>
+        <div className="px-4 pb-4">
+          <input autoFocus value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onSubmit(); if (e.key === 'Escape') onClose() }}
+            placeholder={placeholder} className="w-full h-8 px-3 rounded text-sm border outline-none" style={{ background: `${tc}15`, borderColor: '#007acc', color: tc }} />
+          <div className="flex justify-end gap-2 mt-3">
+            <button onClick={onClose} className="px-3 py-1 text-xs rounded" style={{ background: `${tc}20`, color: `${tc}70` }}>Cancel</button>
+            <button onClick={onSubmit} className="px-3 py-1 text-xs rounded bg-[#007acc] text-white hover:bg-[#0069b3]">OK</button>
+          </div>
+        </div>
+      </div>
+    </Overlay>
   )
 }
 
-function EditorTab({ item, active, onClick, onClose }: Readonly<{
-  item: CodeItem; active: boolean; onClick: () => void; onClose: (e: React.MouseEvent) => void
+function SettingsPanel({ fontSize, setFontSize, tabSize, setTabSize, showMinimap, setShowMinimap, wordWrap, setWordWrap,
+  autoSave, setAutoSave, fontLigatures, setFontLigatures, bracketPairColorization, setBracketPairColorization,
+  stickyScroll, setStickyScroll, rulers, setRulers, renderWhitespace, setRenderWhitespace,
+  cursorStyle, setCursorStyle, lineHeight, setLineHeight, lineNumbers, setLineNumbers,
+  fontFamily, setFontFamily, tc }: Readonly<{
+  fontSize: number; setFontSize: (v: number) => void; tabSize: number; setTabSize: (v: number) => void
+  showMinimap: boolean; setShowMinimap: (v: boolean) => void; wordWrap: 'on' | 'off'; setWordWrap: (v: 'on' | 'off') => void
+  autoSave: boolean; setAutoSave: (v: boolean) => void; fontLigatures: boolean; setFontLigatures: (v: boolean) => void
+  bracketPairColorization: boolean; setBracketPairColorization: (v: boolean) => void; stickyScroll: boolean; setStickyScroll: (v: boolean) => void
+  rulers: boolean; setRulers: (v: boolean) => void; renderWhitespace: string; setRenderWhitespace: (v: 'none' | 'selection' | 'all') => void
+  cursorStyle: string; setCursorStyle: (v: 'line' | 'block' | 'underline') => void; lineHeight: number; setLineHeight: (v: number) => void
+  lineNumbers: string; setLineNumbers: (v: 'on' | 'off' | 'relative') => void
+  fontFamily: string; setFontFamily: (v: string) => void; tc: string
 }>) {
   return (
-    <button onClick={onClick}
-      className={cn('group flex items-center gap-1.5 px-3 h-full text-[12px] border-r border-[#1e1e1e] min-w-0 flex-shrink-0',
-        active ? 'bg-[#1e1e1e] text-[#cccccc] border-t-2 border-t-[#007acc]' : 'bg-[#2d2d2d] text-[#cccccc]/60 hover:bg-[#2d2d2d]/80 border-t-2 border-t-transparent')}>
-      <span className="text-[9px] flex-shrink-0">{LANG_ICONS[item.language] || '📄'}</span>
-      <span className="truncate max-w-[120px]">{item.filename || `${item.language} snippet`}</span>
-      <span onClick={onClose} className="ml-1 w-4 h-4 flex items-center justify-center rounded text-[10px] opacity-0 group-hover:opacity-100 hover:bg-[#505050] flex-shrink-0">✕</span>
-    </button>
+    <div className="flex flex-col h-full overflow-y-auto">
+      <div className="h-8 px-4 flex items-center text-[11px] uppercase tracking-wider font-semibold flex-shrink-0" style={{ color: `${tc}60` }}>Settings</div>
+      <div className="px-3 space-y-3 pb-4 text-[12px]">
+        <SRow label="Font Size" tc={tc}><input type="range" min={10} max={32} value={fontSize} onChange={e => setFontSize(+e.target.value)} className="w-16 h-1" /><span className="w-5 text-center text-[11px]">{fontSize}</span></SRow>
+        <SRow label="Tab Size" tc={tc}>{[2, 4, 8].map(n => <button key={n} onClick={() => setTabSize(n)} className={cn('px-2 py-0.5 rounded text-[11px]', tabSize === n ? 'bg-[#007acc] text-white' : 'bg-white/10')}>{n}</button>)}</SRow>
+        <SRow label="Line Height" tc={tc}><input type="range" min={16} max={30} value={lineHeight} onChange={e => setLineHeight(+e.target.value)} className="w-16 h-1" /><span className="w-5 text-center text-[11px]">{lineHeight}</span></SRow>
+        <SRow label="Cursor" tc={tc}>{(['line', 'block', 'underline'] as const).map(s => <button key={s} onClick={() => setCursorStyle(s)} className={cn('px-1.5 py-0.5 rounded text-[10px]', cursorStyle === s ? 'bg-[#007acc] text-white' : 'bg-white/10')}>{s}</button>)}</SRow>
+        <SRow label="Whitespace" tc={tc}>{(['none', 'selection', 'all'] as const).map(s => <button key={s} onClick={() => setRenderWhitespace(s)} className={cn('px-1.5 py-0.5 rounded text-[10px]', renderWhitespace === s ? 'bg-[#007acc] text-white' : 'bg-white/10')}>{s}</button>)}</SRow>
+        <SRow label="Line Numbers" tc={tc}>{(['on', 'off', 'relative'] as const).map(s => <button key={s} onClick={() => setLineNumbers(s)} className={cn('px-1.5 py-0.5 rounded text-[10px]', lineNumbers === s ? 'bg-[#007acc] text-white' : 'bg-white/10')}>{s}</button>)}</SRow>
+        <div>
+          <div className="text-[11px] mb-1" style={{ color: `${tc}70` }}>Font Family</div>
+          <select value={fontFamily} onChange={e => setFontFamily(e.target.value)} className="w-full h-7 px-2 text-[11px] rounded border-0 outline-none" style={{ background: `${tc}15`, color: tc }}>
+            {FONT_FAMILIES.map(f => <option key={f} value={f}>{f.split(',')[0].replace(/'/g, '')}</option>)}
+          </select>
+        </div>
+        <Tog label="Minimap" value={showMinimap} onChange={setShowMinimap} tc={tc} />
+        <Tog label="Word Wrap" value={wordWrap === 'on'} onChange={v => setWordWrap(v ? 'on' : 'off')} tc={tc} />
+        <Tog label="Auto Save (1s)" value={autoSave} onChange={setAutoSave} tc={tc} />
+        <Tog label="Font Ligatures" value={fontLigatures} onChange={setFontLigatures} tc={tc} />
+        <Tog label="Bracket Colors" value={bracketPairColorization} onChange={setBracketPairColorization} tc={tc} />
+        <Tog label="Sticky Scroll" value={stickyScroll} onChange={setStickyScroll} tc={tc} />
+        <Tog label="Rulers (80, 120)" value={rulers} onChange={setRulers} tc={tc} />
+      </div>
+    </div>
   )
 }
 
-function ToolbarButton({ icon, label, onClick, disabled, active, highlight }: Readonly<{
-  icon: string; label: string; onClick: () => void; disabled?: boolean; active?: boolean; highlight?: boolean
-}>) {
-  return (
-    <button onClick={onClick} disabled={disabled} title={label}
-      className={cn('h-6 px-2 flex items-center gap-1 rounded text-[11px] transition-colors',
-        disabled && 'opacity-30 cursor-not-allowed',
-        active && 'bg-[#505050]/60 text-[#cccccc]',
-        highlight && !disabled ? 'bg-[#388a34] hover:bg-[#369432] text-white' : 'text-[#cccccc]/70 hover:text-[#cccccc] hover:bg-[#505050]/40')}>
-      <span className="text-[10px]">{icon}</span><span>{label}</span>
-    </button>
-  )
+function SRow({ label, children, tc }: Readonly<{ label: string; children: React.ReactNode; tc: string }>) {
+  return <div className="flex items-center justify-between"><span style={{ color: `${tc}90` }}>{label}</span><div className="flex items-center gap-1">{children}</div></div>
 }
 
-function ToolbarDivider() {
-  return <div className="w-px h-4 bg-[#505050]/50 mx-0.5" />
+function Tog({ label, value, onChange, tc }: Readonly<{ label: string; value: boolean; onChange: (v: boolean) => void; tc: string }>) {
+  return <div className="flex items-center justify-between"><span style={{ color: `${tc}90` }}>{label}</span>
+    <button onClick={() => onChange(!value)} className={cn('w-9 h-5 rounded-full transition-colors relative', value ? 'bg-[#007acc]' : 'bg-white/20')}>
+      <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform', value ? 'left-[18px]' : 'left-0.5')} />
+    </button></div>
 }
 
-function PreviewFromJS({ code, lang }: Readonly<{ code: string; lang: string }>) {
-  const ref = useRef<HTMLIFrameElement>(null)
-  useEffect(() => {
-    if (!ref.current) return
-    const doc = ref.current.contentDocument
-    if (!doc) return
-    if (lang === 'css') {
-      doc.open() // NOSONAR
-      doc.write(`<!DOCTYPE html><html><head><style>${code}</style></head><body><div class="preview"><h1>CSS Preview</h1><p>Your styles are applied to this page.</p><button>Button</button><a href="#">Link</a><ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul></div></body></html>`) // NOSONAR
-      doc.close()
-    } else if (lang === 'javascript') {
-      doc.open() // NOSONAR
-      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui;padding:20px;background:#1e1e1e;color:#ccc}pre{background:#252526;padding:12px;border-radius:6px;white-space:pre-wrap}</style></head><body><pre id="output"></pre><script>
-const _out=document.getElementById('output');
-const _log=console.log;
-console.log=function(){_out.textContent+=Array.from(arguments).join(' ')+'\\n';_log.apply(console,arguments)};
-console.error=function(){const s=document.createElement('span');s.style.color='#f44747';s.textContent=Array.from(arguments).join(' ')+'\\n';_out.appendChild(s)};
-try{${code}}catch(e){console.error(e.message)}
-</` + `script></body></html>`) // NOSONAR
-      doc.close()
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function syntaxHighlightJson(json: string): string {
+  return escapeHtml(json).replace(
+    /("(\\u[\da-fA-F]{4}|\\[^u]|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+    (match) => {
+      let cls = 'number'
+      if (match.startsWith('"')) { cls = match.endsWith(':') ? 'key' : 'string' }
+      else if (/true|false/.test(match)) cls = 'boolean'
+      else if (match === 'null') cls = 'null'
+      return `<span class="${cls}">${match}</span>`
     }
-  }, [code, lang])
-  return <iframe ref={ref} className="w-full h-full border-none" title="Preview" sandbox="allow-scripts" />
+  )
+}
+
+function simpleMarkdown(md: string): string {
+  return md
+    .replace(/^---$/gm, '<hr>')
+    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replace(/^\|(.+)\|$/gm, (_, row) => '<tr>' + (row as string).split('|').map((cell: string) => `<td>${cell.trim()}</td>`).join('') + '</tr>')
+    .replace(/(<tr>.*<\/tr>\n?)+/g, (m) => `<table>${m}</table>`)
+    .replace(/^\- \[x\] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" checked disabled /> $1</li>')
+    .replace(/^\- \[ \] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" disabled /> $1</li>')
+    .replace(/^\- (.+)$/gm, '<li>$1</li>')
+    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+    .replace(/\n{2,}/g, '<br><br>')
+    .replace(/\n/g, '<br>')
 }

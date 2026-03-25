@@ -341,10 +341,10 @@ Always tell the user what you're creating before calling the tool. After generat
 
   base += `
 
-=== JARVIS IDE (Full Control) ===
-You have FULL CONTROL of a built-in IDE. You can create files, edit code, navigate, run, debug, and fix errors autonomously.
+=== JARVIS IDE (Full Autonomous Control) ===
+You have COMPLETE AUTONOMOUS CONTROL of a full-featured IDE. You can create, edit, run, debug, navigate, configure, and manage everything yourself.
 
-File Management:
+FILE MANAGEMENT:
 - show_code: Display code in the IDE (quick way to create a file).
 - ide_create_file: Create a new file with a filename, code, and language.
 - ide_edit_file: Replace the entire content of a file by ID.
@@ -353,29 +353,56 @@ File Management:
 - ide_open_file: Switch the active tab to a file.
 - ide_get_files: List all open files with IDs.
 - ide_read_file: Read the contents of a file (or the active file).
+- ide_create_from_template: Create a new file from a template (HTML Page, React Component, Python Script, Express Server, CSS Stylesheet, JSON Config, Markdown README, Python Flask API).
 
-Editing:
+EDITING:
 - ide_replace_text: Find and replace text in the active file. Use for targeted fixes.
 - ide_find_in_file: Search for text in the active file (returns line numbers).
+- ide_search_all_files: Search across ALL open files (returns file, line, text).
+- ide_go_to_line: Jump the cursor to a specific line number.
+- ide_format_document: Auto-format the current document.
 
-Execution & Debugging:
+EXECUTION & DEBUGGING:
 - run_code: Execute Python or JavaScript code directly and return output.
-- ide_run_and_fix: Run the active file and return results with error detection. If errors are found, use ide_replace_text or ide_edit_file to fix them, then run again.
+- ide_run_and_fix: Run the active file and return results with error detection.
+- ide_get_problems: Get all detected errors/warnings from the last run.
+- ide_get_terminal_output: Get the full terminal history/output.
 
-Preview:
+LAYOUT & PANELS:
 - ide_toggle_preview: Toggle live preview panel for HTML/CSS/JS.
+- ide_toggle_terminal: Show/hide the terminal panel.
+- ide_toggle_zen_mode: Toggle distraction-free zen mode.
+- ide_toggle_split_editor: Split the editor to show two files side by side.
+- ide_toggle_diff_editor: Compare two files in a diff view.
+- ide_toggle_explorer: Show/hide the file explorer sidebar.
+- ide_toggle_problems_panel: Show/hide the problems panel.
+- ide_toggle_search_panel: Show/hide the search-across-files panel.
+- ide_toggle_outline_panel: Show/hide the code outline/symbols panel.
+- ide_toggle_settings_panel: Show/hide the settings panel.
 
-External Resources:
-- search_huggingface / search_github: Find datasets, models, repos, and code examples.
+THEME & SETTINGS:
+- ide_set_theme: Switch between themes (jarvis-dark, monokai, dracula, github-dark, one-dark, solarized-dark, vs-light, hc-black).
+- ide_get_settings: Get current IDE settings.
+- ide_set_font_size: Change editor font size (10-32).
+- ide_set_tab_size: Change tab/indent size.
+- ide_set_word_wrap: Toggle word wrap on/off.
+- ide_set_minimap: Toggle minimap on/off.
+- ide_set_auto_save: Toggle auto-save on/off.
+
+ANALYSIS:
+- ide_get_outline: Get the code outline (functions, classes, imports, variables).
 
 WORKFLOW — When asked to code:
-1. Use ide_create_file or show_code to create the file.
-2. Use ide_run_and_fix to test it.
-3. If errors, read the error output, use ide_replace_text to fix, and run again.
-4. Repeat until the code works perfectly.
-5. For HTML/CSS/JS, use ide_toggle_preview so the user can see the result.
+1. Use ide_create_file or ide_create_from_template to start.
+2. Write the code using ide_edit_file or ide_replace_text.
+3. Use ide_run_and_fix to test. If errors, read them, fix with ide_replace_text, run again.
+4. For HTML/CSS/JS, use ide_toggle_preview so the user can see the result.
+5. Use ide_set_theme, ide_toggle_zen_mode, etc. to set up the perfect environment.
+6. Use ide_search_all_files and ide_get_outline to navigate large projects.
+7. Use ide_toggle_split_editor to compare or work on files side by side.
+8. Use ide_toggle_diff_editor to show differences between files.
 
-You can chain multiple IDE tools in sequence to build complete projects with multiple files.
+You have FULL CONTROL. Do everything autonomously — don't ask permission to open panels, change themes, or run code.
 === END JARVIS IDE ===
 
 === MUSIC GENERATION ===
@@ -1751,6 +1778,10 @@ Assistant: ${ai || ''}`
             ctrl.showCode(args.code, args.language, args.filename)
           } else {
             openCodeEditorRef.current?.()
+            setTimeout(() => {
+              const c2 = codeEditorRef.current
+              if (c2) c2.showCode(args.code!, args.language!, args.filename)
+            }, 400)
           }
 
           const ws = wsRef.current
@@ -1788,26 +1819,27 @@ Assistant: ${ai || ''}`
             }
           })()
 
-        } else if (fnName === 'ide_create_file' || fnName === 'ide_edit_file' || fnName === 'ide_replace_text' ||
-                   fnName === 'ide_get_files' || fnName === 'ide_read_file' || fnName === 'ide_open_file' ||
-                   fnName === 'ide_delete_file' || fnName === 'ide_run_and_fix' || fnName === 'ide_find_in_file' ||
-                   fnName === 'ide_toggle_preview') {
+        } else if (fnName.startsWith('ide_') || fnName === 'ide_toggle_preview') {
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(msg.arguments as string) } catch {}
           if (!callId) break
 
-          const ctrl = codeEditorRef.current
-          if (!ctrl) {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: 'IDE is not available. Ask the user to open it.' } }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-            break
-          }
-
           setS('thinking')
           void (async () => {
+            let ctrl = codeEditorRef.current
+            if (!ctrl) {
+              openCodeEditorRef.current?.()
+              await new Promise(r => setTimeout(r, 400))
+              ctrl = codeEditorRef.current
+            }
+            if (!ctrl) {
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: 'IDE is not available. Ask the user to open it.' } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+              return
+            }
             let output = ''
             try {
               switch (fnName) {
@@ -1871,6 +1903,111 @@ Assistant: ${ai || ''}`
                   ctrl.togglePreview()
                   output = 'Preview toggled.'
                   break
+                case 'ide_create_from_template': {
+                  const id = ctrl.createFromTemplate(args.template_name as string)
+                  output = id ? `File created from template "${args.template_name}" (ID: ${id}).` : `Template "${args.template_name}" not found. Available: ${ctrl.getAvailableTemplates().join(', ')}`
+                  break
+                }
+                case 'ide_search_all_files': {
+                  const results = ctrl.searchAllFiles(args.query as string)
+                  output = results.length === 0 ? 'No matches across files.'
+                    : `Found ${results.length} match(es):\n${results.slice(0, 20).map(r => `  ${r.filename}:${r.line}: ${r.text}`).join('\n')}`
+                  break
+                }
+                case 'ide_go_to_line':
+                  ctrl.goToLine(args.line as number)
+                  output = `Jumped to line ${args.line}.`
+                  break
+                case 'ide_format_document':
+                  ctrl.formatDocument()
+                  output = 'Document formatted.'
+                  break
+                case 'ide_get_problems': {
+                  const probs = ctrl.getProblems()
+                  output = probs.length === 0 ? 'No problems detected.'
+                    : `${probs.length} problem(s):\n${probs.map(p => `  ${p.source}:${p.line}:${p.column} [${p.severity}] ${p.message}`).join('\n')}`
+                  break
+                }
+                case 'ide_get_terminal_output':
+                  output = ctrl.getTerminalOutput() || '(terminal is empty)'
+                  break
+                case 'ide_toggle_terminal':
+                  ctrl.toggleTerminal()
+                  output = 'Terminal toggled.'
+                  break
+                case 'ide_toggle_zen_mode':
+                  ctrl.toggleZenMode()
+                  output = 'Zen mode toggled.'
+                  break
+                case 'ide_toggle_split_editor':
+                  ctrl.toggleSplitEditor(args.file_id as string | undefined)
+                  output = 'Split editor toggled.'
+                  break
+                case 'ide_toggle_diff_editor':
+                  ctrl.toggleDiffEditor(args.target_file_id as string | undefined)
+                  output = 'Diff editor toggled.'
+                  break
+                case 'ide_toggle_explorer':
+                  ctrl.toggleExplorer()
+                  output = 'Explorer toggled.'
+                  break
+                case 'ide_toggle_problems_panel':
+                  ctrl.toggleProblemsPanel()
+                  output = 'Problems panel toggled.'
+                  break
+                case 'ide_toggle_search_panel':
+                  ctrl.toggleSearchPanel()
+                  output = 'Search panel toggled.'
+                  break
+                case 'ide_toggle_outline_panel':
+                  ctrl.toggleOutlinePanel()
+                  output = 'Outline panel toggled.'
+                  break
+                case 'ide_toggle_settings_panel':
+                  ctrl.toggleSettingsPanel()
+                  output = 'Settings panel toggled.'
+                  break
+                case 'ide_set_theme':
+                  ctrl.setTheme(args.theme_id as string)
+                  output = `Theme changed to "${args.theme_id}".`
+                  break
+                case 'ide_get_settings':
+                  output = JSON.stringify(ctrl.getSettings(), null, 2)
+                  break
+                case 'ide_set_font_size':
+                  ctrl.setFontSize(args.size as number)
+                  output = `Font size set to ${args.size}.`
+                  break
+                case 'ide_set_tab_size':
+                  ctrl.setTabSize(args.size as number)
+                  output = `Tab size set to ${args.size}.`
+                  break
+                case 'ide_set_word_wrap':
+                  ctrl.setWordWrap(!!args.enabled)
+                  output = `Word wrap ${args.enabled ? 'enabled' : 'disabled'}.`
+                  break
+                case 'ide_set_minimap':
+                  ctrl.setMinimap(!!args.enabled)
+                  output = `Minimap ${args.enabled ? 'enabled' : 'disabled'}.`
+                  break
+                case 'ide_set_auto_save':
+                  ctrl.setAutoSave(!!args.enabled)
+                  output = `Auto-save ${args.enabled ? 'enabled' : 'disabled'}.`
+                  break
+                case 'ide_get_outline': {
+                  const symbols = ctrl.getOutlineSymbols()
+                  output = symbols.length === 0 ? 'No symbols found in the current file.'
+                    : `${symbols.length} symbol(s):\n${symbols.map(s => `  Line ${s.line}: [${s.kind}] ${s.name}`).join('\n')}`
+                  break
+                }
+                case 'ide_get_available_templates':
+                  output = `Available templates:\n${ctrl.getAvailableTemplates().map(t => `  - ${t}`).join('\n')}`
+                  break
+                case 'ide_get_available_themes':
+                  output = `Available themes:\n${ctrl.getAvailableThemes().map(t => `  - ${t.id}: ${t.label}`).join('\n')}`
+                  break
+                default:
+                  output = `Unknown IDE command: ${fnName}`
               }
             } catch (e) {
               output = `IDE error: ${e instanceof Error ? e.message : String(e)}`
@@ -2522,6 +2659,156 @@ Assistant: ${ai || ''}`
             type: 'function',
             name: 'ide_toggle_preview',
             description: 'Toggle the live preview panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_create_from_template',
+            description: 'Create a new file from a built-in template (HTML Page, React Component, Python Script, Express Server, CSS Stylesheet, JSON Config, Markdown README, Python Flask API).',
+            parameters: { type: 'object', properties: { template_name: { type: 'string', description: 'Template name' } }, required: ['template_name'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_search_all_files',
+            description: 'Search for text across ALL open files. Returns matching files, lines, and text.',
+            parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_go_to_line',
+            description: 'Jump the cursor to a specific line number in the active file.',
+            parameters: { type: 'object', properties: { line: { type: 'number' } }, required: ['line'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_format_document',
+            description: 'Auto-format the current document.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_problems',
+            description: 'Get all detected errors/warnings from the last code run.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_terminal_output',
+            description: 'Get the full terminal output history.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_terminal',
+            description: 'Show or hide the terminal panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_zen_mode',
+            description: 'Toggle distraction-free zen mode (hides all panels except editor).',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_split_editor',
+            description: 'Split the editor to show two files side by side.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string', description: 'Optional file ID to show in the split pane' } } },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_diff_editor',
+            description: 'Compare two files in a diff view.',
+            parameters: { type: 'object', properties: { target_file_id: { type: 'string', description: 'File ID to compare against the active file' } } },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_explorer',
+            description: 'Show or hide the file explorer sidebar.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_problems_panel',
+            description: 'Show the problems panel with errors and warnings.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_search_panel',
+            description: 'Show the search-across-files panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_outline_panel',
+            description: 'Show the code outline/symbols panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_toggle_settings_panel',
+            description: 'Show the IDE settings panel.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_theme',
+            description: 'Change the IDE theme. Options: jarvis-dark, monokai, dracula, github-dark, one-dark, solarized-dark, vs-light, hc-black.',
+            parameters: { type: 'object', properties: { theme_id: { type: 'string' } }, required: ['theme_id'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_settings',
+            description: 'Get current IDE settings (theme, font size, tab size, word wrap, minimap, auto-save).',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_font_size',
+            description: 'Change the editor font size (10-32).',
+            parameters: { type: 'object', properties: { size: { type: 'number' } }, required: ['size'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_tab_size',
+            description: 'Change the tab/indent size.',
+            parameters: { type: 'object', properties: { size: { type: 'number' } }, required: ['size'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_word_wrap',
+            description: 'Toggle word wrap on or off.',
+            parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_minimap',
+            description: 'Toggle the minimap on or off.',
+            parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_set_auto_save',
+            description: 'Toggle auto-save on or off.',
+            parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_outline',
+            description: 'Get the code outline — functions, classes, imports, and variables with line numbers.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_available_templates',
+            description: 'List available file templates.',
+            parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_get_available_themes',
+            description: 'List available IDE themes.',
             parameters: { type: 'object', properties: {} },
           },
           {

@@ -326,6 +326,206 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
   {
     type: 'function',
     function: {
+      name: 'ide_create_from_template',
+      description: 'Create a new file from a built-in template (HTML Page, React Component, Python Script, Express Server, CSS Stylesheet, JSON Config, Markdown README, Python Flask API).',
+      parameters: { type: 'object', properties: { template_name: { type: 'string', description: 'Template name' } }, required: ['template_name'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_search_all_files',
+      description: 'Search for text across ALL open files. Returns matching files, lines, and text.',
+      parameters: { type: 'object', properties: { query: { type: 'string', description: 'Text to search for' } }, required: ['query'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_go_to_line',
+      description: 'Jump the cursor to a specific line number in the active file.',
+      parameters: { type: 'object', properties: { line: { type: 'number', description: 'Line number to jump to' } }, required: ['line'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_format_document',
+      description: 'Auto-format the current document.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_problems',
+      description: 'Get all detected errors/warnings from the last code run.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_terminal_output',
+      description: 'Get the full terminal output history.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_terminal',
+      description: 'Show or hide the terminal panel.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_zen_mode',
+      description: 'Toggle distraction-free zen mode.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_split_editor',
+      description: 'Split the editor to show two files side by side.',
+      parameters: { type: 'object', properties: { file_id: { type: 'string', description: 'Optional file ID to show in the split pane' } } },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_diff_editor',
+      description: 'Compare two files in a diff view.',
+      parameters: { type: 'object', properties: { target_file_id: { type: 'string', description: 'File ID to compare against the active file' } } },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_explorer',
+      description: 'Show or hide the file explorer sidebar.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_problems_panel',
+      description: 'Show the problems panel with errors and warnings.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_search_panel',
+      description: 'Show the search-across-files panel in the sidebar.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_outline_panel',
+      description: 'Show the code outline/symbols panel.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_toggle_settings_panel',
+      description: 'Show the IDE settings panel.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_theme',
+      description: 'Change the IDE theme. Options: jarvis-dark, monokai, dracula, github-dark, one-dark, solarized-dark, vs-light, hc-black.',
+      parameters: { type: 'object', properties: { theme_id: { type: 'string', description: 'Theme ID' } }, required: ['theme_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_settings',
+      description: 'Get current IDE settings (theme, font size, tab size, word wrap, minimap, auto-save).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_font_size',
+      description: 'Change the editor font size (10-32).',
+      parameters: { type: 'object', properties: { size: { type: 'number', description: 'Font size' } }, required: ['size'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_tab_size',
+      description: 'Change the tab/indent size.',
+      parameters: { type: 'object', properties: { size: { type: 'number', description: 'Tab size (2, 4, or 8)' } }, required: ['size'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_word_wrap',
+      description: 'Toggle word wrap on or off.',
+      parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_minimap',
+      description: 'Toggle the minimap on or off.',
+      parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_set_auto_save',
+      description: 'Toggle auto-save on or off.',
+      parameters: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_outline',
+      description: 'Get the code outline — functions, classes, imports, and variables with line numbers.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_available_templates',
+      description: 'List available file templates.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ide_get_available_themes',
+      description: 'List available IDE themes.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_huggingface',
       description: 'Search Hugging Face for datasets or models by keyword.',
       parameters: {
@@ -618,6 +818,10 @@ function createToolExecutor(deps: ToolExecutorDeps) {
     musicPlayerControl, openMusicPlayer, onMusicGenerating, onMusicGeneratingLabel,
   } = deps
   return async (name: string, args: Record<string, unknown>): Promise<string> => {
+    if (name.startsWith('ide_') && !codeEditorControl) {
+      openCodeEditor?.()
+      await new Promise(r => setTimeout(r, 400))
+    }
     switch (name) {
       case 'web_search': {
         const query = args.query as string
@@ -934,6 +1138,169 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         if (!codeEditorControl) return 'IDE is not available.'
         codeEditorControl.togglePreview()
         return 'Preview panel toggled.'
+      }
+
+      case 'ide_create_from_template': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const tName = args.template_name as string
+        if (!tName) return 'Missing template_name.'
+        const id = codeEditorControl.createFromTemplate(tName)
+        if (!id) return `Template "${tName}" not found. Available: ${codeEditorControl.getAvailableTemplates().join(', ')}`
+        return `File created from template "${tName}" (ID: ${id}).`
+      }
+
+      case 'ide_search_all_files': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const sq = args.query as string
+        if (!sq) return 'Missing query.'
+        const results = codeEditorControl.searchAllFiles(sq)
+        if (results.length === 0) return `No matches for "${sq}" across files.`
+        return `Found ${results.length} match(es):\n${results.slice(0, 30).map(r => `  ${r.filename}:${r.line}: ${r.text}`).join('\n')}`
+      }
+
+      case 'ide_go_to_line': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const ln = args.line as number
+        if (!ln) return 'Missing line number.'
+        codeEditorControl.goToLine(ln)
+        return `Jumped to line ${ln}.`
+      }
+
+      case 'ide_format_document': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.formatDocument()
+        return 'Document formatted.'
+      }
+
+      case 'ide_get_problems': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const probs = codeEditorControl.getProblems()
+        if (probs.length === 0) return 'No problems detected.'
+        return `${probs.length} problem(s):\n${probs.map(p => `  ${p.source}:${p.line}:${p.column} [${p.severity}] ${p.message}`).join('\n')}`
+      }
+
+      case 'ide_get_terminal_output': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const tout = codeEditorControl.getTerminalOutput()
+        return tout || '(terminal is empty)'
+      }
+
+      case 'ide_toggle_terminal': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleTerminal()
+        return 'Terminal panel toggled.'
+      }
+
+      case 'ide_toggle_zen_mode': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleZenMode()
+        return 'Zen mode toggled.'
+      }
+
+      case 'ide_toggle_split_editor': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleSplitEditor(args.file_id as string | undefined)
+        return 'Split editor toggled.'
+      }
+
+      case 'ide_toggle_diff_editor': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleDiffEditor(args.target_file_id as string | undefined)
+        return 'Diff editor toggled.'
+      }
+
+      case 'ide_toggle_explorer': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleExplorer()
+        return 'Explorer panel toggled.'
+      }
+
+      case 'ide_toggle_problems_panel': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleProblemsPanel()
+        return 'Problems panel toggled.'
+      }
+
+      case 'ide_toggle_search_panel': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleSearchPanel()
+        return 'Search panel toggled.'
+      }
+
+      case 'ide_toggle_outline_panel': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleOutlinePanel()
+        return 'Outline panel toggled.'
+      }
+
+      case 'ide_toggle_settings_panel': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.toggleSettingsPanel()
+        return 'Settings panel toggled.'
+      }
+
+      case 'ide_set_theme': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const tid = args.theme_id as string
+        if (!tid) return 'Missing theme_id.'
+        codeEditorControl.setTheme(tid)
+        return `Theme changed to "${tid}".`
+      }
+
+      case 'ide_get_settings': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        return JSON.stringify(codeEditorControl.getSettings(), null, 2)
+      }
+
+      case 'ide_set_font_size': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const sz = args.size as number
+        if (!sz) return 'Missing size.'
+        codeEditorControl.setFontSize(sz)
+        return `Font size set to ${sz}.`
+      }
+
+      case 'ide_set_tab_size': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const ts = args.size as number
+        if (!ts) return 'Missing size.'
+        codeEditorControl.setTabSize(ts)
+        return `Tab size set to ${ts}.`
+      }
+
+      case 'ide_set_word_wrap': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.setWordWrap(!!args.enabled)
+        return `Word wrap ${args.enabled ? 'enabled' : 'disabled'}.`
+      }
+
+      case 'ide_set_minimap': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.setMinimap(!!args.enabled)
+        return `Minimap ${args.enabled ? 'enabled' : 'disabled'}.`
+      }
+
+      case 'ide_set_auto_save': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        codeEditorControl.setAutoSave(!!args.enabled)
+        return `Auto-save ${args.enabled ? 'enabled' : 'disabled'}.`
+      }
+
+      case 'ide_get_outline': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const symbols = codeEditorControl.getOutlineSymbols()
+        if (symbols.length === 0) return 'No symbols found in the current file.'
+        return `${symbols.length} symbol(s):\n${symbols.map(s => `  Line ${s.line}: [${s.kind}] ${s.name}`).join('\n')}`
+      }
+
+      case 'ide_get_available_templates': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        return `Available templates:\n${codeEditorControl.getAvailableTemplates().map(t => `  - ${t}`).join('\n')}`
+      }
+
+      case 'ide_get_available_themes': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        return `Available themes:\n${codeEditorControl.getAvailableThemes().map(t => `  - ${t.id}: ${t.label}`).join('\n')}`
       }
 
       case 'search_huggingface': {
