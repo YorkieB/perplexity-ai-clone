@@ -6,7 +6,11 @@ const http = require('node:http')
 const https = require('node:https')
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFile, exec } = require('node:child_process')
+const { promisify } = require('node:util')
 const { Readable } = require('node:stream')
+const execFileAsync = promisify(execFile)
+const execAsync = promisify(exec)
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron')
 const jarvisDb = require('./jarvis-db.cjs')
 const ragDb = require('./rag-db.cjs')
@@ -44,7 +48,7 @@ function setupBrowserSession() {
 
   const envExt = (process.env.ELECTRON_BROWSER_EXTENSION_PATH || '').trim()
   if (envExt && fs.existsSync(envExt)) {
-    ses.loadExtension(envExt).catch((err) => {
+    ses.loadExtension(envExt).catch((err) => { // NOSONAR
       console.error('[electron] loadExtension failed:', err)
     })
   }
@@ -66,7 +70,7 @@ function registerBrowserIpc() {
       return { ok: false, error: 'Path does not exist' }
     }
     try {
-      const ext = await session.fromPartition(BROWSER_PARTITION).loadExtension(resolved)
+      const ext = await session.fromPartition(BROWSER_PARTITION).loadExtension(resolved) // NOSONAR
       return { ok: true, name: ext.name, version: ext.version }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -82,6 +86,244 @@ function registerBrowserIpc() {
     if (r.canceled || !r.filePaths[0]) return null
     return r.filePaths[0]
   })
+}
+
+function getJarvisMainWindow() {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed()) return focused
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+  return null
+}
+
+function registerJarvisIdeIpc() {
+  ipcMain.handle('jarvis-ide-app-root', () => PROJECT_ROOT)
+
+  ipcMain.handle('jarvis-ide-open-files', async () => {
+    const w = getJarvisMainWindow()
+    if (!w) return []
+    const r = await dialog.showOpenDialog(w, {
+      properties: ['openFile', 'multiSelections'],
+    })
+    if (r.canceled || !r.filePaths[0]) return []
+    const out = []
+    for (const p of r.filePaths) {
+      try {
+        const content = fs.readFileSync(p, 'utf8')
+        out.push({ path: p, name: path.basename(p), content })
+      } catch (e) {
+        out.push({ path: p, name: path.basename(p), error: e instanceof Error ? e.message : String(e) })
+      }
+    }
+    return out
+  })
+
+  ipcMain.handle('jarvis-ide-open-folder', async () => {
+    const w = getJarvisMainWindow()
+    if (!w) return null
+    const r = await dialog.showOpenDialog(w, {
+      properties: ['openDirectory'],
+    })
+    if (r.canceled || !r.filePaths[0]) return null
+    return r.filePaths[0]
+  })
+
+  ipcMain.handle('jarvis-ide-save-file', async (_e, opts) => {
+    const w = getJarvisMainWindow()
+    if (!w || !opts || typeof opts !== 'object') return null
+    const { defaultPath, content } = opts
+    const r = await dialog.showSaveDialog(w, {
+      defaultPath: typeof defaultPath === 'string' ? defaultPath : undefined,
+    })
+    if (r.canceled || !r.filePath) return null
+    fs.writeFileSync(r.filePath, content == null ? '' : String(content), 'utf8')
+    return r.filePath
+  })
+
+  ipcMain.handle('jarvis-ide-read-dir', async (_e, dirPath) => {
+    if (typeof dirPath !== 'string' || !dirPath) return []
+    const resolved = path.resolve(dirPath)
+    if (!fs.existsSync(resolved)) return []
+    const entries = fs.readdirSync(resolved, { withFileTypes: true })
+    return entries.map((e) => ({ name: e.name, isDir: e.isDirectory() }))
+  })
+
+  ipcMain.handle('jarvis-ide-walk-files', async (_e, rootPath) => {
+    if (typeof rootPath !== 'string') return []
+    const root = path.resolve(rootPath)
+    if (!fs.existsSync(root)) return []
+    const out = []
+    const max = 500
+    const skip = new Set(['node_modules', '.git', 'dist', 'build', '.next'])
+    function walk(dir) {
+      if (out.length >= max) return
+      let ents
+      try {
+        ents = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const e of ents) {
+        if (out.length >= max) return
+        if (e.name.startsWith('.') && e.name !== '.env') continue
+        if (skip.has(e.name)) continue
+        const p = path.join(dir, e.name)
+        if (e.isDirectory()) walk(p)
+        else out.push(path.relative(root, p).replaceAll('\\', '/'))
+      }
+    }
+    walk(root)
+    return out.sort((a, b) => a.localeCompare(b))
+  })
+
+  ipcMain.handle('jarvis-ide-fs-read', async (_e, filePath) => {
+    if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
+    const p = path.resolve(filePath)
+    try {
+      const content = fs.readFileSync(p, 'utf8')
+      return { ok: true, content }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('jarvis-ide-fs-write', async (_e, opts) => {
+    const { filePath, content } = opts || {}
+    if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
+    try {
+      const dir = path.dirname(path.resolve(filePath))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.resolve(filePath), content == null ? '' : String(content), 'utf8')
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('jarvis-ide-fs-delete', async (_e, filePath) => {
+    if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
+    try {
+      fs.unlinkSync(path.resolve(filePath))
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('jarvis-ide-fs-mkdir', async (_e, dirPath) => {
+    if (typeof dirPath !== 'string') return { ok: false, error: 'Invalid path' }
+    try {
+      fs.mkdirSync(path.resolve(dirPath), { recursive: true })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('jarvis-ide-fs-exists', async (_e, p) => {
+    if (typeof p !== 'string') return false
+    return fs.existsSync(path.resolve(p))
+  })
+
+  ipcMain.handle('jarvis-ide-shell-open-path', async (_e, p) => {
+    if (typeof p !== 'string') return 'Invalid path'
+    return shell.openPath(p)
+  })
+
+  ipcMain.handle('jarvis-ide-open-external', async (_e, url) => {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
+    await shell.openExternal(url)
+    return true
+  })
+
+  ipcMain.handle('jarvis-ide-new-window', async () => {
+    await createWindow()
+  })
+
+  ipcMain.handle('jarvis-ide-quit', () => {
+    app.quit()
+  })
+
+  ipcMain.handle('jarvis-ide-toggle-fullscreen', () => {
+    const w = getJarvisMainWindow()
+    if (!w) return false
+    w.setFullScreen(!w.isFullScreen())
+    return w.isFullScreen()
+  })
+
+  ipcMain.handle('jarvis-ide-git', async (_e, opts) => {
+    const { cwd, args } = opts || {}
+    if (typeof cwd !== 'string' || !Array.isArray(args)) {
+      return { ok: false, stdout: '', stderr: '', error: 'invalid' }
+    }
+    try {
+      const r = await execFileAsync('git', args, {
+        cwd,
+        maxBuffer: 10 * 1024 * 1024,
+        encoding: 'utf8',
+      })
+      return { ok: true, stdout: r.stdout || '', stderr: r.stderr || '' }
+    } catch (e) {
+      const err = e
+      return {
+        ok: false,
+        stdout: err && typeof err === 'object' && 'stdout' in err ? String(err.stdout) : '',
+        stderr: err && typeof err === 'object' && 'stderr' in err ? String(err.stderr) : '',
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  })
+
+  ipcMain.handle('jarvis-ide-run-command', async (_e, opts) => {
+    const validation = validateRunCommandArgs(opts)
+    if (validation) return validation
+    const resolved = path.resolve(opts.cwd)
+    const cmd = String(opts.command).trim()
+    try {
+      const r = await execAsync(cmd, {
+        cwd: resolved,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 300000,
+        env: { ...process.env },
+      })
+      return { ok: true, stdout: r.stdout || '', stderr: r.stderr || '', exitCode: 0 }
+    } catch (e) {
+      const err = e
+      const stdout = err && typeof err === 'object' && 'stdout' in err ? String(err.stdout) : ''
+      const stderr = err && typeof err === 'object' && 'stderr' in err ? String(err.stderr) : ''
+      const code =
+        err && typeof err === 'object' && 'code' in err && typeof err.code === 'number'
+          ? err.code
+          : 1
+      return {
+        ok: false,
+        stdout,
+        stderr,
+        exitCode: code,
+        error: err && typeof err === 'object' && err.killed ? 'timeout' : undefined,
+      }
+    }
+  })
+}
+
+function validateRunCommandArgs(opts) {
+  const { cwd, command } = opts || {}
+  const fail = (error) => ({ ok: false, stdout: '', stderr: '', exitCode: null, error })
+  if (typeof cwd !== 'string' || typeof command !== 'string' || !String(command).trim()) {
+    return fail('invalid args')
+  }
+  const resolved = path.resolve(cwd)
+  if (!fs.existsSync(resolved)) {
+    return fail('cwd does not exist')
+  }
+  try {
+    const st = fs.statSync(resolved)
+    if (!st.isDirectory()) {
+      return fail('cwd is not a directory')
+    }
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e))
+  }
+  return null
 }
 
 function loadEnvFromFile() {
@@ -327,7 +569,7 @@ async function handleTtsProxy(req, res) {
     parsed = null
   }
 
-  if (parsed && parsed.provider === 'elevenlabs') {
+  if (parsed?.provider === 'elevenlabs') {
     await handleElevenLabsTtsProxy(req, res, parsed)
     return
   }
@@ -622,16 +864,16 @@ async function handleWakeWordProxy(req, res) {
 
 function stripHtmlToText(html) {
   return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
+    .replaceAll(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replaceAll(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replaceAll(/<[^>]+>/g, ' ')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll(/\s+/g, ' ')
     .trim()
 }
 
@@ -649,7 +891,7 @@ async function searchViaTavily(apiKey, body) {
   }
   if (body.isAdvanced) params.chunks_per_source = 3
   if (body.topic) params.topic = body.topic
-  if (body.includeDomains && body.includeDomains.length) params.include_domains = body.includeDomains
+  if (body.includeDomains?.length) params.include_domains = body.includeDomains
   if (body.timeRange && body.timeRange !== 'any') params.time_range = body.timeRange
 
   const upstream = await fetch('https://api.tavily.com/search', {
@@ -668,8 +910,7 @@ async function searchViaTavily(apiKey, body) {
   }
 }
 
-async function searchViaDuckDuckGo(query, maxResults) {
-  maxResults = maxResults || 6
+async function searchViaDuckDuckGo(query, maxResults = 6) {
   const encoded = encodeURIComponent(query)
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), 10000)
@@ -701,13 +942,13 @@ async function searchViaDuckDuckGo(query, maxResults) {
         href = decodeURIComponent(parsed.searchParams.get('uddg') || href)
       } catch {}
     }
-    const title = m[2].replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim()
+    const title = m[2].replaceAll(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim()
     if (href && title) links.push({ url: href, title })
   }
 
   const snippets = []
   while ((m = snippetRegex.exec(html)) !== null && snippets.length < maxResults) {
-    snippets.push(m[1].replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim())
+    snippets.push(m[1].replaceAll(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim())
   }
 
   for (let i = 0; i < links.length; i++) {
@@ -875,7 +1116,7 @@ async function handleElevenLabsStreamingTts(req, res) {
         body: JSON.stringify({
           text,
           model_id: body.model_id || 'eleven_turbo_v2_5',
-          voice_settings: body.voice_settings || { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
+          voice_settings: body.voice_settings || { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true },
         }),
       }
     )
@@ -1237,32 +1478,40 @@ async function handleLearnedContextGet(_req, res) {
   }
 }
 
+function savePreferences(arr) {
+  for (const p of arr) {
+    if (p.domain && p.key && p.value) jarvisDb.savePreference(p.domain, p.key, p.value)
+  }
+}
+
+function saveCorrections(arr) {
+  for (const c of arr) {
+    if (c.category && c.mistake && c.correction) jarvisDb.saveCorrection(c.category, c.mistake, c.correction, c.context)
+  }
+}
+
+function savePatterns(arr) {
+  for (const p of arr) {
+    if (p.pattern_type && p.description) jarvisDb.savePattern(p.pattern_type, p.description, p.metadata)
+  }
+}
+
+function saveKnowledge(arr) {
+  for (const k of arr) {
+    if (k.topic && k.content) jarvisDb.saveKnowledge(k.topic, k.content, k.source)
+  }
+}
+
 async function handleLearnPost(req, res) {
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
     const { preferences, corrections, patterns, knowledge } = body
 
-    if (preferences) {
-      for (const p of preferences) {
-        if (p.domain && p.key && p.value) jarvisDb.savePreference(p.domain, p.key, p.value)
-      }
-    }
-    if (corrections) {
-      for (const c of corrections) {
-        if (c.category && c.mistake && c.correction) jarvisDb.saveCorrection(c.category, c.mistake, c.correction, c.context)
-      }
-    }
-    if (patterns) {
-      for (const p of patterns) {
-        if (p.pattern_type && p.description) jarvisDb.savePattern(p.pattern_type, p.description, p.metadata)
-      }
-    }
-    if (knowledge) {
-      for (const k of knowledge) {
-        if (k.topic && k.content) jarvisDb.saveKnowledge(k.topic, k.content, k.source)
-      }
-    }
+    if (preferences) savePreferences(preferences)
+    if (corrections) saveCorrections(corrections)
+    if (patterns) savePatterns(patterns)
+    if (knowledge) saveKnowledge(knowledge)
 
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
@@ -1406,27 +1655,31 @@ function parseMultipart(raw, contentType) {
   const fields = {}
   const files = []
   for (const part of parts) {
-    const headerEnd = part.indexOf('\r\n\r\n')
-    if (headerEnd === -1) continue
-    const headerStr = part.slice(0, headerEnd).toString('utf8')
-    const body = part.slice(headerEnd + 4, part.length - 2) // strip trailing CRLF
-
-    const nameMatch = headerStr.match(/name="([^"]+)"/)
-    const filenameMatch = headerStr.match(/filename="([^"]*)"/)
-    const ctMatch = headerStr.match(/Content-Type:\s*(.+)/i)
-
-    if (filenameMatch) {
-      files.push({
-        fieldName: nameMatch ? nameMatch[1] : 'file',
-        filename: filenameMatch[1],
-        contentType: ctMatch ? ctMatch[1].trim() : 'application/octet-stream',
-        buffer: body,
-      })
-    } else if (nameMatch) {
-      fields[nameMatch[1]] = body.toString('utf8')
-    }
+    parseMultipartPart(part, fields, files)
   }
   return { fields, files }
+}
+
+function parseMultipartPart(part, fields, files) {
+  const headerEnd = part.indexOf('\r\n\r\n')
+  if (headerEnd === -1) return
+  const headerStr = part.slice(0, headerEnd).toString('utf8')
+  const body = part.slice(headerEnd + 4, -2)
+
+  const nameMatch = headerStr.match(/name="([^"]+)"/)
+  const filenameMatch = headerStr.match(/filename="([^"]*)"/)
+  const ctMatch = headerStr.match(/Content-Type:\s*(.+)/i)
+
+  if (filenameMatch) {
+    files.push({
+      fieldName: nameMatch ? nameMatch[1] : 'file',
+      filename: filenameMatch[1],
+      contentType: ctMatch ? ctMatch[1].trim() : 'application/octet-stream',
+      buffer: body,
+    })
+  } else if (nameMatch) {
+    fields[nameMatch[1]] = body.toString('utf8')
+  }
 }
 
 async function extractTextFromBuffer(buffer, mimeType, filename) {
@@ -1455,7 +1708,7 @@ async function extractTextFromBuffer(buffer, mimeType, filename) {
   }
 
   if (mt.includes('application/pdf')) {
-    return buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+    return buffer.toString('utf8').replaceAll(/[^\x20-\x7E\n\r\t]/g, ' ').replaceAll(/\s+/g, ' ').trim()
   }
 
   if (mt.startsWith('image/')) {
@@ -1465,14 +1718,12 @@ async function extractTextFromBuffer(buffer, mimeType, filename) {
     return description
   }
 
-  // Office documents — extract what readable text we can
   if (mt.includes('application/vnd.openxmlformats') || mt.includes('application/msword') || mt.includes('application/vnd.ms-')) {
-    const raw = buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+    const raw = buffer.toString('utf8').replaceAll(/[^\x20-\x7E\n\r\t]/g, ' ').replaceAll(/\s+/g, ' ').trim()
     if (raw.length > 50) return raw
   }
 
-  // Last resort: try UTF-8
-  const fallback = buffer.toString('utf8').replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim()
+  const fallback = buffer.toString('utf8').replaceAll(/[^\x20-\x7E\n\r\t]/g, ' ').replaceAll(/\s+/g, ' ').trim()
   return fallback
 }
 
@@ -1514,6 +1765,38 @@ async function describeImageWithVision(buffer, mimeType) {
   }
 }
 
+async function processIngestFile(file, fields, results, errors) {
+  try {
+    const title = fields.title || file.filename || 'Untitled'
+
+    let spacesKey = null
+    if (spacesClient.isConfigured()) {
+      const ext = path.extname(file.filename || '') || ''
+      spacesKey = `rag-docs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
+      await spacesClient.uploadFile(spacesKey, file.buffer, file.contentType)
+    }
+
+    const text = await extractTextFromBuffer(file.buffer, file.contentType, file.filename)
+    if (!text.trim()) {
+      errors.push({ filename: file.filename, error: 'Could not extract text from file' })
+      return
+    }
+
+    const result = await ragDb.ingestText(text, {
+      title,
+      filename: file.filename,
+      spacesKey,
+      mimeType: file.contentType,
+      source: 'upload',
+      sizeBytes: file.buffer.length,
+    })
+    results.push({ filename: file.filename, ...result })
+  } catch (fileErr) {
+    console.error(`[rag] ingest error for ${file.filename}:`, fileErr)
+    errors.push({ filename: file.filename, error: fileErr instanceof Error ? fileErr.message : 'Ingest error' })
+  }
+}
+
 async function handleRagIngest(req, res) {
   if (!ragDb.isConfigured()) {
     res.statusCode = 503
@@ -1536,35 +1819,7 @@ async function handleRagIngest(req, res) {
     const errors = []
 
     for (const file of files) {
-      try {
-        const title = fields.title || file.filename || 'Untitled'
-
-        let spacesKey = null
-        if (spacesClient.isConfigured()) {
-          const ext = path.extname(file.filename || '') || ''
-          spacesKey = `rag-docs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
-          await spacesClient.uploadFile(spacesKey, file.buffer, file.contentType)
-        }
-
-        const text = await extractTextFromBuffer(file.buffer, file.contentType, file.filename)
-        if (!text.trim()) {
-          errors.push({ filename: file.filename, error: 'Could not extract text from file' })
-          continue
-        }
-
-        const result = await ragDb.ingestText(text, {
-          title,
-          filename: file.filename,
-          spacesKey,
-          mimeType: file.contentType,
-          source: 'upload',
-          sizeBytes: file.buffer.length,
-        })
-        results.push({ filename: file.filename, ...result })
-      } catch (fileErr) {
-        console.error(`[rag] ingest error for ${file.filename}:`, fileErr)
-        errors.push({ filename: file.filename, error: fileErr instanceof Error ? fileErr.message : 'Ingest error' })
-      }
+      await processIngestFile(file, fields, results, errors)
     }
 
     if (results.length === 0 && errors.length > 0) {
@@ -1596,7 +1851,7 @@ async function handleRagIngestText(req, res) {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
     const { text, title } = body
-    if (!text || !text.trim()) {
+    if (!text?.trim()) {
       res.statusCode = 400
       res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ error: { message: 'text is required' } }))
@@ -1716,7 +1971,7 @@ async function handleRagCreateDocument(req, res) {
     // Upload to Spaces
     let spacesKey = null
     if (spacesClient.isConfigured()) {
-      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+      const safeTitle = title.replaceAll(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
       spacesKey = `jarvis-docs/${Date.now()}-${safeTitle}${ext}`
       await spacesClient.uploadFile(spacesKey, fileBuffer, mimeType)
     }
@@ -1752,8 +2007,8 @@ async function handleRagDocumentsList(req, res) {
   }
   try {
     const u = new URL(req.url || '/', 'http://127.0.0.1')
-    const limit = parseInt(u.searchParams.get('limit') || '50', 10)
-    const offset = parseInt(u.searchParams.get('offset') || '0', 10)
+    const limit = Number.parseInt(u.searchParams.get('limit') || '50', 10)
+    const offset = Number.parseInt(u.searchParams.get('offset') || '0', 10)
     const docs = await ragDb.listDocuments(limit, offset)
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
@@ -1794,7 +2049,7 @@ async function handleRagDocumentGet(req, res, docId) {
 async function handleRagDocumentDownload(req, res, docId) {
   try {
     const doc = await ragDb.getDocument(docId)
-    if (!doc || !doc.spaces_key) {
+    if (!doc?.spaces_key) {
       res.statusCode = 404
       res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ error: { message: 'Document not found or no file stored' } }))
@@ -2113,7 +2368,8 @@ function plaidRequest(endpoint, body, env) {
   const clientId = (env.PLAID_CLIENT_ID || '').trim()
   const secret = (env.PLAID_SECRET || '').trim()
   const plaidEnv = (env.PLAID_ENV || 'sandbox').trim()
-  const base = plaidEnv === 'production' ? 'https://production.plaid.com' : plaidEnv === 'development' ? 'https://development.plaid.com' : 'https://sandbox.plaid.com'
+  const plaidBaseUrls = { production: 'https://production.plaid.com', development: 'https://development.plaid.com' }
+  const base = plaidBaseUrls[plaidEnv] || 'https://sandbox.plaid.com'
   return fetch(`${base}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2209,75 +2465,85 @@ async function handlePlaidTransactions(req, res) {
 }
 
 // ── Story library proxy ──
+
+async function searchGutenberg(q, limit) {
+  const results = []
+  const gutRes = await fetchRetry(`https://gutendex.com/books?search=${encodeURIComponent(q)}`, { timeoutMs: 10000 }).catch(() => null)
+  if (gutRes?.ok) {
+    const gutData = await gutRes.json()
+    for (const b of (gutData.results || []).slice(0, limit)) {
+      results.push({
+        id: String(b.id),
+        title: b.title,
+        authors: (b.authors || []).map(a => a.name),
+        source: 'gutenberg',
+        subjects: (b.subjects || []).slice(0, 5),
+      })
+    }
+  }
+  return results
+}
+
+function hfRowToResult(row) {
+  const text = row.row?.text || ''
+  return {
+    id: `hf-tinystories-${row.row_idx}`,
+    title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story',
+    authors: [],
+    source: 'huggingface',
+    snippet: text.slice(0, 200),
+  }
+}
+
+async function searchTinyStories(q, limit) {
+  const results = []
+  let hfOk = false
+  try {
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), 8000)
+    const hfRes = await fetch(`https://datasets-server.huggingface.co/search?dataset=roneneldan/TinyStories&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=${Math.min(limit, 20)}`, {
+      headers: { Accept: 'application/json' },
+      signal: ctrl.signal,
+    })
+    clearTimeout(timeout)
+    if (hfRes.ok) {
+      const hfData = await hfRes.json()
+      for (const row of (hfData.rows || []).slice(0, limit)) {
+        results.push(hfRowToResult(row))
+      }
+      hfOk = true
+    }
+  } catch { /* search endpoint flaky — fall through to rows fallback */ }
+
+  if (!hfOk) {
+    try {
+      const offset = Math.floor(Math.random() * 2000000)
+      const fallbackRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=${Math.min(limit, 10)}`)
+      if (fallbackRes.ok) {
+        const fbData = await fallbackRes.json()
+        for (const row of (fbData.rows || []).slice(0, limit)) {
+          results.push(hfRowToResult(row))
+        }
+      }
+    } catch { /* ignore fallback errors */ }
+  }
+  return results
+}
+
 async function handleStorySearch(req, res) {
   const params = new URL(req.url || '', 'http://localhost').searchParams
   const q = params.get('q') || ''
   const source = params.get('source') || 'all'
-  const limit = parseInt(params.get('limit') || '10', 10)
+  const limit = Number.parseInt(params.get('limit') || '10', 10)
   const results = []
 
   try {
     if (source === 'all' || source === 'gutenberg') {
-      const gutRes = await fetchRetry(`https://gutendex.com/books?search=${encodeURIComponent(q)}`, { timeoutMs: 10000 }).catch(() => null)
-      if (gutRes?.ok) {
-        const gutData = await gutRes.json()
-        for (const b of (gutData.results || []).slice(0, limit)) {
-          results.push({
-            id: String(b.id),
-            title: b.title,
-            authors: (b.authors || []).map(a => a.name),
-            source: 'gutenberg',
-            subjects: (b.subjects || []).slice(0, 5),
-          })
-        }
-      }
+      results.push(...await searchGutenberg(q, limit))
     }
 
     if (source === 'all' || source === 'short') {
-      let hfOk = false
-      try {
-        const ctrl = new AbortController()
-        const timeout = setTimeout(() => ctrl.abort(), 8000)
-        const hfRes = await fetch(`https://datasets-server.huggingface.co/search?dataset=roneneldan/TinyStories&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=${Math.min(limit, 20)}`, {
-          headers: { Accept: 'application/json' },
-          signal: ctrl.signal,
-        })
-        clearTimeout(timeout)
-        if (hfRes.ok) {
-          const hfData = await hfRes.json()
-          for (const row of (hfData.rows || []).slice(0, limit)) {
-            const text = row.row?.text || ''
-            results.push({
-              id: `hf-tinystories-${row.row_idx}`,
-              title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story',
-              authors: [],
-              source: 'huggingface',
-              snippet: text.slice(0, 200),
-            })
-          }
-          hfOk = true
-        }
-      } catch { /* search endpoint flaky — fall through to rows fallback */ }
-
-      if (!hfOk) {
-        try {
-          const offset = Math.floor(Math.random() * 2000000)
-          const fallbackRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=${Math.min(limit, 10)}`)
-          if (fallbackRes.ok) {
-            const fbData = await fallbackRes.json()
-            for (const row of (fbData.rows || []).slice(0, limit)) {
-              const text = row.row?.text || ''
-              results.push({
-                id: `hf-tinystories-${row.row_idx}`,
-                title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story',
-                authors: [],
-                source: 'huggingface',
-                snippet: text.slice(0, 200),
-              })
-            }
-          }
-        } catch { /* ignore fallback errors */ }
-      }
+      results.push(...await searchTinyStories(q, limit))
     }
 
     res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
@@ -2363,53 +2629,64 @@ function paginateText(fullText, page, pageSize) {
   }
 }
 
+async function fetchGutenbergContent(id, page) {
+  let cached = getCachedBook('gutenberg', id)
+  if (!cached) {
+    const metaRes = await fetchRetry(`https://gutendex.com/books/${id}`, { timeoutMs: 10000 })
+    if (!metaRes.ok) return { error: 'Book not found', status: 404 }
+    const meta = await metaRes.json()
+    const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
+    if (!textUrl) return { error: 'No plain text available for this book', status: 404 }
+    const textRes = await fetchRetry(textUrl, { timeoutMs: 20000 })
+    const rawText = await textRes.text()
+    const fullText = stripGutenbergBoilerplate(rawText)
+    cacheBook('gutenberg', id, meta.title, (meta.authors || []).map(a => a.name), fullText)
+    cached = getCachedBook('gutenberg', id)
+  }
+  const paginated = paginateText(cached.fullText, page, BOOK_PAGE_SIZE)
+  return {
+    title: cached.title,
+    authors: cached.authors,
+    content: paginated.content,
+    page: paginated.page,
+    totalPages: paginated.totalPages,
+    totalChars: paginated.totalChars,
+    hasMore: paginated.hasMore,
+    truncated: paginated.hasMore,
+  }
+}
+
+async function fetchTinyStoryContent(id) {
+  const rowIdx = id.replace('hf-tinystories-', '')
+  const hfCtrl = new AbortController()
+  const hfTimeout = setTimeout(() => hfCtrl.abort(), 10000)
+  const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`, { signal: hfCtrl.signal })
+  clearTimeout(hfTimeout)
+  if (!hfRes.ok) return { error: 'Story not found', status: 404 }
+  const hfData = await hfRes.json()
+  const text = hfData.rows?.[0]?.row?.text || ''
+  return { title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, page: 1, totalPages: 1, totalChars: text.length, hasMore: false, truncated: false }
+}
+
 async function handleStoryContent(req, res) {
   const params = new URL(req.url || '', 'http://localhost').searchParams
   const id = params.get('id') || ''
   const source = params.get('source') || 'gutenberg'
-  const page = Math.max(1, parseInt(params.get('page') || '1', 10))
+  const page = Math.max(1, Number.parseInt(params.get('page') || '1', 10))
 
   try {
-    if (source === 'gutenberg') {
-      let cached = getCachedBook('gutenberg', id)
-      if (!cached) {
-        const metaRes = await fetchRetry(`https://gutendex.com/books/${id}`, { timeoutMs: 10000 })
-        if (!metaRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Book not found' } })); return }
-        const meta = await metaRes.json()
-        const textUrl = meta.formats?.['text/plain; charset=utf-8'] || meta.formats?.['text/plain'] || meta.formats?.['text/plain; charset=us-ascii'] || ''
-        if (!textUrl) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'No plain text available for this book' } })); return }
-        const textRes = await fetchRetry(textUrl, { timeoutMs: 20000 })
-        const rawText = await textRes.text()
-        const fullText = stripGutenbergBoilerplate(rawText)
-        const title = meta.title
-        const authors = (meta.authors || []).map(a => a.name)
-        cacheBook('gutenberg', id, title, authors, fullText)
-        cached = getCachedBook('gutenberg', id)
-      }
-      const paginated = paginateText(cached.fullText, page, BOOK_PAGE_SIZE)
-      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({
-        title: cached.title,
-        authors: cached.authors,
-        content: paginated.content,
-        page: paginated.page,
-        totalPages: paginated.totalPages,
-        totalChars: paginated.totalChars,
-        hasMore: paginated.hasMore,
-        truncated: paginated.hasMore,
-      }))
-    } else {
-      const rowIdx = id.replace('hf-tinystories-', '')
-      const hfCtrl = new AbortController()
-      const hfTimeout = setTimeout(() => hfCtrl.abort(), 10000)
-      const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`, { signal: hfCtrl.signal })
-      clearTimeout(hfTimeout)
-      if (!hfRes.ok) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Story not found' } })); return }
-      const hfData = await hfRes.json()
-      const text = hfData.rows?.[0]?.row?.text || ''
-      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ title: text.split(/[.\n]/)[0]?.slice(0, 80) || 'Short Story', authors: [], content: text, page: 1, totalPages: 1, totalChars: text.length, hasMore: false, truncated: false }))
+    const result = source === 'gutenberg'
+      ? await fetchGutenbergContent(id, page)
+      : await fetchTinyStoryContent(id)
+
+    if (result.error) {
+      res.statusCode = result.status || 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: result.error } }))
+      return
     }
+    res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(result))
   } catch (e) {
     console.error('[Stories] Content fetch error:', e instanceof Error ? e.message : e)
     res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
@@ -2510,212 +2787,117 @@ async function handleXTweet(req, res) {
   }
 }
 
+const exactRoutes = [
+  { method: 'POST', path: '/api/x/tweet', handler: handleXTweet },
+  { method: 'POST', path: '/api/plaid/link-token', handler: handlePlaidLinkToken },
+  { method: 'POST', path: '/api/plaid/exchange', handler: handlePlaidExchange },
+  { method: 'POST', path: '/api/plaid/accounts', handler: handlePlaidAccounts },
+  { method: 'POST', path: '/api/plaid/balances', handler: handlePlaidBalances },
+  { method: 'POST', path: '/api/plaid/transactions', handler: handlePlaidTransactions },
+  { method: 'GET', path: '/api/stories/search', handler: handleStorySearch },
+  { method: 'GET', path: '/api/stories/content', handler: handleStoryContent },
+  { method: 'GET', path: '/api/stories/random', handler: handleStoryRandom },
+  { method: 'POST', path: '/api/suno/generate', handler: handleSunoGenerate },
+  { method: 'GET', path: '/api/suno/status', handler: handleSunoStatus },
+  { method: 'GET', path: '/api/huggingface/search', handler: handleHfSearch },
+  { method: 'GET', path: '/api/huggingface/dataset-sample', handler: handleHfDatasetSample },
+  { method: 'GET', path: '/api/github/search', handler: handleGitHubSearch },
+  { method: 'GET', path: '/api/github/file', handler: handleGitHubFile },
+  { method: 'GET', path: '/api/digitalocean/models', handler: handleDigitalOceanModels },
+  { method: 'POST', path: '/api/llm', handler: handleLlmProxy },
+  { method: 'POST', path: '/api/tts', handler: handleTtsProxy },
+  { method: 'POST', path: '/api/elevenlabs-tts', handler: handleElevenLabsStreamingTts },
+  { method: 'POST', path: '/api/realtime/session', handler: handleRealtimeSession },
+  { method: 'GET', path: '/api/jarvis-memory', handler: handleJarvisMemoryGet },
+  { method: 'POST', path: '/api/jarvis-memory', handler: handleJarvisMemoryPost },
+  { method: 'POST', path: '/api/jarvis-memory/extract', handler: handleJarvisMemoryExtract },
+  { method: 'POST', path: '/api/jarvis-memory/summarize', handler: handleJarvisMemorySummarize },
+  { method: 'GET', path: '/api/jarvis-memory/learned-context', handler: handleLearnedContextGet },
+  { method: 'POST', path: '/api/jarvis-memory/learn', handler: handleLearnPost },
+  { method: 'POST', path: '/api/jarvis-memory/track-tool', handler: handleTrackToolPost },
+  { method: 'GET', path: '/api/jarvis-memory/learning-stats', handler: handleLearningStatsGet },
+  { method: 'POST', path: '/api/wake-word', handler: handleWakeWordProxy },
+  { method: 'GET', path: '/api/elevenlabs/my-voices', handler: handleElevenLabsMyVoices },
+  { method: 'GET', path: '/api/elevenlabs/voices', handler: handleElevenLabsSharedVoices },
+  { method: 'POST', path: '/api/elevenlabs/sound-effect', handler: handleElevenLabsSoundEffect },
+  { method: 'POST', path: '/api/voice-analysis', handler: handleVoiceAnalysis },
+  { method: 'POST', path: '/api/rag/ingest', handler: handleRagIngest },
+  { method: 'POST', path: '/api/rag/ingest-text', handler: handleRagIngestText },
+  { method: 'POST', path: '/api/rag/search', handler: handleRagSearch },
+  { method: 'POST', path: '/api/rag/create-document', handler: handleRagCreateDocument },
+  { method: 'GET', path: '/api/rag/documents', handler: handleRagDocumentsList },
+  { method: 'POST', path: '/api/search', handler: handleSearchProxy },
+  { method: 'POST', path: '/api/search/extract', handler: handleSearchExtractProxy },
+  { method: 'POST', path: '/api/images/generate', handler: handleImageGenerate },
+  { method: 'POST', path: '/api/images/edit', handler: handleImageEdit },
+  { method: 'POST', path: '/api/videos/create', handler: handleVideoCreate },
+  { method: 'GET', path: '/api/videos/status', handler: handleVideoStatus },
+  { method: 'GET', path: '/api/videos/content', handler: handleVideoContent },
+]
+
+const patternRoutes = [
+  { method: 'GET', pattern: /^\/api\/rag\/documents\/[^/]+\/download$/, handler: (req, res, urlPath) => { handleRagDocumentDownload(req, res, urlPath.split('/')[4]) } },
+  { method: 'GET', pattern: /^\/api\/rag\/documents\/[^/]+$/, handler: (req, res, urlPath) => { handleRagDocumentGet(req, res, urlPath.split('/')[4]) } },
+  { method: 'DELETE', pattern: /^\/api\/rag\/documents\/[^/]+$/, handler: (req, res, urlPath) => { handleRagDocumentDelete(req, res, urlPath.split('/')[4]) } },
+]
+
+const prefixRoutes = [
+  { prefix: '/api/vision/', handler: handleVisionProxy },
+  { prefix: '/api/reliability/', handler: handleReliabilityProxy },
+  { prefix: '/api/a2e/', handler: handleA2eProxy },
+  { prefix: '/tunein-opml', methods: ['GET', 'HEAD'], handler: handleTuneInOpmlProxy },
+]
+
+function serveStaticFile(req, res, urlPath) {
+  const filePath = safeJoinDist(urlPath)
+  if (!filePath) {
+    res.statusCode = 403
+    res.end()
+    return
+  }
+
+  fs.stat(filePath, (err, st) => {
+    if (!err && st.isFile()) {
+      res.statusCode = 200
+      res.setHeader('Content-Type', contentType(filePath))
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
+      fs.createReadStream(filePath).pipe(res)
+      return
+    }
+
+    const indexPath = path.join(DIST_DIR, 'index.html')
+    fs.access(indexPath, fs.constants.F_OK, (errIndex) => {
+      if (errIndex) {
+        res.statusCode = 404
+        res.end('Not found')
+        return
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
+      fs.createReadStream(indexPath).pipe(res)
+    })
+  })
+}
+
 function createServer() {
   return http.createServer((req, res) => {
     const urlPath = req.url?.split('?')[0] || '/'
 
-    // ── X (Twitter) routes ──
-    if (urlPath === '/api/x/tweet' && req.method === 'POST') { void handleXTweet(req, res); return }
+    const exactMatch = exactRoutes.find(r => r.method === req.method && r.path === urlPath)
+    if (exactMatch) { exactMatch.handler(req, res); return }
 
-    // ── Plaid routes ──
-    if (urlPath === '/api/plaid/link-token' && req.method === 'POST') { void handlePlaidLinkToken(req, res); return }
-    if (urlPath === '/api/plaid/exchange' && req.method === 'POST') { void handlePlaidExchange(req, res); return }
-    if (urlPath === '/api/plaid/accounts' && req.method === 'POST') { void handlePlaidAccounts(req, res); return }
-    if (urlPath === '/api/plaid/balances' && req.method === 'POST') { void handlePlaidBalances(req, res); return }
-    if (urlPath === '/api/plaid/transactions' && req.method === 'POST') { void handlePlaidTransactions(req, res); return }
+    const patternMatch = patternRoutes.find(r => r.method === req.method && r.pattern.exec(urlPath))
+    if (patternMatch) { patternMatch.handler(req, res, urlPath); return }
 
-    // ── Story routes ──
-    if (urlPath === '/api/stories/search' && req.method === 'GET') { void handleStorySearch(req, res); return }
-    if (urlPath === '/api/stories/content' && req.method === 'GET') { void handleStoryContent(req, res); return }
-    if (urlPath === '/api/stories/random' && req.method === 'GET') { void handleStoryRandom(req, res); return }
-
-    // ── Suno routes ──
-    if (urlPath === '/api/suno/generate' && req.method === 'POST') { void handleSunoGenerate(req, res); return }
-    if (urlPath === '/api/suno/status' && req.method === 'GET') { void handleSunoStatus(req, res); return }
-
-    // ── Hugging Face routes ──
-    if (urlPath === '/api/huggingface/search' && req.method === 'GET') { void handleHfSearch(req, res); return }
-    if (urlPath === '/api/huggingface/dataset-sample' && req.method === 'GET') { void handleHfDatasetSample(req, res); return }
-
-    // ── GitHub routes ──
-    if (urlPath === '/api/github/search' && req.method === 'GET') { void handleGitHubSearch(req, res); return }
-    if (urlPath === '/api/github/file' && req.method === 'GET') { void handleGitHubFile(req, res); return }
-
-    if (urlPath === '/api/digitalocean/models' && req.method === 'GET') {
-      void handleDigitalOceanModels(req, res)
-      return
-    }
-
-    if (urlPath === '/api/llm' && req.method === 'POST') {
-      void handleLlmProxy(req, res)
-      return
-    }
-
-    if (urlPath === '/api/tts' && req.method === 'POST') {
-      void handleTtsProxy(req, res)
-      return
-    }
-
-    
-    if (urlPath === '/api/elevenlabs-tts' && req.method === 'POST') {
-      void handleElevenLabsStreamingTts(req, res)
-      return
-    }
-
-    if (urlPath === '/api/realtime/session' && req.method === 'POST') {
-      void handleRealtimeSession(req, res)
-      return
-    }
-
-    if (urlPath === '/api/jarvis-memory' && req.method === 'GET') {
-      void handleJarvisMemoryGet(req, res)
-      return
-    }
-
-    if (urlPath === '/api/jarvis-memory' && req.method === 'POST') {
-      void handleJarvisMemoryPost(req, res)
-      return
-    }
-
-    if (urlPath === '/api/jarvis-memory/extract' && req.method === 'POST') {
-      void handleJarvisMemoryExtract(req, res)
-      return
-    }
-
-    if (urlPath === '/api/jarvis-memory/summarize' && req.method === 'POST') {
-      void handleJarvisMemorySummarize(req, res)
-      return
-    }
-
-    if (urlPath === '/api/jarvis-memory/learned-context' && req.method === 'GET') {
-      void handleLearnedContextGet(req, res)
-      return
-    }
-    if (urlPath === '/api/jarvis-memory/learn' && req.method === 'POST') {
-      void handleLearnPost(req, res)
-      return
-    }
-    if (urlPath === '/api/jarvis-memory/track-tool' && req.method === 'POST') {
-      void handleTrackToolPost(req, res)
-      return
-    }
-    if (urlPath === '/api/jarvis-memory/learning-stats' && req.method === 'GET') {
-      void handleLearningStatsGet(req, res)
-      return
-    }
-
-    if (urlPath === '/api/wake-word' && req.method === 'POST') {
-      void handleWakeWordProxy(req, res)
-      return
-    }
-
-    // ── ElevenLabs voice library ──
-    if (urlPath === '/api/elevenlabs/my-voices' && req.method === 'GET') {
-      void handleElevenLabsMyVoices(req, res)
-      return
-    }
-    if (urlPath === '/api/elevenlabs/voices' && req.method === 'GET') {
-      void handleElevenLabsSharedVoices(req, res)
-      return
-    }
-    if (urlPath === '/api/elevenlabs/sound-effect' && req.method === 'POST') {
-      void handleElevenLabsSoundEffect(req, res)
-      return
-    }
-
-    if (urlPath === '/api/voice-analysis' && req.method === 'POST') {
-      void handleVoiceAnalysis(req, res)
-      return
-    }
-
-    // ── RAG routes ──
-    if (urlPath === '/api/rag/ingest' && req.method === 'POST') {
-      void handleRagIngest(req, res)
-      return
-    }
-    if (urlPath === '/api/rag/ingest-text' && req.method === 'POST') {
-      void handleRagIngestText(req, res)
-      return
-    }
-    if (urlPath === '/api/rag/search' && req.method === 'POST') {
-      void handleRagSearch(req, res)
-      return
-    }
-    if (urlPath === '/api/rag/create-document' && req.method === 'POST') {
-      void handleRagCreateDocument(req, res)
-      return
-    }
-    if (urlPath === '/api/rag/documents' && req.method === 'GET') {
-      void handleRagDocumentsList(req, res)
-      return
-    }
-    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+\/download$/) && req.method === 'GET') {
-      const docId = urlPath.split('/')[4]
-      void handleRagDocumentDownload(req, res, docId)
-      return
-    }
-    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+$/) && req.method === 'GET') {
-      const docId = urlPath.split('/')[4]
-      void handleRagDocumentGet(req, res, docId)
-      return
-    }
-    if (urlPath.match(/^\/api\/rag\/documents\/[^/]+$/) && req.method === 'DELETE') {
-      const docId = urlPath.split('/')[4]
-      void handleRagDocumentDelete(req, res, docId)
-      return
-    }
-
-    if (urlPath === '/api/search' && req.method === 'POST') {
-      void handleSearchProxy(req, res)
-      return
-    }
-
-    if (urlPath === '/api/search/extract' && req.method === 'POST') {
-      void handleSearchExtractProxy(req, res)
-      return
-    }
-
-    if (urlPath.startsWith('/api/vision/')) {
-      void handleVisionProxy(req, res)
-      return
-    }
-
-    if (urlPath.startsWith('/api/reliability/')) {
-      void handleReliabilityProxy(req, res)
-      return
-    }
-
-    if (urlPath.startsWith('/api/a2e/')) {
-      void handleA2eProxy(req, res)
-      return
-    }
-
-    // ── Media generation routes ──
-    if (urlPath === '/api/images/generate' && req.method === 'POST') {
-      void handleImageGenerate(req, res)
-      return
-    }
-    if (urlPath === '/api/images/edit' && req.method === 'POST') {
-      void handleImageEdit(req, res)
-      return
-    }
-    if (urlPath === '/api/videos/create' && req.method === 'POST') {
-      void handleVideoCreate(req, res)
-      return
-    }
-    if (urlPath === '/api/videos/status' && req.method === 'GET') {
-      void handleVideoStatus(req, res)
-      return
-    }
-    if (urlPath === '/api/videos/content' && req.method === 'GET') {
-      void handleVideoContent(req, res)
-      return
-    }
-
-    if (urlPath.startsWith('/tunein-opml') && (req.method === 'GET' || req.method === 'HEAD')) {
-      void handleTuneInOpmlProxy(req, res)
-      return
-    }
+    const prefixMatch = prefixRoutes.find(r => urlPath.startsWith(r.prefix) && (!r.methods || r.methods.includes(req.method)))
+    if (prefixMatch) { prefixMatch.handler(req, res); return }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.statusCode = 405
@@ -2723,46 +2905,39 @@ function createServer() {
       return
     }
 
-    const filePath = safeJoinDist(urlPath)
-    if (!filePath) {
-      res.statusCode = 403
-      res.end()
-      return
-    }
-
-    fs.stat(filePath, (err, st) => {
-      if (!err && st.isFile()) {
-        res.statusCode = 200
-        res.setHeader('Content-Type', contentType(filePath))
-        if (req.method === 'HEAD') {
-          res.end()
-          return
-        }
-        fs.createReadStream(filePath).pipe(res)
-        return
-      }
-
-      const indexPath = path.join(DIST_DIR, 'index.html')
-      fs.access(indexPath, fs.constants.F_OK, (errIndex) => {
-        if (errIndex) {
-          res.statusCode = 404
-          res.end('Not found')
-          return
-        }
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'text/html; charset=utf-8')
-        if (req.method === 'HEAD') {
-          res.end()
-          return
-        }
-        fs.createReadStream(indexPath).pipe(res)
-      })
-    })
+    serveStaticFile(req, res, urlPath)
   })
 }
 
 let mainWindow = null
 let server = null
+
+function setupSocketProxy(clientSocket, upstreamSocket, upstreamRes, upstreamHead, head, clientRequestedProtocol) {
+  let responseHead = 'HTTP/1.1 101 Switching Protocols\r\n'
+  const h = upstreamRes.headers
+  for (const key of Object.keys(h)) {
+    if (key.toLowerCase() === 'sec-websocket-protocol' && !clientRequestedProtocol) continue
+    const val = h[key]
+    if (Array.isArray(val)) {
+      val.forEach(v => { responseHead += `${key}: ${v}\r\n` })
+    } else if (val != null) {
+      responseHead += `${key}: ${val}\r\n`
+    }
+  }
+  responseHead += '\r\n'
+
+  clientSocket.write(responseHead)
+  if (upstreamHead.length > 0) clientSocket.write(upstreamHead)
+  if (head.length > 0) upstreamSocket.write(head)
+
+  upstreamSocket.pipe(clientSocket)
+  clientSocket.pipe(upstreamSocket)
+
+  clientSocket.on('error', () => upstreamSocket.destroy())
+  upstreamSocket.on('error', () => clientSocket.destroy())
+  clientSocket.on('close', () => upstreamSocket.destroy())
+  upstreamSocket.on('close', () => clientSocket.destroy())
+}
 
 function startLocalServer() {
   return new Promise((resolve, reject) => {
@@ -2803,31 +2978,7 @@ function startLocalServer() {
       })
 
       upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
-        let responseHead = 'HTTP/1.1 101 Switching Protocols\r\n'
-        const h = upstreamRes.headers
-        const clientRequestedProtocol = !!req.headers['sec-websocket-protocol']
-        for (const key of Object.keys(h)) {
-          if (key.toLowerCase() === 'sec-websocket-protocol' && !clientRequestedProtocol) continue
-          const val = h[key]
-          if (Array.isArray(val)) {
-            val.forEach(v => { responseHead += `${key}: ${v}\r\n` })
-          } else if (val != null) {
-            responseHead += `${key}: ${val}\r\n`
-          }
-        }
-        responseHead += '\r\n'
-
-        clientSocket.write(responseHead)
-        if (upstreamHead.length > 0) clientSocket.write(upstreamHead)
-        if (head.length > 0) upstreamSocket.write(head)
-
-        upstreamSocket.pipe(clientSocket)
-        clientSocket.pipe(upstreamSocket)
-
-        clientSocket.on('error', () => upstreamSocket.destroy())
-        upstreamSocket.on('error', () => clientSocket.destroy())
-        clientSocket.on('close', () => upstreamSocket.destroy())
-        upstreamSocket.on('close', () => clientSocket.destroy())
+        setupSocketProxy(clientSocket, upstreamSocket, upstreamRes, upstreamHead, head, !!req.headers['sec-websocket-protocol'])
       })
 
       upstreamReq.on('error', (err) => {
@@ -2922,6 +3073,7 @@ app.whenReady().then(() => {
   loadEnvFromFile()
   setupBrowserSession()
   registerBrowserIpc()
+  registerJarvisIdeIpc()
 
   // Initialise RAG database schema (pgvector) if configured
   if (ragDb.isConfigured()) {

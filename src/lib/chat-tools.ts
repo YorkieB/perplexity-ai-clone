@@ -382,6 +382,21 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
   {
     type: 'function',
     function: {
+      name: 'ide_run_terminal',
+      description:
+        'Run a shell command in the opened workspace folder (desktop app only). Output appears in the IDE terminal.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command (e.g. npm run build, git status)' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'ide_toggle_zen_mode',
       description: 'Toggle distraction-free zen mode.',
       parameters: { type: 'object', properties: {} },
@@ -1191,6 +1206,19 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         return 'Terminal panel toggled.'
       }
 
+      case 'ide_run_terminal': {
+        if (!codeEditorControl) return 'IDE is not available.'
+        const cmd = String(args.command ?? '').trim()
+        if (!cmd) return 'Provide command (e.g. npm run build).'
+        const r = await codeEditorControl.runTerminalCommand(cmd)
+        let out = ''
+        if (r.stdout) out += `stdout:\n${r.stdout}\n\n`
+        if (r.stderr) out += `stderr:\n${r.stderr}\n\n`
+        if (r.exitCode != null) out += `exit code: ${String(r.exitCode)}\n`
+        if (r.error) out += `note: ${r.error}\n`
+        return out.trim() || '(command finished with no output)'
+      }
+
       case 'ide_toggle_zen_mode': {
         if (!codeEditorControl) return 'IDE is not available.'
         codeEditorControl.toggleZenMode()
@@ -1563,6 +1591,10 @@ export interface ChatWithToolsOptions {
   systemPrompt: string
   userPrompt: string
   model?: string
+  /** Overrides default tool-loop sampling (default 0.7). */
+  temperature?: number
+  /** Overrides default max completion tokens (default 4096). */
+  max_tokens?: number
   browserControl?: BrowserControl | null
   guideMode?: boolean
   mediaCanvasControl?: MediaCanvasControl | null
@@ -1590,6 +1622,8 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
     systemPrompt,
     userPrompt,
     model = 'gpt-4o-mini',
+    temperature,
+    max_tokens,
     browserControl = null,
     guideMode = false,
     mediaCanvasControl = null,
@@ -1656,6 +1690,8 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
     maxRounds: 30,
     signal,
     onToolCall,
+    temperature,
+    max_tokens,
   })
 
   const toolOutputs = result.messages

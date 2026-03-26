@@ -1,15 +1,49 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  IdeChatPanel,
+  createIdeAssistantMessage,
+  createIdeUserMessage,
+  type IdeChatMessage,
+} from '@/components/IdeChatPanel'
 import { toast } from 'sonner'
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react'
 import type * as monacoNs from 'monaco-editor'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
-import { useCodeEditorRegister, useCodeEditorItems, useCodeEditorRunning, type CodeEditorControl, type CodeItem } from '@/contexts/CodeEditorContext'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { useCodeEditorRegister, useCodeEditorItems, useCodeEditorRunning } from '@/contexts/useCodeEditorHooks'
+import type { CodeEditorControl } from '@/contexts/CodeEditorContext'
 import { runCode } from '@/lib/code-runner'
 import { cn } from '@/lib/utils'
+import type { IdeAiPreset, IdeChatPayload, IdeReasoningMode } from '@/lib/jarvis-ide-chat-types'
+import { ideFsRead, ideFsWrite, ideGit, ideJoinPath, ideRunCommand } from '@/lib/jarvis-ide-bridge'
+import type { JarvisIdeRunCommandResult } from '@/types/jarvis-ide'
+import { fetchAgentBrowserHealth } from '@/lib/agent-browser-mcp'
+import { JarvisExplorerBadgeStrip } from '@/components/jarvis/JarvisExplorerBadgeStrip'
+import {
+  computeExplorerBadgesForFile,
+  computeExplorerBadgesForWorkspaceRelPath,
+  computeRepoLevelGitBadges,
+  countProblemsForFile,
+  parseGitLeftRightCount,
+  parseGitStatusPorcelain,
+  type GitPorcelainEntry,
+  type JarvisExplorerBadgeId,
+} from '@/lib/jarvis-explorer-badges'
+import { analyzeMissingLogic, type MissingLogicDetectionId } from '@/lib/jarvis-missing-logic-detector'
+import { runJarvisWorkspaceQuality } from '@/lib/jarvis-workspace-quality'
+import { buildCodeEditorJarvisMenus } from '@/components/ide/jarvisIdeCodeEditorMenuFactory'
 
 interface CodeEditorModalProps {
   readonly open: boolean
   readonly onOpenChange: (open: boolean) => void
+  /** Full Jarvis chat with tools; receives live IDE context (active file + source). */
+  readonly ideChatOnSend?: (payload: IdeChatPayload) => Promise<{ content: string; reasoning?: string }>
+  readonly onOpenAgentBrowser?: () => void
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -176,7 +210,7 @@ function registerSnippets(m: Monaco) {
     ['div', '<div class="${1:class}">\n\t${2}\n</div>', 'Div'],
     ['section', '<section id="${1:id}">\n\t${2}\n</section>', 'Section'],
     ['link:css', '<link rel="stylesheet" href="${1:styles.css}">', 'CSS link'],
-    ['script:src', '<script src="${1:script.js}"><\/script>', 'Script'],
+    ['script:src', '<script src="${1:script.js}"></script>', 'Script'],
     ['img', '<img src="${1:src}" alt="${2:alt}" />', 'Image'],
     ['a', '<a href="${1:url}">${2:text}</a>', 'Anchor'],
     ['ul', '<ul>\n\t<li>${1}</li>\n\t<li>${2}</li>\n</ul>', 'Unordered list'],
@@ -201,7 +235,7 @@ function registerSnippets(m: Monaco) {
 }
 
 /* ── Problem parsing ── */
-interface Problem { line: number; column: number; severity: 'error' | 'warning' | 'info'; message: string; source: string }
+interface Problem { line: number; column: number; severity: 'error' | 'warning' | 'info' | 'hint'; message: string; source: string }
 function parseProblems(result: { stdout: string; stderr: string; error?: string } | null, filename: string): Problem[] {
   if (!result) return []
   const problems: Problem[] = []
@@ -221,7 +255,7 @@ function parseProblems(result: { stdout: string; stderr: string; error?: string 
    MAIN IDE COMPONENT
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
+export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgentBrowser }: CodeEditorModalProps) {
   const { register, unregister } = useCodeEditorRegister()
   const { items, addItem, removeItem, updateItem, activeItemId, setActiveItemId } = useCodeEditorItems()
   const { running, setRunning, runResult, setRunResult } = useCodeEditorRunning()
@@ -245,6 +279,9 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
   const [showSearch, setShowSearch] = useState(false)
   const [zenMode, setZenMode] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showIdeChat, setShowIdeChat] = useState(true)
+  const [ideChatMessages, setIdeChatMessages] = useState<IdeChatMessage[]>([])
+  const [ideChatLoading, setIdeChatLoading] = useState(false)
 
   // Editor settings
   const [showMinimap, setShowMinimap] = useState(true)
@@ -271,8 +308,60 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
 
   // Terminal & problems
   const [terminalHistory, setTerminalHistory] = useState<Array<{ type: 'stdout' | 'stderr' | 'error' | 'info'; text: string; time: number }>>([])
+  const [terminalShellBusy, setTerminalShellBusy] = useState(false)
+  const [terminalInput, setTerminalInput] = useState('')
   const [problems, setProblems] = useState<Problem[]>([])
-  const [bottomTab, setBottomTab] = useState<'terminal' | 'problems' | 'output'>('terminal')
+  const [qualityProblems, setQualityProblems] = useState<Problem[]>([])
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [bottomTab, setBottomTab] = useState<'terminal' | 'problems' | 'output' | 'debug' | 'git' | 'extensions' | 'run'>('terminal')
+
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
+  const [workspacePackageJson, setWorkspacePackageJson] = useState<string | null>(null)
+  const [workspaceTsconfigJson, setWorkspaceTsconfigJson] = useState<string | null>(null)
+  const [workspaceRelFiles, setWorkspaceRelFiles] = useState<string[]>([])
+  const [showSourceControl, setShowSourceControl] = useState(false)
+  const [showRunDebug, setShowRunDebug] = useState(false)
+  const [showExtensions, setShowExtensions] = useState(false)
+  const [showOutputTab, setShowOutputTab] = useState(false)
+  const [showDebugConsole, setShowDebugConsole] = useState(false)
+  const [showMenuBar, setShowMenuBar] = useState(true)
+  const [showActivityBar, setShowActivityBar] = useState(true)
+  const [showStatusBar, setShowStatusBar] = useState(true)
+  const [problemIndex, setProblemIndex] = useState(0)
+  const [agentBridgeOk, setAgentBridgeOk] = useState(false)
+  const [debuggingActive, setDebuggingActive] = useState(false)
+  const [gitOutput, setGitOutput] = useState('')
+  const [gitLoading, setGitLoading] = useState(false)
+  const [gitPorcelainMap, setGitPorcelainMap] = useState<Map<string, GitPorcelainEntry>>(() => new Map())
+  const [gitRemoteCounts, setGitRemoteCounts] = useState<{ ahead: number; behind: number } | null>(null)
+  const [workspaceTreeOpen, setWorkspaceTreeOpen] = useState(true)
+  const [extensionsPackageJson, setExtensionsPackageJson] = useState<string | null>(null)
+  const [ideChatModel, setIdeChatModel] = useState('gpt-4o-mini')
+  const [ideTemp, setIdeTemp] = useState(0.7)
+  const [ideMaxTok, setIdeMaxTok] = useState(4096)
+  const [ideReasoning, setIdeReasoning] = useState<IdeReasoningMode>('auto')
+  const [debugLogLines, setDebugLogLines] = useState<string[]>([])
+
+  const hasElectronFs = globalThis.window?.jarvisIde !== undefined
+
+  useEffect(() => {
+    workspaceRootRef.current = workspaceRoot
+  }, [workspaceRoot])
+
+  useEffect(() => {
+    setQualityProblems([])
+    if (!workspaceRoot || !hasElectronFs) {
+      setWorkspacePackageJson(null)
+      setWorkspaceTsconfigJson(null)
+      return
+    }
+    void (async () => {
+      const pj = await ideFsRead(ideJoinPath(workspaceRoot, 'package.json'))
+      setWorkspacePackageJson(pj.ok && pj.content ? pj.content : null)
+      const ts = await ideFsRead(ideJoinPath(workspaceRoot, 'tsconfig.json'))
+      setWorkspaceTsconfigJson(ts.ok && ts.content ? ts.content : null)
+    })()
+  }, [workspaceRoot, hasElectronFs])
 
   // Dialogs
   const [newFileDialog, setNewFileDialog] = useState(false)
@@ -302,11 +391,24 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
   const monacoRef = useRef<Monaco | null>(null)
   const previewRef = useRef<HTMLIFrameElement>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
+  const workspaceRootRef = useRef<string | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedCodeRef = useRef('')
+  const ideContextBlockRef = useRef('')
 
   const activeItem = useMemo(() => items.find(i => i.id === activeItemId), [items, activeItemId])
   const splitFile = useMemo(() => splitFileId ? items.find(i => i.id === splitFileId) : null, [items, splitFileId])
+
+  useEffect(() => {
+    const fn = activeItem?.filename || 'untitled'
+    const lang = editedLang
+    const code = editedCode
+    const max = 12000
+    const snippet =
+      code.length > max ? `${code.slice(0, max)}\n\n[... truncated ${String(code.length - max)} chars]` : code
+    const openList = items.map((i) => i.filename || i.language || 'file').join(', ')
+    ideContextBlockRef.current = `Active file: ${fn}\nLanguage: ${lang}\nOpen files (${String(items.length)}): ${openList}\n\n--- Source ---\n\n${snippet}`
+  }, [activeItem, editedLang, editedCode, items])
 
   // Sync editor on active item change
   useEffect(() => {
@@ -337,6 +439,12 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
       updateItem(activeItemId, { code: editedCode })
       savedCodeRef.current = editedCode
       setModified(false)
+      const item = itemsRef.current.find((i) => i.id === activeItemId)
+      if (item?.diskPath && globalThis.window?.jarvisIde) {
+        void ideFsWrite(item.diskPath, editedCode).then((r) => {
+          if (!r.ok) console.warn('Auto-save disk:', r.error)
+        })
+      }
     }, 1000)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
   }, [editedCode, autoSave, activeItemId, updateItem])
@@ -353,9 +461,130 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
   const wordWrapRef = useRef(wordWrap); wordWrapRef.current = wordWrap
   const showMinimapRef = useRef(showMinimap); showMinimapRef.current = showMinimap
   const autoSaveRef = useRef(autoSave); autoSaveRef.current = autoSave
-  const problemsRef = useRef(problems); problemsRef.current = problems
+
+  const missingLogicAnalysis = useMemo(() => {
+    const ctx = {
+      workspaceRelFiles,
+      workspaceRoot,
+      packageJsonContent: workspacePackageJson,
+      tsconfigContent: workspaceTsconfigJson,
+    }
+    const byFile = new Map<string, MissingLogicDetectionId[]>()
+    const logicProblems: Problem[] = []
+    for (const item of items) {
+      const code = item.id === activeItemId ? editedCode : item.code
+      const issues = analyzeMissingLogic(code, item.filename, item.language, ctx)
+      byFile.set(
+        item.id,
+        issues.map((x) => x.id)
+      )
+      const source = item.filename || 'untitled'
+      for (const iss of issues) {
+        logicProblems.push({
+          line: iss.line ?? 1,
+          column: 1,
+          severity: 'warning',
+          message: `[${iss.id}] ${iss.message}`,
+          source,
+        })
+      }
+    }
+    return { byFile, logicProblems }
+  }, [items, editedCode, activeItemId, workspaceRelFiles, workspaceRoot, workspacePackageJson, workspaceTsconfigJson])
+
+  const displayProblems = useMemo(
+    () => [...missingLogicAnalysis.logicProblems, ...problems, ...qualityProblems],
+    [missingLogicAnalysis.logicProblems, problems, qualityProblems]
+  )
+
+  const problemsRef = useRef(displayProblems)
+  problemsRef.current = displayProblems
+
   const terminalHistoryRef = useRef(terminalHistory); terminalHistoryRef.current = terminalHistory
   const outlineSymbolsRef = useRef(outlineSymbols); outlineSymbolsRef.current = outlineSymbols
+
+  const logToTerminal = useCallback((type: 'stdout' | 'stderr' | 'error' | 'info', text: string) => {
+    setTerminalHistory((prev) => [...prev, { type, text, time: Date.now() }])
+  }, [])
+
+  const handleRunWorkspaceQuality = useCallback(async () => {
+    if (!workspaceRoot || !hasElectronFs) {
+      toast.error('Open a workspace folder in the desktop app first.')
+      return
+    }
+    setQualityLoading(true)
+    setShowTerminal(true)
+    setBottomTab('terminal')
+    logToTerminal('info', '▶ Workspace quality: ESLint, tsc, GraphQL schema linter, Sonar…')
+    try {
+      const ts = await ideFsRead(ideJoinPath(workspaceRoot, 'tsconfig.json'))
+      const sp = await ideFsRead(ideJoinPath(workspaceRoot, 'sonar-project.properties'))
+      const graphqlFiles = workspaceRelFiles.filter((f) => /\.(graphql|gql)$/i.test(f)).slice(0, 8)
+      const result = await runJarvisWorkspaceQuality({
+        workspaceRoot,
+        runCommand: ideRunCommand,
+        hasTsconfig: ts.ok && !!ts.content,
+        graphqlRelPaths: graphqlFiles,
+        runSonar: sp.ok && !!sp.content,
+      })
+      const mapped: Problem[] = result.problems.map((p) => ({
+        line: p.line,
+        column: p.column,
+        severity: p.severity,
+        message: p.message,
+        source: p.source,
+      }))
+      setQualityProblems(mapped)
+      for (const line of result.logs) logToTerminal('info', line)
+      logToTerminal('info', `✓ Quality scan: ${String(mapped.length)} issue(s)`)
+      if (mapped.length > 0) {
+        setShowProblems(true)
+        setBottomTab('problems')
+      }
+      toast.success(`Quality scan: ${String(mapped.length)} issue(s)`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      logToTerminal('error', msg)
+      toast.error(msg)
+    } finally {
+      setQualityLoading(false)
+    }
+  }, [workspaceRoot, hasElectronFs, workspaceRelFiles, logToTerminal])
+
+  const runTerminalLine = useCallback(
+    async (command: string): Promise<JarvisIdeRunCommandResult> => {
+      const cmd = command.trim()
+      if (!cmd) {
+        return { ok: false, stdout: '', stderr: '', exitCode: null, error: 'empty' }
+      }
+      setShowTerminal(true)
+      setBottomTab('terminal')
+      logToTerminal('info', `$ ${cmd}`)
+      if (!hasElectronFs || !workspaceRoot) {
+        const msg = 'Open a folder (File → Open Folder) in the desktop app to run shell commands.'
+        logToTerminal('error', msg)
+        return { ok: false, stdout: '', stderr: '', exitCode: null, error: msg }
+      }
+      setTerminalShellBusy(true)
+      try {
+        const r = await ideRunCommand(workspaceRoot, cmd)
+        if (r.stdout.trim()) logToTerminal('stdout', r.stdout.trimEnd())
+        if (r.stderr.trim()) logToTerminal('stderr', r.stderr.trimEnd())
+        if (r.exitCode != null && r.exitCode !== 0) {
+          logToTerminal('error', `Exit code ${String(r.exitCode)}`)
+        }
+        if (r.error) logToTerminal('error', r.error)
+        return r
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e)
+        logToTerminal('error', err)
+        return { ok: false, stdout: '', stderr: '', exitCode: null, error: err }
+      } finally {
+        setTerminalShellBusy(false)
+      }
+    },
+    [hasElectronFs, workspaceRoot, logToTerminal]
+  )
 
   // ── Register Jarvis automation control ──
   useEffect(() => {
@@ -365,15 +594,15 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
       isOpen: () => open,
       openEditor: () => onOpenChange(true),
       createFile(filename, code, language) { const id = mkId(); addItem({ id, code, language, filename, createdAt: Date.now() }); onOpenChange(true); return id },
-      editFile(fileId, newCode) { if (!itemsRef.current.some(i => i.id === fileId)) return false; updateItem(fileId, { code: newCode }); if (activeItemIdRef.current === fileId) setEditedCode(newCode); return true },
-      deleteFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) return false; removeItem(fileId); return true },
-      openFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) return false; setActiveItemId(fileId); onOpenChange(true); return true },
-      renameFile(fileId, newName) { if (!itemsRef.current.some(i => i.id === fileId)) return false; updateItem(fileId, { filename: newName, language: detectLang(newName) }); return true },
+      editFile(fileId, newCode) { if (!itemsRef.current.some(i => i.id === fileId)) { return false; } updateItem(fileId, { code: newCode }); if (activeItemIdRef.current === fileId) { setEditedCode(newCode); } return true },
+      deleteFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) { return false; } removeItem(fileId); return true },
+      openFile(fileId) { if (!itemsRef.current.some(i => i.id === fileId)) { return false; } setActiveItemId(fileId); onOpenChange(true); return true },
+      renameFile(fileId, newName) { if (!itemsRef.current.some(i => i.id === fileId)) { return false; } updateItem(fileId, { filename: newName, language: detectLang(newName) }); return true },
       getFiles() { return itemsRef.current.map(i => ({ id: i.id, filename: i.filename || `untitled.${getExt(i.language)}`, language: i.language })) },
-      getActiveFile() { const id = activeItemIdRef.current; if (!id) return null; const item = itemsRef.current.find(i => i.id === id); if (!item) return null; return { id: item.id, filename: item.filename || `untitled.${getExt(item.language)}`, language: item.language, code: editedCodeRef.current || item.code } },
-      getFileContent(fileId) { if (activeItemIdRef.current === fileId) return editedCodeRef.current; return itemsRef.current.find(i => i.id === fileId)?.code ?? null },
-      insertText(text, position = 'end') { const ed = editorRef.current; if (!ed) return false; const model = ed.getModel(); if (!model) return false; let pos: monacoNs.IPosition; if (position === 'start') pos = { lineNumber: 1, column: 1 }; else if (position === 'cursor') pos = ed.getPosition() || { lineNumber: 1, column: 1 }; else { const l = model.getLineCount(); pos = { lineNumber: l, column: model.getLineMaxColumn(l) } }; ed.executeEdits('jarvis', [{ range: new (monacoRef.current!.Range)(pos.lineNumber, pos.column, pos.lineNumber, pos.column), text }]); setEditedCode(model.getValue()); return true },
-      replaceText(s, r, all = false) { const model = editorRef.current?.getModel(); if (!model) return 0; const c = model.getValue(); let count = 0; let nc: string; if (all) { nc = c.split(s).join(r); count = c !== nc ? c.split(s).length - 1 : 0 } else { const idx = c.indexOf(s); if (idx === -1) return 0; nc = c.slice(0, idx) + r + c.slice(idx + s.length); count = 1 }; model.setValue(nc); setEditedCode(nc); return count },
+      getActiveFile() { const id = activeItemIdRef.current; if (!id) { return null; } const item = itemsRef.current.find(i => i.id === id); if (!item) { return null; } return { id: item.id, filename: item.filename || `untitled.${getExt(item.language)}`, language: item.language, code: editedCodeRef.current || item.code } },
+      getFileContent(fileId) { if (activeItemIdRef.current === fileId) { return editedCodeRef.current; } return itemsRef.current.find(i => i.id === fileId)?.code ?? null },
+      insertText(text, position = 'end') { const ed = editorRef.current; if (!ed) { return false; } const model = ed.getModel(); if (!model) { return false; } const resolvePos = (): monacoNs.IPosition => { if (position === 'start') { return { lineNumber: 1, column: 1 }; } if (position === 'cursor') { return ed.getPosition() || { lineNumber: 1, column: 1 }; } const l = model.getLineCount(); return { lineNumber: l, column: model.getLineMaxColumn(l) }; }; const pos = resolvePos(); ed.executeEdits('jarvis', [{ range: new (monacoRef.current!.Range)(pos.lineNumber, pos.column, pos.lineNumber, pos.column), text }]); setEditedCode(model.getValue()); return true },
+      replaceText(s, r, all = false) { const model = editorRef.current?.getModel(); if (!model) { return 0; } const c = model.getValue(); let count = 0; let nc: string; if (all) { nc = c.split(s).join(r); count = c === nc ? 0 : c.split(s).length - 1 } else { const idx = c.indexOf(s); if (idx === -1) { return 0; } nc = c.slice(0, idx) + r + c.slice(idx + s.length); count = 1 }; model.setValue(nc); setEditedCode(nc); return count },
       findInFile(query) { const code = editedCodeRef.current; const res: Array<{ line: number; column: number; text: string }> = []; const lines = code.split('\n'); const lq = query.toLowerCase(); for (let i = 0; i < lines.length; i++) { const ll = lines[i].toLowerCase(); let col = ll.indexOf(lq); while (col !== -1) { res.push({ line: i + 1, column: col + 1, text: lines[i].trim() }); col = ll.indexOf(lq, col + 1) } }; return res },
       setLanguage(lang) { setEditedLang(lang); const id = activeItemIdRef.current; if (id) updateItem(id, { language: lang }) },
       async runActiveFile() { const code = editedCodeRef.current; const lang = editedLangRef.current; setRunning(true); setRunResult(null); setShowTerminal(true); try { const result = await runCode(code, lang); setRunResult(result); return result } finally { setRunning(false) } },
@@ -402,7 +631,9 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
       getOutlineSymbols() { return outlineSymbolsRef.current },
       getProblems() { return problemsRef.current },
       getTerminalOutput() { return terminalHistoryRef.current.map(e => e.text).join('\n') },
-      createFromTemplate(n) { const t = FILE_TEMPLATES.find(t => t.name.toLowerCase() === n.toLowerCase()); if (!t) return null; const id = mkId(); addItem({ id, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); onOpenChange(true); return id },
+      getWorkspaceRoot() { return workspaceRootRef.current },
+      runTerminalCommand(command: string) { return runTerminalLine(command) },
+      createFromTemplate(n) { const t = FILE_TEMPLATES.find(t => t.name.toLowerCase() === n.toLowerCase()); if (!t) { return null; } const id = mkId(); addItem({ id, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); onOpenChange(true); return id },
       getAvailableTemplates() { return FILE_TEMPLATES.map(t => t.name) },
       goToLine(line) { editorRef.current?.setPosition({ lineNumber: line, column: 1 }); editorRef.current?.revealLineInCenter(line) },
       revealLine(line) { editorRef.current?.revealLineInCenter(line) },
@@ -410,7 +641,7 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
     }
     register(control)
     return () => unregister()
-  }, [open, register, unregister, addItem, removeItem, updateItem, onOpenChange, setActiveItemId, setRunning, setRunResult, splitFileId, diffTargetId])
+  }, [open, register, unregister, addItem, removeItem, updateItem, onOpenChange, setActiveItemId, setRunning, setRunResult, splitFileId, diffTargetId, runTerminalLine])
 
   // Live preview
   const writePreview = useCallback((code: string, lang: string) => {
@@ -420,11 +651,11 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
     if (!doc) return
     doc.open() // NOSONAR
     if (lang === 'html' || lang === 'htm') {
-      doc.write(code)
+      doc.write(code) // NOSONAR
     } else if (lang === 'markdown' || lang === 'md') {
-      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui,-apple-system,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.7;color:#333}h1{border-bottom:2px solid #eee;padding-bottom:0.3em}h2{border-bottom:1px solid #eee;padding-bottom:0.2em}h1,h2,h3,h4{margin:1.5rem 0 0.5rem;font-weight:600}code{background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:0.9em;font-family:'Cascadia Code',Consolas,monospace}pre{background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:8px;overflow-x:auto;margin:1rem 0}pre code{background:none;padding:0;color:inherit}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5;font-weight:600}tr:nth-child(even){background:#fafafa}blockquote{border-left:4px solid #007acc;margin:1rem 0;padding:0.5rem 1rem;color:#555;background:#f8f9fa}img{max-width:100%;border-radius:4px}a{color:#007acc;text-decoration:none}a:hover{text-decoration:underline}ul,ol{padding-left:1.5rem;margin:0.5rem 0}li{margin:0.25rem 0}hr{border:none;border-top:2px solid #eee;margin:2rem 0}</style></head><body>${simpleMarkdown(code)}</body></html>`)
+      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui,-apple-system,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.7;color:#333}h1{border-bottom:2px solid #eee;padding-bottom:0.3em}h2{border-bottom:1px solid #eee;padding-bottom:0.2em}h1,h2,h3,h4{margin:1.5rem 0 0.5rem;font-weight:600}code{background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:0.9em;font-family:'Cascadia Code',Consolas,monospace}pre{background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:8px;overflow-x:auto;margin:1rem 0}pre code{background:none;padding:0;color:inherit}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5;font-weight:600}tr:nth-child(even){background:#fafafa}blockquote{border-left:4px solid #007acc;margin:1rem 0;padding:0.5rem 1rem;color:#555;background:#f8f9fa}img{max-width:100%;border-radius:4px}a{color:#007acc;text-decoration:none}a:hover{text-decoration:underline}ul,ol{padding-left:1.5rem;margin:0.5rem 0}li{margin:0.25rem 0}hr{border:none;border-top:2px solid #eee;margin:2rem 0}</style></head><body>${simpleMarkdown(code)}</body></html>`) // NOSONAR
     } else if (lang === 'css' || lang === 'scss' || lang === 'less') {
-      doc.write(`<!DOCTYPE html><html><head><style>${code}</style></head><body>
+      const cssPreviewHtml = `<!DOCTYPE html><html><head><style>${code}</style></head><body>
 <div class="preview"><h1>CSS Preview</h1><p>Your styles are applied to this sample content.</p>
 <div class="card"><h2>Card Title</h2><p>This is a card with some content inside it.</p></div>
 <div class="container"><div class="flex"><button class="btn">Primary Button</button><button class="btn secondary">Secondary</button></div></div>
@@ -432,9 +663,10 @@ export function CodeEditorModal({ open, onOpenChange }: CodeEditorModalProps) {
 <a href="#">Sample Link</a> <span>|</span> <input type="text" placeholder="Input field" /> <span>|</span> <input type="checkbox" checked /> <label>Checkbox</label>
 <ul><li>List item 1</li><li>List item 2</li><li>List item 3</li></ul>
 <table><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>Row 1</td><td>Data</td></tr><tr><td>Row 2</td><td>Data</td></tr></tbody></table>
-</div></body></html>`)
+</div></body></html>`
+      doc.write(cssPreviewHtml) // NOSONAR
     } else if (lang === 'javascript' || lang === 'typescript') {
-      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;line-height:1.6;margin:0}#output{white-space:pre-wrap;word-break:break-word}.log{color:#d4d4d4}.warn{color:#e8ab6a}.error{color:#f44747}.info{color:#569cd6}.group{border-left:2px solid #444;padding-left:12px;margin:4px 0}.time{color:#888;font-size:11px}</style></head><body><div id="output"></div><` + `script>
+      const jsPreviewHtml = `<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;line-height:1.6;margin:0}#output{white-space:pre-wrap;word-break:break-word}.log{color:#d4d4d4}.warn{color:#e8ab6a}.error{color:#f44747}.info{color:#569cd6}.group{border-left:2px solid #444;padding-left:12px;margin:4px 0}.time{color:#888;font-size:11px}</style></head><body><div id="output"></div><` + `script>
 const _out=document.getElementById('output');
 const _ts=()=>new Date().toLocaleTimeString();
 function _log(cls,...args){const d=document.createElement('div');d.className=cls;d.textContent=args.map(a=>typeof a==='object'?JSON.stringify(a,null,2):String(a)).join(' ');const t=document.createElement('span');t.className='time';t.textContent=_ts()+' ';d.prepend(t);_out.appendChild(d);_out.scrollTop=_out.scrollHeight;}
@@ -443,17 +675,18 @@ console.warn=function(...a){_log('warn','⚠ ',...a)};
 console.error=function(...a){_log('error','✕ ',...a)};
 console.info=function(...a){_log('info','ℹ ',...a)};
 console.table=function(a){if(Array.isArray(a)){a.forEach((r,i)=>_log('log','['+i+']',r))}else{_log('log',a)}};
-try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.message)}
-<` + `/script></body></html>`)
+try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.error(e.message)}
+<` + `/script></body></html>`
+      doc.write(jsPreviewHtml) // NOSONAR
     } else if (lang === 'json') {
       try {
         const formatted = JSON.stringify(JSON.parse(code), null, 2)
-        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;margin:0}pre{white-space:pre-wrap;word-break:break-word;margin:0}.string{color:#ce9178}.number{color:#b5cea8}.boolean{color:#569cd6}.null{color:#569cd6}.key{color:#9cdcfe}</style></head><body><pre>${syntaxHighlightJson(formatted)}</pre></body></html>`)
+        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:'Cascadia Code',Consolas,monospace;padding:20px;background:#1e1e1e;color:#d4d4d4;font-size:13px;margin:0}pre{white-space:pre-wrap;word-break:break-word;margin:0}.string{color:#ce9178}.number{color:#b5cea8}.boolean{color:#569cd6}.null{color:#569cd6}.key{color:#9cdcfe}</style></head><body><pre>${syntaxHighlightJson(formatted)}</pre></body></html>`) // NOSONAR
       } catch {
-        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:Consolas,monospace;padding:20px;background:#1e1e1e;color:#f44747}</style></head><body><pre>Invalid JSON:\n${escapeHtml(code)}</pre></body></html>`)
+        doc.write(`<!DOCTYPE html><html><head><style>body{font-family:Consolas,monospace;padding:20px;background:#1e1e1e;color:#f44747}</style></head><body><pre>Invalid JSON:\n${escapeHtml(code)}</pre></body></html>`) // NOSONAR
       }
     } else {
-      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui;padding:2rem;background:#1e1e1e;color:#888;display:flex;align-items:center;justify-content:center;height:80vh;margin:0;text-align:center}p{font-size:14px}</style></head><body><div><p>Preview not available for <strong style="color:#ccc">${lang}</strong> files.</p><p style="font-size:12px;color:#555">Supported: HTML, CSS, JavaScript, TypeScript, Markdown, JSON</p></div></body></html>`)
+      doc.write(`<!DOCTYPE html><html><head><style>body{font-family:system-ui;padding:2rem;background:#1e1e1e;color:#888;display:flex;align-items:center;justify-content:center;height:80vh;margin:0;text-align:center}p{font-size:14px}</style></head><body><div><p>Preview not available for <strong style="color:#ccc">${lang}</strong> files.</p><p style="font-size:12px;color:#555">Supported: HTML, CSS, JavaScript, TypeScript, Markdown, JSON</p></div></body></html>`) // NOSONAR
     }
     doc.close() // NOSONAR
   }, [])
@@ -485,7 +718,12 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       const l = lines[i]
       if (/^\s*(export\s+)?(function|const|let|var|class|interface|type|enum|import|def |async\s+def |async\s+function)\s/i.test(l)) {
         const name = l.trim().slice(0, 60)
-        const kind = /class /i.test(l) ? 'class' : /function |def /i.test(l) ? 'function' : /interface |type |enum /i.test(l) ? 'type' : /import /i.test(l) ? 'import' : 'variable'
+        let kind: string
+        if (/class /i.test(l)) { kind = 'class' }
+        else if (/function |def /i.test(l)) { kind = 'function' }
+        else if (/interface |type |enum /i.test(l)) { kind = 'type' }
+        else if (/import /i.test(l)) { kind = 'import' }
+        else { kind = 'variable' }
         syms.push({ name, kind, line: i + 1 })
       }
     }
@@ -493,8 +731,74 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
   }, [editedCode])
 
   useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory])
-  useEffect(() => { if (!tabContextMenu) return; const h = () => setTabContextMenu(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [tabContextMenu])
-  useEffect(() => { if (!openMenuId) return; const h = () => setOpenMenuId(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [openMenuId])
+  useEffect(() => { if (!tabContextMenu) { return; } const h = () => setTabContextMenu(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [tabContextMenu])
+  useEffect(() => { if (!openMenuId) { return; } const h = () => setOpenMenuId(null); globalThis.addEventListener('click', h); return () => globalThis.removeEventListener('click', h) }, [openMenuId])
+
+  useEffect(() => {
+    if (!open) return
+    void fetchAgentBrowserHealth()
+      .then((h) => setAgentBridgeOk(Boolean(h.ok)))
+      .catch(() => setAgentBridgeOk(false))
+  }, [open])
+
+  useEffect(() => {
+    setProblemIndex(0)
+  }, [displayProblems.length])
+
+  useEffect(() => {
+    if (displayProblems.length === 0) return
+    const p = displayProblems[problemIndex % displayProblems.length]
+    editorRef.current?.revealLineInCenter(p.line)
+  }, [problemIndex, displayProblems])
+
+  useEffect(() => {
+    if (bottomTab !== 'git' || !workspaceRoot || !hasElectronFs) return
+    setGitLoading(true)
+    void ideGit(workspaceRoot, ['status', '-sb'])
+      .then((r) => {
+        if (r.ok) { const stderrPart = r.stderr ? `\n${r.stderr}` : ''; setGitOutput(`${r.stdout || ''}${stderrPart}`.trim()) }
+        else { setGitOutput(r.error || r.stderr || 'git failed') }
+      })
+      .catch((e) => setGitOutput(e instanceof Error ? e.message : String(e)))
+      .finally(() => setGitLoading(false))
+  }, [bottomTab, workspaceRoot, hasElectronFs])
+
+  useEffect(() => {
+    if (!open || !workspaceRoot || !hasElectronFs) {
+      setGitPorcelainMap(new Map())
+      setGitRemoteCounts(null)
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      const [st, lr] = await Promise.all([
+        ideGit(workspaceRoot, ['status', '--porcelain']),
+        ideGit(workspaceRoot, ['rev-list', '--left-right', '--count', '@{u}...HEAD']),
+      ])
+      if (cancelled) return
+      if (st.ok && st.stdout != null) setGitPorcelainMap(parseGitStatusPorcelain(st.stdout))
+      else setGitPorcelainMap(new Map())
+      if (lr.ok && lr.stdout != null) setGitRemoteCounts(parseGitLeftRightCount(lr.stdout))
+      else setGitRemoteCounts(null)
+    }
+    void refresh()
+    const t = setInterval(refresh, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [open, workspaceRoot, hasElectronFs])
+
+  useEffect(() => {
+    if (bottomTab !== 'extensions' || !workspaceRoot || !hasElectronFs) {
+      setExtensionsPackageJson(null)
+      return
+    }
+    const path = ideJoinPath(workspaceRoot, 'package.json')
+    void ideFsRead(path).then((r) => {
+      setExtensionsPackageJson(r.ok && r.content != null ? r.content : `Could not read package.json: ${r.error ?? 'unknown'}`)
+    })
+  }, [bottomTab, workspaceRoot, hasElectronFs])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -512,12 +816,16 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       if (mod && e.key === 'b') { e.preventDefault(); setShowExplorer(p => !p) }
       if (mod && e.key === '`') { e.preventDefault(); setShowTerminal(p => !p) }
       if (mod && e.key === 'n' && !e.shiftKey) { e.preventDefault(); setNewFileDialog(true) }
-      if (mod && e.key === 's') { e.preventDefault(); handleSave(); toast.success('Saved') }
+      if (mod && e.key === 's') { e.preventDefault(); void handleSave().then(() => toast.success('Saved')) }
       if (mod && e.shiftKey && (e.key === 'P' || e.key === 'p')) { e.preventDefault(); setCommandPaletteOpen(true); setCommandFilter('') }
       if (mod && e.key === '=') { e.preventDefault(); setFontSize(s => Math.min(s + 1, 32)) }
       if (mod && e.key === '-') { e.preventDefault(); setFontSize(s => Math.max(s - 1, 10)) }
       if (mod && e.key === '0') { e.preventDefault(); setFontSize(14) }
       if (mod && e.shiftKey && (e.key === 'F' || e.key === 'f')) { e.preventDefault(); setShowSearch(true); setShowExplorer(true) }
+      if (mod && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+        e.preventDefault()
+        if (ideChatOnSend) setShowIdeChat((p) => !p)
+      }
       if (e.key === 'F11') { e.preventDefault(); setZenMode(p => !p) }
       if (mod && e.key === 'j') { e.preventDefault(); setShowTerminal(p => !p) }
       if (mod && e.key === '\\') { e.preventDefault(); setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) }
@@ -528,15 +836,132 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
     }
     globalThis.addEventListener('keydown', handler)
     return () => globalThis.removeEventListener('keydown', handler)
-  }, [open, onOpenChange, commandPaletteOpen, showShortcuts, zenMode, tabContextMenu, openMenuId, activeItemId, editedCode, splitFileId])
+  }, [open, onOpenChange, commandPaletteOpen, showShortcuts, zenMode, tabContextMenu, openMenuId, activeItemId, editedCode, splitFileId, ideChatOnSend])
 
-  const logToTerminal = useCallback((type: 'stdout' | 'stderr' | 'error' | 'info', text: string) => {
-    setTerminalHistory(prev => [...prev, { type, text, time: Date.now() }])
+  const handleSave = useCallback(async () => {
+    if (!activeItemId) return
+    updateItem(activeItemId, { code: editedCode })
+    savedCodeRef.current = editedCode
+    setModified(false)
+    const item = items.find((i) => i.id === activeItemId)
+    if (item?.diskPath && hasElectronFs) {
+      const res = await ideFsWrite(item.diskPath, editedCode)
+      if (!res.ok) toast.error(res.error || 'Could not save to disk')
+    }
+  }, [activeItemId, editedCode, updateItem, items, hasElectronFs])
+
+  const sendIdePayload = useCallback(
+    async (payload: IdeChatPayload) => {
+      if (!ideChatOnSend) return
+      setIdeChatLoading(true)
+      try {
+        const { content, reasoning } = await ideChatOnSend(payload)
+        setIdeChatMessages((prev) => [...prev, createIdeAssistantMessage(content, reasoning)])
+      } catch (e) {
+        console.error(e)
+        toast.error('IDE chat failed')
+        setIdeChatMessages((prev) => [...prev, createIdeAssistantMessage('Sorry — something went wrong. Try again.')])
+      } finally {
+        setIdeChatLoading(false)
+      }
+    },
+    [ideChatOnSend]
+  )
+
+  const handleIdeChatSend = useCallback(
+    async (text: string) => {
+      if (!ideChatOnSend) return
+      setIdeChatMessages((prev) => [...prev, createIdeUserMessage(text)])
+      await sendIdePayload({
+        userMessage: text,
+        ideContextBlock: ideContextBlockRef.current,
+        model: ideChatModel,
+        temperature: ideTemp,
+        max_tokens: ideMaxTok,
+        reasoningMode: ideReasoning,
+      })
+    },
+    [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning]
+  )
+
+  const firePresetChat = useCallback(
+    async (preset: IdeAiPreset, userMessage: string) => {
+      if (!ideChatOnSend) return
+      setShowIdeChat(true)
+      setIdeChatMessages((prev) => [...prev, createIdeUserMessage(userMessage)])
+      await sendIdePayload({
+        userMessage,
+        ideContextBlock: ideContextBlockRef.current,
+        preset,
+        model: ideChatModel,
+        temperature: ideTemp,
+        max_tokens: ideMaxTok,
+        reasoningMode: ideReasoning,
+      })
+    },
+    [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning]
+  )
+
+  /** Cursor-style Review: run static analysis first, then feed findings to AI. */
+  const handleJarvisReview = useCallback(async () => {
+    if (!workspaceRoot || !hasElectronFs) {
+      void firePresetChat(
+        'composer_review',
+        'Review the open files for risks, security, and improvements.'
+      )
+      return
+    }
+    setQualityLoading(true)
+    setShowTerminal(true)
+    setBottomTab('terminal')
+    logToTerminal('info', '▶ Review: running ESLint, tsc, GraphQL, Sonar…')
+    let qualitySummary = ''
+    try {
+      const ts = await ideFsRead(ideJoinPath(workspaceRoot, 'tsconfig.json'))
+      const sp = await ideFsRead(ideJoinPath(workspaceRoot, 'sonar-project.properties'))
+      const graphqlFiles = workspaceRelFiles.filter((f) => /\.(graphql|gql)$/i.test(f)).slice(0, 8)
+      const result = await runJarvisWorkspaceQuality({
+        workspaceRoot,
+        runCommand: ideRunCommand,
+        hasTsconfig: ts.ok && !!ts.content,
+        graphqlRelPaths: graphqlFiles,
+        runSonar: sp.ok && !!sp.content,
+      })
+      const mapped: Problem[] = result.problems.map((p) => ({
+        line: p.line,
+        column: p.column,
+        severity: p.severity,
+        message: p.message,
+        source: p.source,
+      }))
+      setQualityProblems(mapped)
+      for (const line of result.logs) logToTerminal('info', line)
+      logToTerminal('info', `✓ Quality scan: ${String(mapped.length)} issue(s)`)
+      if (mapped.length > 0) {
+        setShowProblems(true)
+        setBottomTab('problems')
+        const top = mapped.slice(0, 40).map((p) => `  ${p.source}:${String(p.line)} ${p.severity} ${p.message}`).join('\n')
+        const overflow = mapped.length > 40 ? `\n  … and ${String(mapped.length - 40)} more` : ''
+        qualitySummary = `\n\nStatic analysis found ${String(mapped.length)} issue(s):\n${top}${overflow}`
+      } else {
+        qualitySummary = '\n\nStatic analysis (ESLint, tsc, GraphQL, Sonar): 0 issues found.'
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      logToTerminal('error', msg)
+      qualitySummary = `\n\nStatic analysis failed: ${msg}`
+    } finally {
+      setQualityLoading(false)
+    }
+    void firePresetChat(
+      'composer_review',
+      `Review the open files and workspace for risks, security, and improvements.${qualitySummary}`
+    )
+  }, [firePresetChat, workspaceRoot, hasElectronFs, workspaceRelFiles, logToTerminal])
+
+  const clearIdeChat = useCallback(() => {
+    setIdeChatMessages([])
   }, [])
-
-  const handleSave = useCallback(() => {
-    if (activeItemId) { updateItem(activeItemId, { code: editedCode }); savedCodeRef.current = editedCode; setModified(false) }
-  }, [activeItemId, editedCode, updateItem])
 
   const handleRun = useCallback(async () => {
     setShowTerminal(true); setBottomTab('terminal'); setRunning(true); setRunResult(null)
@@ -564,8 +989,8 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
     const fn = activeItem?.filename || `code.${getExt(editedLang)}`
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([editedCode], { type: 'text/plain' })); a.download = fn; a.click(); toast.success(`Downloaded ${fn}`)
   }, [editedCode, editedLang, activeItem])
-  const handleNewFile = useCallback(() => { if (!newFileName.trim()) return; addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: '', language: detectLang(newFileName), filename: newFileName.trim(), createdAt: Date.now() }); setNewFileName(''); setNewFileDialog(false) }, [newFileName, addItem])
-  const handleRename = useCallback(() => { if (!renameDialog || !renameValue.trim()) return; updateItem(renameDialog, { filename: renameValue.trim(), language: detectLang(renameValue) }); setRenameDialog(null); setRenameValue('') }, [renameDialog, renameValue, updateItem])
+  const handleNewFile = useCallback(() => { if (!newFileName.trim()) { return; } addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: '', language: detectLang(newFileName), filename: newFileName.trim(), createdAt: Date.now() }); setNewFileName(''); setNewFileDialog(false) }, [newFileName, addItem])
+  const handleRename = useCallback(() => { if (!renameDialog || !renameValue.trim()) { return; } updateItem(renameDialog, { filename: renameValue.trim(), language: detectLang(renameValue) }); setRenameDialog(null); setRenameValue('') }, [renameDialog, renameValue, updateItem])
 
   const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -632,67 +1057,105 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
   const tb = isLight ? '#f3f3f3' : '#252526'
   const tl = isLight ? '#dddddd' : '#323233'
 
-  // ── Dropdown menus ──
-  const fileMenu = [
-    { label: 'New File', shortcut: 'Ctrl+N', action: () => setNewFileDialog(true) },
-    { label: 'New from Template...', action: () => setTemplateDialog(true) },
-    { label: '─' },
-    { label: 'Save', shortcut: 'Ctrl+S', action: handleSave },
-    { label: 'Save As...', action: handleDownload },
-    { label: '─' },
-    { label: 'Close File', shortcut: 'Ctrl+W', action: () => { if (activeItemId) handleCloseTab(activeItemId) } },
-    { label: 'Close All', action: () => { items.forEach(i => removeItem(i.id)); setActiveItemId(null) } },
-  ]
-  const editMenu = [
-    { label: 'Undo', shortcut: 'Ctrl+Z', action: () => editorRef.current?.trigger('keyboard', 'undo', null) },
-    { label: 'Redo', shortcut: 'Ctrl+Y', action: () => editorRef.current?.trigger('keyboard', 'redo', null) },
-    { label: '─' },
-    { label: 'Cut', shortcut: 'Ctrl+X', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardCutAction', null) },
-    { label: 'Copy', shortcut: 'Ctrl+C', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardCopyAction', null) },
-    { label: 'Paste', shortcut: 'Ctrl+V', action: () => editorRef.current?.trigger('keyboard', 'editor.action.clipboardPasteAction', null) },
-    { label: 'Copy All', action: handleCopy },
-    { label: '─' },
-    { label: 'Find', shortcut: 'Ctrl+F', action: () => editorRef.current?.getAction('actions.find')?.run() },
-    { label: 'Find and Replace', shortcut: 'Ctrl+H', action: () => editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run() },
-    { label: 'Search in Files', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(true); setShowExplorer(true) } },
-    { label: '─' },
-    { label: 'Select All', shortcut: 'Ctrl+A', action: () => editorRef.current?.trigger('keyboard', 'editor.action.selectAll', null) },
-    { label: 'Format Document', shortcut: 'Shift+Alt+F', action: handleFormat },
-  ]
-  const viewMenu = [
-    { label: showExplorer ? '✓ Explorer' : '  Explorer', shortcut: 'Ctrl+B', action: () => setShowExplorer(p => !p) },
-    { label: showSearch ? '✓ Search' : '  Search', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(p => !p); setShowExplorer(true) } },
-    { label: showOutline ? '✓ Outline' : '  Outline', action: () => { setShowOutline(p => !p); setShowExplorer(true) } },
-    { label: showTerminal ? '✓ Terminal' : '  Terminal', shortcut: 'Ctrl+`', action: () => setShowTerminal(p => !p) },
-    { label: showPreview ? '✓ Preview' : '  Preview', action: () => setShowPreview(p => !p) },
-    { label: '─' },
-    { label: showMinimap ? '✓ Minimap' : '  Minimap', action: () => setShowMinimap(p => !p) },
-    { label: wordWrap === 'on' ? '✓ Word Wrap' : '  Word Wrap', shortcut: 'Alt+Z', action: () => setWordWrap(w => w === 'on' ? 'off' : 'on') },
-    { label: stickyScroll ? '✓ Sticky Scroll' : '  Sticky Scroll', action: () => setStickyScroll(p => !p) },
-    { label: '─' },
-    { label: splitEditor ? '✓ Split Editor' : '  Split Editor', shortcut: 'Ctrl+\\', action: () => { setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) } },
-    { label: diffMode ? '✓ Diff Editor' : '  Diff Editor', action: () => { setDiffMode(p => !p); if (!diffTargetId) { const o = items.find(i => i.id !== activeItemId); if (o) setDiffTargetId(o.id) } } },
-    { label: zenMode ? '✓ Zen Mode' : '  Zen Mode', shortcut: 'F11', action: () => setZenMode(p => !p) },
-    { label: '─' },
-    { label: 'Settings', action: () => { setShowSettings(true); setShowExplorer(true) } },
-    { label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
-    { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { setCommandPaletteOpen(true); setCommandFilter('') } },
-  ]
-  const runMenu = [
-    { label: 'Run File', shortcut: 'Ctrl+Enter', action: handleRun, disabled: !canRun },
-    { label: '─' },
-    { label: showProblems ? '✓ Problems Panel' : '  Problems Panel', action: () => { setShowTerminal(true); setBottomTab('problems') } },
-    { label: 'Clear Terminal', action: () => setTerminalHistory([]) },
-    { label: 'Clear Problems', action: () => setProblems([]) },
-  ]
-  const helpMenu = [
-    { label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
-    { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { setCommandPaletteOpen(true); setCommandFilter('') } },
-    { label: 'Monaco Command Palette', shortcut: 'F1', action: () => editorRef.current?.getAction('editor.action.quickCommand')?.run() },
-    { label: '─' },
-    { label: 'About Jarvis IDE', action: () => toast.info('Jarvis IDE — Full-featured code editor powered by Monaco') },
-  ]
-  const allMenus: Record<string, Array<{ label: string; shortcut?: string; action?: () => void; disabled?: boolean }>> = { File: fileMenu, Edit: editMenu, View: viewMenu, Run: runMenu, Help: helpMenu }
+  // ── Full menu bar (File … Agents) — real IPC + chat + git + workspace
+  const allMenus = buildCodeEditorJarvisMenus({
+    editorRef,
+    monacoRef,
+    ideContextBlockRef,
+    hasElectronFs,
+    ideChatOnSend: Boolean(ideChatOnSend),
+    agentBridgeOk,
+    onOpenAgentBrowser,
+    items,
+    activeItemId,
+    editedCode,
+    setEditedCode,
+    workspaceRoot,
+    setWorkspaceRoot,
+    setWorkspaceRelFiles,
+    addItem,
+    updateItem,
+    removeItem,
+    setActiveItemId,
+    onOpenChange,
+    autoSave,
+    showExplorer,
+    showSearch,
+    showSourceControl,
+    showRunDebug,
+    showExtensions,
+    showTerminal,
+    showProblems,
+    showOutputTab,
+    showDebugConsole,
+    zenMode,
+    showMenuBar,
+    showActivityBar,
+    showStatusBar,
+    splitFileId,
+    diffTargetId,
+    setNewFileDialog,
+    setTemplateDialog,
+    handleSave,
+    handleDownload,
+    handleCloseTab,
+    setShowExplorer,
+    setShowSearch,
+    setShowOutline,
+    setShowTerminal,
+    setShowPreview,
+    setShowIdeChat,
+    setShowMinimap,
+    setWordWrap,
+    setStickyScroll,
+    setSplitEditor,
+    setSplitFileId,
+    setDiffMode,
+    setDiffTargetId,
+    setZenMode,
+    setShowSettings,
+    setShowShortcuts,
+    setCommandPaletteOpen,
+    setCommandFilter,
+    setOpenMenuId,
+    handleFormat,
+    handleCopy,
+    handleRun,
+    canRun,
+    setShowProblems,
+    setBottomTab,
+    setTerminalHistory,
+    setProblems,
+    problemIndex,
+    setProblemIndex,
+    problemsLength: displayProblems.length,
+    setShowSourceControl,
+    setShowRunDebug,
+    setShowExtensions,
+    setShowOutputTab,
+    setShowDebugConsole,
+    setShowMenuBar,
+    setShowActivityBar,
+    setShowStatusBar,
+    debuggingActive,
+    setDebuggingActive,
+    setDebugLogLines,
+    setRunning,
+    setAutoSave,
+    ideChatModel,
+    setIdeChatModel,
+    ideTemp,
+    setIdeTemp,
+    ideMaxTok,
+    setIdeMaxTok,
+    ideReasoning,
+    setIdeReasoning,
+    firePresetChat,
+    sendIdePayload,
+    setIdeChatMessages,
+    createIdeUserMessage,
+    clearIdeChat,
+  })
 
   // ── Command palette commands ──
   const commands = useMemo(() => {
@@ -702,6 +1165,12 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       { id: 'save', label: 'Save', shortcut: 'Ctrl+S', action: handleSave },
       { id: 'run', label: 'Run Code', shortcut: 'Ctrl+Enter', action: handleRun, disabled: !canRun },
       { id: 'format', label: 'Format Document', shortcut: 'Shift+Alt+F', action: handleFormat },
+      {
+        id: 'workspace-quality',
+        label: 'Run workspace quality (ESLint, tsc, GraphQL, Sonar)',
+        action: () => void handleRunWorkspaceQuality(),
+        disabled: !workspaceRoot || !hasElectronFs || qualityLoading,
+      },
       { id: 'copy', label: 'Copy All', action: handleCopy },
       { id: 'download', label: 'Download File', action: handleDownload },
       { id: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', action: () => editorRef.current?.trigger('keyboard', 'undo', null) },
@@ -718,6 +1187,9 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       { id: 'toggle-explorer', label: 'Toggle Explorer', shortcut: 'Ctrl+B', action: () => setShowExplorer(p => !p) },
       { id: 'toggle-terminal', label: 'Toggle Terminal', shortcut: 'Ctrl+`', action: () => setShowTerminal(p => !p) },
       { id: 'toggle-preview', label: 'Toggle Preview', action: () => setShowPreview(p => !p) },
+      ...(ideChatOnSend
+        ? [{ id: 'toggle-ai-chat', label: showIdeChat ? 'Hide AI Chat' : 'Show AI Chat', shortcut: 'Ctrl+Shift+L', action: () => setShowIdeChat((p) => !p) }]
+        : []),
       { id: 'toggle-outline', label: 'Toggle Outline', action: () => { setShowOutline(p => !p); setShowExplorer(true) } },
       { id: 'toggle-problems', label: 'Toggle Problems', action: () => { setShowTerminal(true); setBottomTab('problems') } },
       { id: 'toggle-minimap', label: `Minimap: ${showMinimap ? 'Off' : 'On'}`, action: () => setShowMinimap(p => !p) },
@@ -732,7 +1204,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       { id: 'settings', label: 'Open Settings', action: () => { setShowSettings(true); setShowExplorer(true) } },
       { id: 'shortcuts', label: 'Keyboard Shortcuts', action: () => setShowShortcuts(true) },
       { id: 'clear-terminal', label: 'Clear Terminal', action: () => setTerminalHistory([]) },
-      { id: 'clear-problems', label: 'Clear Problems', action: () => setProblems([]) },
+      { id: 'clear-problems', label: 'Clear Problems', action: () => { setProblems([]); setQualityProblems([]) } },
       { id: 'search-files', label: 'Search Across Files', shortcut: 'Ctrl+Shift+F', action: () => { setShowSearch(true); setShowExplorer(true) } },
       { id: 'close-file', label: 'Close File', shortcut: 'Ctrl+W', action: () => { if (activeItemId) handleCloseTab(activeItemId) } },
       { id: 'duplicate', label: 'Duplicate File', shortcut: 'Ctrl+D', action: () => { if (activeItemId) handleDuplicate(activeItemId) } },
@@ -742,10 +1214,49 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
     ]
     const f = commandFilter.toLowerCase()
     return f ? cmds.filter(c => c.label.toLowerCase().includes(f)) : cmds
-  }, [commandFilter, items, canRun, handleRun, handleFormat, handleCopy, handleDownload, handleSave, setActiveItemId, showMinimap, wordWrap, autoSave, fontLigatures, bracketPairColorization, stickyScroll, zenMode, splitEditor, diffMode, activeItemId, splitFileId, diffTargetId, handleCloseTab, handleDuplicate])
+  }, [commandFilter, items, canRun, handleRun, handleFormat, handleCopy, handleDownload, handleSave, setActiveItemId, showMinimap, wordWrap, autoSave, fontLigatures, bracketPairColorization, stickyScroll, zenMode, splitEditor, diffMode, activeItemId, splitFileId, diffTargetId, handleCloseTab, handleDuplicate, ideChatOnSend, showIdeChat])
+
+  const openFileExplorerBadges = useMemo(() => {
+    const m = new Map<string, { ids: JarvisExplorerBadgeId[]; counts: ReturnType<typeof countProblemsForFile>; coveragePct: number | null | undefined }>()
+    for (const item of items) {
+      const counts = countProblemsForFile(displayProblems, item.filename)
+      const ids = computeExplorerBadgesForFile({
+        filename: item.filename,
+        language: item.language,
+        diskPath: item.diskPath,
+        workspaceRoot,
+        gitPorcelain: gitPorcelainMap,
+        problems: displayProblems,
+        isDirtyBuffer: item.id === activeItemId && modified,
+        isActive: item.id === activeItemId,
+        meta: item.jarvisExplorer,
+        missingLogicDetections: missingLogicAnalysis.byFile.get(item.id) ?? [],
+      })
+      m.set(item.id, { ids, counts, coveragePct: item.jarvisExplorer?.test?.coveragePct })
+    }
+    return m
+  }, [items, displayProblems, workspaceRoot, gitPorcelainMap, modified, activeItemId, missingLogicAnalysis])
+
+  const repoExplorerBadges = useMemo(
+    () => computeRepoLevelGitBadges(gitPorcelainMap, gitRemoteCounts),
+    [gitPorcelainMap, gitRemoteCounts]
+  )
+
+  const workspaceExplorerPreview = useMemo(
+    () => [...workspaceRelFiles].sort((a, b) => a.localeCompare(b)).slice(0, 96),
+    [workspaceRelFiles]
+  )
+
+  const workspacePathBadges = useMemo(() => {
+    const m = new Map<string, JarvisExplorerBadgeId[]>()
+    for (const rel of workspaceExplorerPreview) {
+      m.set(rel, computeExplorerBadgesForWorkspaceRelPath(rel, gitPorcelainMap))
+    }
+    return m
+  }, [workspaceExplorerPreview, gitPorcelainMap])
 
   if (!open) return null
-  if (items.length === 0) addItem({ id: 'welcome', code: '// Welcome to Jarvis IDE\n// ========================\n//\n// Features:\n//   - Full Monaco Editor (VS Code engine)\n//   - 10 themes (Ctrl+Shift+P > "theme")\n//   - Split editor, diff view\n//   - File templates (File > New from Template)\n//   - Code snippets for JS, TS, Python, HTML, CSS\n//   - Live preview for HTML/CSS/JS/Markdown\n//   - Problems panel, terminal, output\n//   - Search across files\n//   - Code outline & symbols\n//   - Settings panel with 15+ options\n//   - 40+ keyboard shortcuts\n//   - Zen mode (F11)\n//   - Auto-save\n//   - Jarvis has full autonomous control\n//\n// Press Ctrl+Shift+P for the Command Palette\n// Press F1 for Monaco\'s built-in commands\n\nconsole.log("Hello from Jarvis IDE!");\n', language: 'javascript', filename: 'welcome.js', createdAt: Date.now() })
+  if (items.length === 0) addItem({ id: 'welcome', code: '// Welcome to Jarvis IDE\n// ========================\n//\n// Features:\n//   - Full Monaco Editor (VS Code engine)\n//   - AI Chat panel (Jarvis with full tools) — Ctrl+Shift+L\n//   - 10 themes (Ctrl+Shift+P > "theme")\n//   - Split editor, diff view\n//   - File templates (File > New from Template)\n//   - Code snippets for JS, TS, Python, HTML, CSS\n//   - Live preview for HTML/CSS/JS/Markdown\n//   - Problems panel, terminal, output\n//   - Search across files\n//   - Code outline & symbols\n//   - Settings panel with 15+ options\n//   - 40+ keyboard shortcuts\n//   - Zen mode (F11)\n//   - Auto-save\n//   - Jarvis has full autonomous control\n//\n// Press Ctrl+Shift+P for the Command Palette\n// Press F1 for Monaco\'s built-in commands\n\nconsole.log("Hello from Jarvis IDE!");\n', language: 'javascript', filename: 'welcome.js', createdAt: Date.now() })
 
   const editorOptions: monacoNs.editor.IStandaloneEditorConstructionOptions = {
     fontSize, fontFamily, fontLigatures, lineHeight, tabSize, insertSpaces: true,
@@ -769,8 +1280,28 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
     overviewRulerLanes: 3, find: { seedSearchStringFromSelection: 'always', autoFindInSelection: 'multiline' },
   }
 
-  const showBottom = showTerminal || showProblems
+  const showBottom =
+    showTerminal ||
+    showProblems ||
+    showSourceControl ||
+    showRunDebug ||
+    showExtensions ||
+    showOutputTab ||
+    showDebugConsole
   const sortedItems = [...items].sort((a, b) => { const ap = pinnedTabs.has(a.id) ? 0 : 1; const bp = pinnedTabs.has(b.id) ? 0 : 1; return ap - bp })
+
+  const termColorMap: Record<string, string> = { stdout: tc, stderr: '#ce9178', error: '#f44747', info: '#569cd6' }
+  const kindColorMap: Record<string, string> = { class: '#4ec9b0', function: '#dcdcaa', type: '#4fc1ff', import: '#c586c0' }
+  const kindIconMap: Record<string, string> = { class: '◆', function: 'ƒ', type: 'T', import: '↓' }
+
+  let editorPanelSize: number
+  if (showIdeChat && ideChatOnSend && !zenMode) {
+    editorPanelSize = showExplorer ? 58 : 72
+  } else if (showExplorer && !zenMode) {
+    editorPanelSize = 80
+  } else {
+    editorPanelSize = 100
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col select-none" style={{ background: bgColor, color: tc }}>
@@ -779,7 +1310,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
         <div className="h-9 flex items-center px-2 gap-1 text-xs flex-shrink-0 border-b" style={{ background: tl, borderColor: bc }}>
           <span className="text-[#569cd6] font-bold text-sm mr-1">⟨/⟩</span>
           {/* Menu bar */}
-          {Object.entries(allMenus).map(([label, menuItems]) => (
+          {showMenuBar && Object.entries(allMenus).map(([label, menuItems]) => (
             <div key={label} className="relative">
               <button className={cn('px-2 py-0.5 rounded text-xs', openMenuId === label ? 'bg-white/15' : 'hover:bg-white/10')}
                 style={{ color: `${tc}b0` }}
@@ -789,15 +1320,19 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
               </button>
               {openMenuId === label && (
                 <div className="absolute left-0 top-full mt-0.5 z-[70] rounded shadow-xl py-1 border text-[12px] min-w-[220px]" style={{ background: sb, borderColor: bc }}>
-                  {menuItems.map((item, i) =>
-                    item.label === '─' ? <div key={`s${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} /> : (
-                      <button key={item.label} disabled={item.disabled} className={cn('w-full px-3 py-1 text-left flex items-center justify-between', item.disabled ? 'opacity-30' : 'hover:bg-white/10')} style={{ color: tc }}
-                        onClick={() => { item.action?.(); setOpenMenuId(null) }}>
-                        <span>{item.label}</span>
-                        {item.shortcut && <span className="text-[10px] ml-4" style={{ color: `${tc}40` }}>{item.shortcut}</span>}
+                  {menuItems.map((item, i) => {
+                    if (item.label === '─') {
+                      return <div key={`${label}-sep-${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} />
+                    }
+                    const row = item as { label: string; shortcut?: string; action?: () => void; disabled?: boolean }
+                    return (
+                      <button key={`${row.label}-${i}`} type="button" disabled={row.disabled} className={cn('w-full px-3 py-1 text-left flex items-center justify-between', row.disabled ? 'opacity-30' : 'hover:bg-white/10')} style={{ color: tc }}
+                        onClick={() => { row.action?.(); setOpenMenuId(null) }}>
+                        <span>{row.label}</span>
+                        {row.shortcut && <span className="text-[10px] ml-4" style={{ color: `${tc}40` }}>{row.shortcut}</span>}
                       </button>
                     )
-                  )}
+                  })}
                 </div>
               )}
             </div>
@@ -816,14 +1351,17 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
 
       <div className="flex-1 flex min-h-0">
         {/* ═══ ACTIVITY BAR ═══ */}
-        {!zenMode && (
+        {!zenMode && showActivityBar && (
           <div className="w-12 flex flex-col items-center py-2 gap-1 flex-shrink-0 border-r" style={{ background: ab, borderColor: bc }}>
             <ABBtn icon="📁" tip="Explorer (Ctrl+B)" active={showExplorer && !showSearch && !showSettings} onClick={() => { setShowExplorer(p => !p); setShowSearch(false); setShowSettings(false) }} />
             <ABBtn icon="🔍" tip="Search (Ctrl+Shift+F)" active={showSearch} onClick={() => { setShowSearch(p => !p); setShowExplorer(true); setShowSettings(false) }} />
             <ABBtn icon="📐" tip="Outline" active={showOutline} onClick={() => { setShowOutline(p => !p); setShowExplorer(true); setShowSettings(false) }} />
             <ABBtn icon="🖥" tip="Terminal (Ctrl+`)" active={showTerminal} onClick={() => setShowTerminal(p => !p)} />
             <ABBtn icon="👁" tip="Preview" active={showPreview} onClick={() => setShowPreview(p => !p)} badge={canPreview ? undefined : '!'} />
-            <ABBtn icon="⚡" tip="Problems" active={showProblems} onClick={() => { setShowProblems(p => !p); if (!showTerminal) setShowTerminal(true); setBottomTab('problems') }} badge={problems.length > 0 ? String(problems.length) : undefined} />
+            {ideChatOnSend && (
+              <ABBtn icon="💬" tip="AI Chat (Ctrl+Shift+L)" active={showIdeChat} onClick={() => setShowIdeChat((p) => !p)} />
+            )}
+            <ABBtn icon="⚡" tip="Problems" active={showProblems} onClick={() => { setShowProblems(p => !p); if (!showTerminal) { setShowTerminal(true); } setBottomTab('problems') }} badge={displayProblems.length > 0 ? String(displayProblems.length) : undefined} />
             <div className="flex-1" />
             <ABBtn icon="⌨" tip="Commands (Ctrl+Shift+P)" active={false} onClick={() => { setCommandPaletteOpen(true); setCommandFilter('') }} />
             <ABBtn icon="⚙" tip="Settings" active={showSettings} onClick={() => { setShowSettings(p => !p); setShowExplorer(true); setShowSearch(false) }} />
@@ -836,7 +1374,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
             <>
               <ResizablePanel defaultSize={20} minSize={14} maxSize={35}>
                 <div className="h-full flex flex-col" style={{ background: sb }}>
-                  {showSettings ? (
+                  {showSettings && (
                     <SettingsPanel fontSize={fontSize} setFontSize={setFontSize} tabSize={tabSize} setTabSize={setTabSize}
                       showMinimap={showMinimap} setShowMinimap={setShowMinimap} wordWrap={wordWrap} setWordWrap={setWordWrap}
                       autoSave={autoSave} setAutoSave={setAutoSave} fontLigatures={fontLigatures} setFontLigatures={setFontLigatures}
@@ -848,7 +1386,8 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                       lineNumbers={lineNumbers} setLineNumbers={setLineNumbers}
                       fontFamily={fontFamily} setFontFamily={setFontFamily}
                       tc={tc} />
-                  ) : showSearch ? (
+                  )}
+                  {!showSettings && showSearch && (
                     <div className="flex flex-col h-full">
                       <div className="h-8 px-4 flex items-center text-[11px] uppercase tracking-wider font-semibold flex-shrink-0" style={{ color: `${tc}60` }}>Search</div>
                       <div className="px-3 pb-1 space-y-1">
@@ -866,7 +1405,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                         )}
                       </div>
                       <div className="flex-1 overflow-y-auto px-1 text-[11px]">
-                        {searchResults.length > 0 && <div className="px-3 py-1" style={{ color: `${tc}40` }}>{searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</div>}
+                        {searchResults.length > 0 && <div className="px-3 py-1" style={{ color: `${tc}40` }}>{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</div>}
                         {searchResults.length === 0 && searchQuery && <div className="px-3 py-2" style={{ color: `${tc}40` }}>No results</div>}
                         {searchResults.map((r, i) => (
                           <button key={`${r.fileId}-${r.line}-${i}`} onClick={() => { setActiveItemId(r.fileId); setTimeout(() => editorRef.current?.revealLineInCenter(r.line), 100) }}
@@ -876,28 +1415,103 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                         ))}
                       </div>
                     </div>
-                  ) : (
+                  )}
+                  {!showSettings && !showSearch && (
                     <div className="flex flex-col h-full">
-                      <div className="h-8 px-4 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold flex-shrink-0" style={{ color: `${tc}60` }}>
-                        <span>Explorer</span>
-                        <div className="flex gap-1">
-                          <button onClick={() => setTemplateDialog(true)} title="New from Template" className="hover:opacity-100 opacity-50 text-sm">📋</button>
-                          <button onClick={() => setNewFileDialog(true)} title="New File" className="hover:opacity-100 opacity-50 text-sm font-bold">+</button>
+                      <div className="h-8 px-3 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold flex-shrink-0 gap-2" style={{ color: `${tc}60` }}>
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          <span className="flex-shrink-0">Explorer</span>
+                          {workspaceRoot && (
+                            <span className="text-[8px] font-normal normal-case truncate opacity-70 max-w-[90px]" title={workspaceRoot}>
+                              {workspaceRoot.replace(/[/\\]+$/, '').split(/[/\\]/).pop()}
+                            </span>
+                          )}
+                          {repoExplorerBadges.length > 0 && (
+                            <JarvisExplorerBadgeStrip ids={repoExplorerBadges} tc={tc} className="normal-case" />
+                          )}
+                        </div>
+                        <div className="flex gap-0.5 flex-shrink-0 items-center">
+                          <button type="button" onClick={() => setTemplateDialog(true)} title="New from Template" className="hover:opacity-100 opacity-50 text-sm">📋</button>
+                          <button type="button" onClick={() => setNewFileDialog(true)} title="New File" className="hover:opacity-100 opacity-50 text-sm font-bold">+</button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                title="Explorer actions (quality, problems)"
+                                className="hover:opacity-100 opacity-50 text-sm px-0.5 leading-none w-6 text-center"
+                              >
+                                ⋯
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="min-w-[240px]">
+                              <DropdownMenuItem
+                                disabled={!workspaceRoot || !hasElectronFs || qualityLoading}
+                                onClick={() => void handleRunWorkspaceQuality()}
+                              >
+                                Run workspace quality (ESLint, tsc, GraphQL, Sonar)
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setShowTerminal(true)
+                                  setShowProblems(true)
+                                  setBottomTab('problems')
+                                }}
+                              >
+                                Open Problems
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </div>
                       <div className="flex-1 overflow-y-auto px-1">
                         <div className="px-2 py-1 text-[10px] uppercase tracking-wider font-semibold" style={{ color: `${tc}40` }}>Open Files ({items.length})</div>
-                        {sortedItems.map(item => (
-                          <button key={item.id} onClick={() => setActiveItemId(item.id)}
-                            onContextMenu={e => { e.preventDefault(); setTabContextMenu({ x: e.clientX, y: e.clientY, id: item.id }) }}
-                            className={cn('w-full flex items-center gap-2 px-3 py-1 text-[12px] rounded-sm transition-colors text-left', item.id === activeItemId ? 'bg-white/10' : 'hover:bg-white/5')}
-                            style={{ color: item.id === activeItemId ? tc : `${tc}b0` }}>
-                            {pinnedTabs.has(item.id) && <span className="text-[8px]">📌</span>}
-                            <span className="text-[10px] flex-shrink-0">{LI[item.language] || '📄'}</span>
-                            <span className="truncate">{item.filename || `${item.language} snippet`}</span>
-                            {item.id === activeItemId && modified && <span className="ml-auto text-[10px]" style={{ color: '#e8ab6a' }}>●</span>}
-                          </button>
-                        ))}
+                        {sortedItems.map((item) => {
+                          const bi = openFileExplorerBadges.get(item.id)
+                          const ids = bi?.ids ?? []
+                          const counts = bi?.counts
+                          return (
+                            <button key={item.id} type="button" onClick={() => setActiveItemId(item.id)}
+                              onContextMenu={e => { e.preventDefault(); setTabContextMenu({ x: e.clientX, y: e.clientY, id: item.id }) }}
+                              className={cn('w-full flex items-center gap-1 px-2 py-1 text-[12px] rounded-sm transition-colors text-left', item.id === activeItemId ? 'bg-white/10' : 'hover:bg-white/5')}
+                              style={{ color: item.id === activeItemId ? tc : `${tc}b0` }}>
+                              {pinnedTabs.has(item.id) && <span className="text-[8px] flex-shrink-0">📌</span>}
+                              <span className="text-[10px] flex-shrink-0 w-[22px] text-center">{LI[item.language] || '📄'}</span>
+                              <span className="truncate min-w-0 flex-1">{item.filename || `${item.language} snippet`}</span>
+                              <JarvisExplorerBadgeStrip
+                                ids={ids}
+                                tc={tc}
+                                diagCounts={{ errors: counts?.errors, warnings: counts?.warnings, infos: counts?.infos, hints: counts?.hints }}
+                                coveragePct={bi?.coveragePct}
+                              />
+                            </button>
+                          )
+                        })}
+                        {workspaceRoot && workspaceExplorerPreview.length > 0 && (
+                          <div className="mt-2 border-t pt-1" style={{ borderColor: bc }}>
+                            <button
+                              type="button"
+                              onClick={() => setWorkspaceTreeOpen((o) => !o)}
+                              className="w-full flex items-center gap-1 px-2 py-1 text-[10px] uppercase tracking-wider font-semibold text-left"
+                              style={{ color: `${tc}50` }}
+                            >
+                              <span className="w-3 flex-shrink-0">{workspaceTreeOpen ? '▼' : '▶'}</span>
+                              <span>Workspace</span>
+                              <span style={{ color: `${tc}35` }}>({workspaceRelFiles.length})</span>
+                              <JarvisExplorerBadgeStrip ids={['tree-workspace-folder']} tc={tc} className="ml-auto normal-case" />
+                            </button>
+                            {workspaceTreeOpen && workspaceExplorerPreview.map((rel) => (
+                              <div
+                                key={rel}
+                                className="flex items-center gap-1 px-2 py-0.5 text-[11px] pl-4"
+                                style={{ color: `${tc}90` }}
+                                title={rel}
+                              >
+                                <span className="truncate min-w-0 flex-1 font-mono">{rel}</span>
+                                <JarvisExplorerBadgeStrip ids={workspacePathBadges.get(rel) ?? []} tc={tc} className="normal-case" />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       {showOutline && (
                         <div className="border-t flex-shrink-0 max-h-[40%] overflow-y-auto" style={{ borderColor: bc }}>
@@ -906,8 +1520,8 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                           {outlineSymbols.map((sym, i) => (
                             <button key={`${sym.line}-${i}`} onClick={() => editorRef.current?.revealLineInCenter(sym.line)}
                               className="w-full text-left px-3 py-0.5 text-[11px] hover:bg-white/10 truncate flex items-center gap-1.5" style={{ color: `${tc}70` }}>
-                              <span className="text-[9px] flex-shrink-0" style={{ color: sym.kind === 'class' ? '#4ec9b0' : sym.kind === 'function' ? '#dcdcaa' : sym.kind === 'type' ? '#4fc1ff' : sym.kind === 'import' ? '#c586c0' : '#9cdcfe' }}>
-                                {sym.kind === 'class' ? '◆' : sym.kind === 'function' ? 'ƒ' : sym.kind === 'type' ? 'T' : sym.kind === 'import' ? '↓' : '●'}
+                              <span className="text-[9px] flex-shrink-0" style={{ color: kindColorMap[sym.kind] ?? '#9cdcfe' }}>
+                                {kindIconMap[sym.kind] ?? '●'}
                               </span>
                               {sym.name}
                               <span className="ml-auto text-[9px]" style={{ color: `${tc}30` }}>:{sym.line}</span>
@@ -924,7 +1538,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
           )}
 
           {/* ═══ EDITOR AREA ═══ */}
-          <ResizablePanel defaultSize={showExplorer && !zenMode ? 80 : 100}>
+          <ResizablePanel defaultSize={editorPanelSize}>
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={showBottom ? 65 : 100}>
                 <ResizablePanelGroup direction="horizontal">
@@ -941,9 +1555,24 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                               {pinnedTabs.has(item.id) && <span className="text-[7px]">📌</span>}
                               <span className="text-[9px] flex-shrink-0">{LI[item.language] || '📄'}</span>
                               <span className="truncate max-w-[120px]">{item.filename || `${item.language}`}</span>
+                              {(() => {
+                                const bi = openFileExplorerBadges.get(item.id)
+                                const ids = bi?.ids ?? []
+                                const tabIds = ids.slice(0, 5)
+                                if (tabIds.length === 0) return null
+                                return (
+                                  <JarvisExplorerBadgeStrip
+                                    ids={tabIds}
+                                    tc={tc}
+                                    diagCounts={{ errors: bi?.counts?.errors, warnings: bi?.counts?.warnings, infos: bi?.counts?.infos, hints: bi?.counts?.hints }}
+                                    coveragePct={bi?.coveragePct}
+                                    className="max-w-[72px]"
+                                  />
+                                )
+                              })()}
                               {item.id === activeItemId && modified && <span className="text-[10px] ml-0.5" style={{ color: '#e8ab6a' }}>●</span>}
                               {!pinnedTabs.has(item.id) && (
-                                <span onClick={e => handleCloseTab(item.id, e)} className="ml-1 w-4 h-4 flex items-center justify-center rounded text-[10px] opacity-0 group-hover:opacity-100 hover:bg-white/20 flex-shrink-0">✕</span>
+                                <button type="button" tabIndex={0} onClick={e => handleCloseTab(item.id, e)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { handleCloseTab(item.id); } }} className="ml-1 w-4 h-4 flex items-center justify-center rounded text-[10px] opacity-0 group-hover:opacity-100 hover:bg-white/20 flex-shrink-0 bg-transparent border-0 p-0 cursor-pointer" style={{ color: 'inherit' }}>✕</button>
                               )}
                             </button>
                           ))}
@@ -971,6 +1600,13 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                           <TBtn icon="💾" label="Save" onClick={handleSave} tc={tc} />
                           <TBtn icon="⬇" label="Download" onClick={handleDownload} tc={tc} />
                           <TBtn icon="🎨" label="Format" onClick={handleFormat} tc={tc} />
+                          <TBtn
+                            icon="🔎"
+                            label="Quality"
+                            onClick={() => void handleRunWorkspaceQuality()}
+                            disabled={!workspaceRoot || !hasElectronFs || qualityLoading}
+                            tc={tc}
+                          />
                           <div className="w-px h-4 mx-1" style={{ background: bc }} />
                           <TBtn icon="↔" label="Split" onClick={() => { setSplitEditor(p => !p); if (!splitFileId && activeItemId) setSplitFileId(activeItemId) }} active={splitEditor} tc={tc} />
                           <TBtn icon="⇄" label="Diff" onClick={() => { setDiffMode(p => !p); if (!diffTargetId) { const o = items.find(i => i.id !== activeItemId); if (o) setDiffTargetId(o.id) } }} active={diffMode} tc={tc} disabled={items.length < 2} />
@@ -1038,41 +1674,117 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
                   <ResizablePanel defaultSize={35} minSize={12} maxSize={60}>
                     <div className="h-full flex flex-col" style={{ background: bgColor }}>
                       <div className="h-9 flex items-center px-4 gap-3 text-xs flex-shrink-0" style={{ background: sb, borderTop: `1px solid ${bc}` }}>
-                        {(['terminal', 'problems', 'output'] as const).map(tab => (
+                        {(['terminal', 'problems', 'output', 'debug', 'git', 'extensions', 'run'] as const).map(tab => (
                           <button key={tab} onClick={() => setBottomTab(tab)} className="pb-0.5 px-1 flex items-center gap-1"
                             style={{ color: bottomTab === tab ? tc : `${tc}50`, borderBottom: bottomTab === tab ? '2px solid #569cd6' : '2px solid transparent' }}>
-                            {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                            {tab === 'problems' && problems.length > 0 && <span className="text-[9px] px-1 rounded-full bg-red-500 text-white">{problems.length}</span>}
+                            {tab === 'git' ? 'Git' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                            {tab === 'problems' && displayProblems.length > 0 && <span className="text-[9px] px-1 rounded-full bg-red-500 text-white">{displayProblems.length}</span>}
                           </button>
                         ))}
                         <div className="flex-1" />
-                        <button onClick={() => { if (bottomTab === 'terminal') setTerminalHistory([]); if (bottomTab === 'problems') setProblems([]) }}
+                        <button onClick={() => { if (bottomTab === 'terminal') { setTerminalHistory([]); } if (bottomTab === 'problems') { setProblems([]); setQualityProblems([]) } }}
                           className="text-[10px] px-2 py-0.5 rounded" style={{ background: `${tc}15`, color: `${tc}50` }}>Clear</button>
                         <button onClick={() => { setShowTerminal(false); setShowProblems(false) }} style={{ color: `${tc}40` }} className="text-sm hover:opacity-80">✕</button>
                       </div>
-                      <div className="flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-5">
-                        {bottomTab === 'terminal' && (<>
-                          {terminalHistory.length === 0 && <span style={{ color: `${tc}30` }}>Terminal ready. Run code with Ctrl+Enter.</span>}
-                          {terminalHistory.map((e, i) => <div key={`${e.time}-${i}`} className="whitespace-pre-wrap" style={{ color: e.type === 'stdout' ? tc : e.type === 'stderr' ? '#ce9178' : e.type === 'error' ? '#f44747' : '#569cd6' }}>{e.text}</div>)}
-                          {running && <div className="text-[#569cd6] animate-pulse">Executing...</div>}
-                          <div ref={terminalEndRef} />
-                        </>)}
-                        {bottomTab === 'problems' && (<>
-                          {problems.length === 0 && <span style={{ color: `${tc}30` }}>No problems detected.</span>}
-                          {problems.map((p, i) => (
-                            <button key={`p${i}`} onClick={() => editorRef.current?.revealLineInCenter(p.line)} className="w-full text-left flex items-start gap-2 py-0.5 hover:bg-white/5 rounded">
-                              <span className="text-red-400 text-[10px] mt-0.5">●</span>
-                              <span style={{ color: `${tc}50` }} className="text-[11px] flex-shrink-0">{p.source}:{p.line}:{p.column}</span>
-                              <span style={{ color: `${tc}90` }}>{p.message}</span>
-                            </button>
-                          ))}
-                        </>)}
-                        {bottomTab === 'output' && (<>
-                          {!runResult && <span style={{ color: `${tc}30` }}>Run code to see output.</span>}
-                          {runResult?.stdout && <div style={{ color: tc }} className="whitespace-pre-wrap">{runResult.stdout}</div>}
-                          {runResult?.stderr && <div className="text-[#ce9178] whitespace-pre-wrap">{runResult.stderr}</div>}
-                          {runResult?.error && <div className="text-[#f44747] whitespace-pre-wrap">{runResult.error}</div>}
-                        </>)}
+                      <div className="flex-1 flex flex-col min-h-0">
+                        {bottomTab === 'terminal' ? (
+                          <>
+                            <div className="flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-5 min-h-0">
+                              {terminalHistory.length === 0 && (
+                                <span style={{ color: `${tc}30` }}>
+                                  Terminal — type shell commands below (desktop app + open folder), or run code with Ctrl+Enter.
+                                </span>
+                              )}
+                              {terminalHistory.map((e, i) => (
+                                <div
+                                  key={`${e.time}-${i}`}
+                                  className="whitespace-pre-wrap"
+                                  style={{ color: termColorMap[e.type] ?? tc }}
+                                >
+                                  {e.text}
+                                </div>
+                              ))}
+                              {running && <div className="text-[#569cd6] animate-pulse">Running code…</div>}
+                              {terminalShellBusy && <div className="text-[#569cd6] animate-pulse">Running shell…</div>}
+                              <div ref={terminalEndRef} />
+                            </div>
+                            <div className="flex-shrink-0 border-t px-2 py-1.5" style={{ borderColor: bc, background: sb }}>
+                              <div className="text-[10px] truncate mb-1 px-1" style={{ color: `${tc}45` }} title={workspaceRoot ?? undefined}>
+                                {workspaceRoot ?? 'Shell — open a workspace folder'}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span style={{ color: `${tc}50` }} className="font-mono text-[12px] select-none">
+                                  $
+                                </span>
+                                <input
+                                  type="text"
+                                  className="flex-1 min-w-0 bg-transparent border-0 outline-none font-mono text-[12px]"
+                                  style={{ color: tc }}
+                                  placeholder={
+                                    hasElectronFs && workspaceRoot
+                                      ? 'npm run build, git status, …'
+                                      : 'Desktop app + open folder to run shell commands'
+                                  }
+                                  value={terminalInput}
+                                  onChange={(e) => setTerminalInput(e.target.value)}
+                                  disabled={!hasElectronFs || !workspaceRoot || terminalShellBusy}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      const line = terminalInput
+                                      setTerminalInput('')
+                                      void runTerminalLine(line)
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-5">
+                            {bottomTab === 'problems' && (<>
+                              {displayProblems.length === 0 && <span style={{ color: `${tc}30` }}>No problems detected.</span>}
+                              {displayProblems.map((p, i) => (
+                                <button key={`${p.source}:${p.line}:${p.column}-${i}`} onClick={() => editorRef.current?.revealLineInCenter(p.line)} className="w-full text-left flex items-start gap-2 py-0.5 hover:bg-white/5 rounded">
+                                  <span className="text-red-400 text-[10px] mt-0.5">●</span>
+                                  <span style={{ color: `${tc}50` }} className="text-[11px] flex-shrink-0">{p.source}:{p.line}:{p.column}</span>
+                                  <span style={{ color: `${tc}90` }}>{p.message}</span>
+                                </button>
+                              ))}
+                            </>)}
+                            {bottomTab === 'output' && (<>
+                              {!runResult && <span style={{ color: `${tc}30` }}>Run code to see output.</span>}
+                              {runResult?.stdout && <div style={{ color: tc }} className="whitespace-pre-wrap">{runResult.stdout}</div>}
+                              {runResult?.stderr && <div className="text-[#ce9178] whitespace-pre-wrap">{runResult.stderr}</div>}
+                              {runResult?.error && <div className="text-[#f44747] whitespace-pre-wrap">{runResult.error}</div>}
+                            </>)}
+                            {bottomTab === 'debug' && (<>
+                              {debugLogLines.length === 0 && <span style={{ color: `${tc}30` }}>Start debugging from Run → Start Debugging (F5).</span>}
+                              {debugLogLines.map((line, i) => <div key={`debug-${line.slice(0, 20)}-${i}`} className="whitespace-pre-wrap" style={{ color: `${tc}90` }}>{line}</div>)}
+                            </>)}
+                            {bottomTab === 'git' && (<>
+                              {!workspaceRoot && <span style={{ color: `${tc}30` }}>Open a folder (File → Open Folder…) to use Git. Desktop app required for git.</span>}
+                              {workspaceRoot && gitLoading && <span style={{ color: `${tc}50` }}>Running git…</span>}
+                              {workspaceRoot && !gitLoading && <pre className="whitespace-pre-wrap text-[11px]" style={{ color: tc }}>{gitOutput || '(no output)'}</pre>}
+                            </>)}
+                            {bottomTab === 'extensions' && (<>
+                              {!workspaceRoot && <span style={{ color: `${tc}30` }}>Open a workspace folder to read package.json.</span>}
+                              {workspaceRoot && (
+                                <pre className="mt-1 max-h-full overflow-auto whitespace-pre-wrap text-[11px]" style={{ color: tc }}>
+                                  {extensionsPackageJson ?? 'Loading…'}
+                                </pre>
+                              )}
+                            </>)}
+                            {bottomTab === 'run' && (<>
+                              <div className="mb-2 flex flex-wrap gap-2 text-[11px]" style={{ color: `${tc}80` }}>
+                                <button type="button" className="rounded px-2 py-0.5" style={{ background: `${tc}15` }} onClick={() => { void handleRun() }} disabled={!canRun || running}>Run</button>
+                                <span>{debuggingActive ? 'Debugging: on' : 'Debugging: off'}</span>
+                              </div>
+                              {terminalHistory.length === 0 && <span style={{ color: `${tc}30` }}>Terminal output for this run appears here.</span>}
+                              {terminalHistory.map((e, i) => <div key={`r${e.time}-${i}`} className="whitespace-pre-wrap" style={{ color: termColorMap[e.type] ?? tc }}>{e.text}</div>)}
+                            </>)}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </ResizablePanel>
@@ -1080,11 +1792,34 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
               )}
             </ResizablePanelGroup>
           </ResizablePanel>
+
+          {showIdeChat && ideChatOnSend && !zenMode && (
+            <>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={22} minSize={16} maxSize={42}>
+                <IdeChatPanel
+                  messages={ideChatMessages}
+                  loading={ideChatLoading}
+                  disabled={false}
+                  onSend={handleIdeChatSend}
+                  onClear={clearIdeChat}
+                  themeColors={{ tc, sb, bc }}
+                  contextFileCount={items.length}
+                  onReview={handleJarvisReview}
+                  reviewDisabled={!workspaceRoot || !hasElectronFs}
+                  qualityLoading={qualityLoading}
+                  undoKeepDisabled={false}
+                  onUndoAll={() => toast.info('Composer-style multi-file undo is not available in this IDE yet.')}
+                  onKeepAll={() => toast.info('Composer-style multi-file keep is not available in this IDE yet.')}
+                />
+              </ResizablePanel>
+            </>
+          )}
         </ResizablePanelGroup>
       </div>
 
       {/* ═══ STATUS BAR ═══ */}
-      {!zenMode && (
+      {!zenMode && showStatusBar && (
         <div className="h-6 bg-[#007acc] flex items-center px-3 text-[11px] text-white/90 flex-shrink-0 gap-3 cursor-default">
           <span className="flex items-center gap-1">{LI[editedLang] || '📄'} {editedLang}</span>
           <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
@@ -1099,8 +1834,8 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
           <span className="text-white/50">{wordCount.lines} lines, {wordCount.words} words, {wordCount.chars} chars</span>
           {modified && <span className="text-yellow-200">● Modified</span>}
           {running && <span className="animate-pulse">● Running...</span>}
-          {problems.length > 0 && <span>⚠ {problems.length}</span>}
-          <span className="text-white/50">{items.length} file{items.length !== 1 ? 's' : ''}</span>
+          {displayProblems.length > 0 && <span>⚠ {displayProblems.length}</span>}
+          <span className="text-white/50">{items.length} file{items.length === 1 ? '' : 's'}</span>
           <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-300" />Jarvis IDE</span>
         </div>
       )}
@@ -1129,7 +1864,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
       {commandPaletteOpen && (
         <Overlay onClose={() => setCommandPaletteOpen(false)}>
           <div className="rounded-lg shadow-2xl w-[560px] overflow-hidden border" style={{ background: sb, borderColor: '#007acc' }}>
-            <input autoFocus value={commandFilter} onChange={e => setCommandFilter(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setCommandPaletteOpen(false); if (e.key === 'Enter' && commands[0]) { commands[0].action?.(); setCommandPaletteOpen(false) } }}
+            <input autoFocus value={commandFilter} onChange={e => setCommandFilter(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setCommandPaletteOpen(false); } if (e.key === 'Enter' && commands[0]) { commands[0].action?.(); setCommandPaletteOpen(false) } }}
               placeholder="> Type a command..." className="w-full h-10 px-4 text-sm outline-none border-b" style={{ background: `${tc}10`, borderColor: bc, color: tc }} />
             <div className="max-h-[380px] overflow-y-auto">
               {commands.map(cmd => (
@@ -1156,7 +1891,7 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
               {[
                 ['General', [['Ctrl+Shift+P', 'Command Palette'], ['F1', 'Monaco Commands'], ['Ctrl+N', 'New File'], ['Ctrl+S', 'Save'], ['Ctrl+W', 'Close File'], ['Ctrl+D', 'Duplicate File'], ['F11', 'Zen Mode'], ['Esc', 'Close IDE']]],
                 ['Editor', [['Ctrl+Z', 'Undo'], ['Ctrl+Y', 'Redo'], ['Ctrl+F', 'Find'], ['Ctrl+H', 'Replace'], ['Ctrl+G', 'Go to Line'], ['Ctrl+Enter', 'Run Code'], ['Shift+Alt+F', 'Format'], ['Ctrl+A', 'Select All']]],
-                ['View', [['Ctrl+B', 'Toggle Explorer'], ['Ctrl+`', 'Toggle Terminal'], ['Ctrl+J', 'Toggle Terminal'], ['Ctrl+Shift+F', 'Search Files'], ['Ctrl+\\', 'Split Editor'], ['Ctrl+=', 'Font +'], ['Ctrl+-', 'Font -'], ['Ctrl+0', 'Reset Font'], ['Alt+Z', 'Word Wrap']]],
+                ['View', [['Ctrl+B', 'Toggle Explorer'], ['Ctrl+`', 'Toggle Terminal'], ['Ctrl+J', 'Toggle Terminal'], ['Ctrl+Shift+F', 'Search Files'], ['Ctrl+Shift+L', 'Toggle AI Chat'], ['Ctrl+\\', 'Split Editor'], ['Ctrl+=', 'Font +'], ['Ctrl+-', 'Font -'], ['Ctrl+0', 'Reset Font'], ['Alt+Z', 'Word Wrap']]],
               ].map(([section, shortcuts]) => (
                 <div key={section as string}>
                   <div className="font-semibold mb-1" style={{ color: `${tc}60` }}>{section as string}</div>
@@ -1180,14 +1915,14 @@ try{${code.replace(/<\/script>/gi, '<\\/script>')}}catch(e){console.error(e.mess
             { label: 'Close Others', action: () => { items.forEach(i => { if (i.id !== tabContextMenu.id && !pinnedTabs.has(i.id)) removeItem(i.id) }); setActiveItemId(tabContextMenu.id) } },
             { label: 'Close All', action: () => { items.forEach(i => { if (!pinnedTabs.has(i.id)) removeItem(i.id) }); setActiveItemId(null) } },
             { label: '─' },
-            { label: pinnedTabs.has(tabContextMenu.id) ? 'Unpin' : 'Pin', action: () => { setPinnedTabs(prev => { const n = new Set(prev); if (n.has(tabContextMenu.id)) n.delete(tabContextMenu.id); else n.add(tabContextMenu.id); return n }) } },
+            { label: pinnedTabs.has(tabContextMenu.id) ? 'Unpin' : 'Pin', action: () => { setPinnedTabs(prev => { const n = new Set(prev); if (n.has(tabContextMenu.id)) { n.delete(tabContextMenu.id); } else { n.add(tabContextMenu.id); } return n }) } },
             { label: 'Duplicate', action: () => handleDuplicate(tabContextMenu.id) },
             { label: 'Rename...', action: () => { const item = items.find(i => i.id === tabContextMenu.id); setRenameValue(item?.filename || ''); setRenameDialog(tabContextMenu.id) } },
             { label: '─' },
             { label: 'Copy Filename', action: () => { navigator.clipboard.writeText(items.find(i => i.id === tabContextMenu.id)?.filename || ''); toast.success('Copied') } },
             { label: 'Open in Split', action: () => { setSplitEditor(true); setSplitFileId(tabContextMenu.id) } },
             { label: 'Compare with Active...', action: () => { setDiffMode(true); setDiffTargetId(tabContextMenu.id) } },
-          ].map((item, i) => item.label === '─' ? <div key={`d${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} /> : (
+          ].map((item, i) => item.label === '─' ? <div key={`ctx-sep-${i}`} className="border-t my-1" style={{ borderColor: `${tc}15` }} /> : ( // NOSONAR - static list, index key is stable
             <button key={item.label} onClick={() => { item.action?.(); setTabContextMenu(null) }} className="w-full px-3 py-1 text-left hover:bg-white/10" style={{ color: tc }}>{item.label}</button>
           ))}
         </div>
@@ -1218,7 +1953,7 @@ function TBtn({ icon, label, onClick, disabled, active, highlight, tc }: Readonl
 }
 
 function Overlay({ children, onClose }: Readonly<{ children: React.ReactNode; onClose: () => void }>) {
-  return <div className="fixed inset-0 z-[60] bg-black/30 flex items-start justify-center pt-[10vh]" onClick={onClose}><div onClick={e => e.stopPropagation()}>{children}</div></div>
+  return <button type="button" className="fixed inset-0 z-[60] bg-black/30 flex items-start justify-center pt-[10vh] border-0 p-0 m-0 w-full cursor-default" style={{ background: 'rgba(0,0,0,0.3)' }} onClick={e => { if (e.target === e.currentTarget) { onClose(); } }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { onClose(); } }}><div>{children}</div></button>
 }
 
 function InputDialog({ title, placeholder, value, onChange, onSubmit, onClose, bg, tc, bc }: Readonly<{
@@ -1229,7 +1964,7 @@ function InputDialog({ title, placeholder, value, onChange, onSubmit, onClose, b
       <div className="rounded-lg shadow-2xl w-[400px] overflow-hidden border" style={{ background: bg, borderColor: bc }}>
         <div className="px-4 py-3 text-xs" style={{ color: `${tc}60` }}>{title}</div>
         <div className="px-4 pb-4">
-          <input autoFocus value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onSubmit(); if (e.key === 'Escape') onClose() }}
+          <input autoFocus value={value} onChange={e => onChange(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { onSubmit(); } if (e.key === 'Escape') { onClose(); } }}
             placeholder={placeholder} className="w-full h-8 px-3 rounded text-sm border outline-none" style={{ background: `${tc}15`, borderColor: '#007acc', color: tc }} />
           <div className="flex justify-end gap-2 mt-3">
             <button onClick={onClose} className="px-3 py-1 text-xs rounded" style={{ background: `${tc}20`, color: `${tc}70` }}>Cancel</button>
@@ -1268,7 +2003,7 @@ function SettingsPanel({ fontSize, setFontSize, tabSize, setTabSize, showMinimap
         <div>
           <div className="text-[11px] mb-1" style={{ color: `${tc}70` }}>Font Family</div>
           <select value={fontFamily} onChange={e => setFontFamily(e.target.value)} className="w-full h-7 px-2 text-[11px] rounded border-0 outline-none" style={{ background: `${tc}15`, color: tc }}>
-            {FONT_FAMILIES.map(f => <option key={f} value={f}>{f.split(',')[0].replace(/'/g, '')}</option>)}
+            {FONT_FAMILIES.map(f => <option key={f} value={f}>{f.split(',')[0].replaceAll("'", '')}</option>)}
           </select>
         </div>
         <Tog label="Minimap" value={showMinimap} onChange={setShowMinimap} tc={tc} />
@@ -1295,43 +2030,44 @@ function Tog({ label, value, onChange, tc }: Readonly<{ label: string; value: bo
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 }
 
 function syntaxHighlightJson(json: string): string {
-  return escapeHtml(json).replace(
-    /("(\\u[\da-fA-F]{4}|\\[^u]|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
-    (match) => {
-      let cls = 'number'
-      if (match.startsWith('"')) { cls = match.endsWith(':') ? 'key' : 'string' }
-      else if (/true|false/.test(match)) cls = 'boolean'
-      else if (match === 'null') cls = 'null'
-      return `<span class="${cls}">${match}</span>`
-    }
-  )
+  const classify = (match: string) => {
+    let cls = 'number'
+    if (match.startsWith('"')) { cls = match.endsWith(':') ? 'key' : 'string' }
+    else if (/true|false/.test(match)) { cls = 'boolean' }
+    else if (match === 'null') { cls = 'null' }
+    return `<span class="${cls}">${match}</span>`
+  }
+  return escapeHtml(json)
+    .replaceAll(/"(?:[^"\\]|\\.)*"(?:\s*:)?/g, classify)
+    .replaceAll(/\b(?:true|false|null)\b/g, classify)
+    .replaceAll(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, classify)
 }
 
 function simpleMarkdown(md: string): string {
   return md
-    .replace(/^---$/gm, '<hr>')
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/~~(.+?)~~/g, '<del>$1</del>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-    .replace(/^\|(.+)\|$/gm, (_, row) => '<tr>' + (row as string).split('|').map((cell: string) => `<td>${cell.trim()}</td>`).join('') + '</tr>')
-    .replace(/(<tr>.*<\/tr>\n?)+/g, (m) => `<table>${m}</table>`)
-    .replace(/^\- \[x\] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" checked disabled /> $1</li>')
-    .replace(/^\- \[ \] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" disabled /> $1</li>')
-    .replace(/^\- (.+)$/gm, '<li>$1</li>')
-    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-    .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
-    .replace(/\n{2,}/g, '<br><br>')
-    .replace(/\n/g, '<br>')
+    .replaceAll(/^---$/gm, '<hr>')
+    .replaceAll(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replaceAll(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replaceAll(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replaceAll(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replaceAll(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replaceAll(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replaceAll(/\*(.+?)\*/g, '<em>$1</em>')
+    .replaceAll(/~~(.+?)~~/g, '<del>$1</del>')
+    .replaceAll(/`([^`]+)`/g, '<code>$1</code>')
+    .replaceAll(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />')
+    .replaceAll(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replaceAll(/^\|(.+)\|$/gm, (_, row) => '<tr>' + (row as string).split('|').map((cell: string) => `<td>${cell.trim()}</td>`).join('') + '</tr>')
+    .replaceAll(/(<tr>.*<\/tr>\n?)+/g, (m) => `<table>${m}</table>`)
+    .replaceAll(/^- \[x\] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" checked disabled /> $1</li>')
+    .replaceAll(/^- \[ \] (.+)$/gm, '<li style="list-style:none"><input type="checkbox" disabled /> $1</li>')
+    .replaceAll(/^- (.+)$/gm, '<li>$1</li>')
+    .replaceAll(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    .replaceAll(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+    .replaceAll(/\n{2,}/g, '<br><br>')
+    .replaceAll('\n', '<br>')
 }

@@ -7,7 +7,7 @@
  */
 
 import type { BrowserControl } from '@/contexts/BrowserControlContext'
-import { callLlmWithTools, type LlmToolMessage, type ToolCall } from './llm'
+import { callLlmWithTools, type LlmToolMessage } from './llm'
 import { ragIngestText, ragSearch } from './rag'
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ async function executeBrowserTool(
       return res.ok ? `Typed "${text}" into ${ref}.` : `Could not type into ${ref}. Run browser_snapshot to refresh.`
     }
     case 'browser_scroll': {
-      const dir = (args.direction === 'up' ? 'up' : 'down') as 'up' | 'down'
+      const dir = args.direction === 'up' ? 'up' : 'down'
       await bc.scroll(dir)
       return `Scrolled ${dir}. Use browser_snapshot to see new content.`
     }
@@ -389,7 +389,7 @@ export async function runBrowserAgent(
       break
     }
 
-    const result = await callLlmWithTools(messages, model, BROWSER_TOOLS, signal)
+    const result = await callLlmWithTools(messages, model, BROWSER_TOOLS, { signal })
 
     if (!result.tool_calls || result.tool_calls.length === 0) {
       finalSummary = result.content ?? 'Agent finished without a summary.'

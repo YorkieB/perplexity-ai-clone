@@ -5,6 +5,27 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 const PARTITION = 'persist:ai-search-browser'
 
+contextBridge.exposeInMainWorld('jarvisIde', {
+  appRoot: () => ipcRenderer.invoke('jarvis-ide-app-root'),
+  openFiles: () => ipcRenderer.invoke('jarvis-ide-open-files'),
+  openFolder: () => ipcRenderer.invoke('jarvis-ide-open-folder'),
+  saveFile: (opts) => ipcRenderer.invoke('jarvis-ide-save-file', opts),
+  readDir: (dirPath) => ipcRenderer.invoke('jarvis-ide-read-dir', dirPath),
+  walkFiles: (rootPath) => ipcRenderer.invoke('jarvis-ide-walk-files', rootPath),
+  fsRead: (filePath) => ipcRenderer.invoke('jarvis-ide-fs-read', filePath),
+  fsWrite: (opts) => ipcRenderer.invoke('jarvis-ide-fs-write', opts),
+  fsDelete: (filePath) => ipcRenderer.invoke('jarvis-ide-fs-delete', filePath),
+  fsMkdir: (dirPath) => ipcRenderer.invoke('jarvis-ide-fs-mkdir', dirPath),
+  fsExists: (p) => ipcRenderer.invoke('jarvis-ide-fs-exists', p),
+  shellOpenPath: (p) => ipcRenderer.invoke('jarvis-ide-shell-open-path', p),
+  openExternal: (url) => ipcRenderer.invoke('jarvis-ide-open-external', url),
+  newWindow: () => ipcRenderer.invoke('jarvis-ide-new-window'),
+  quit: () => ipcRenderer.invoke('jarvis-ide-quit'),
+  toggleFullscreen: () => ipcRenderer.invoke('jarvis-ide-toggle-fullscreen'),
+  git: (opts) => ipcRenderer.invoke('jarvis-ide-git', opts),
+  runCommand: (opts) => ipcRenderer.invoke('jarvis-ide-run-command', opts),
+})
+
 contextBridge.exposeInMainWorld('electronInAppBrowser', {
   /** Same string as webview `partition` attribute */
   webviewPartition: PARTITION,

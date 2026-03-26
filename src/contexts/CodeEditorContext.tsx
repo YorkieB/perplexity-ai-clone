@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
+import type { JarvisExplorerFileMeta } from '@/lib/jarvis-explorer-badges'
+import type { JarvisIdeRunCommandResult } from '@/types/jarvis-ide'
 
 export interface CodeItem {
   id: string
@@ -6,6 +8,10 @@ export interface CodeItem {
   language: string
   filename?: string
   createdAt: number
+  /** Absolute path on disk when opened from or saved to the filesystem (Electron). */
+  diskPath?: string
+  /** Optional AI / Composer / test / missing-logic flags for explorer badges. */
+  jarvisExplorer?: JarvisExplorerFileMeta
 }
 
 export interface CodeRunResult {
@@ -75,6 +81,8 @@ export interface CodeEditorControl {
 
   // Terminal
   getTerminalOutput: () => string
+  getWorkspaceRoot: () => string | null
+  runTerminalCommand: (command: string) => Promise<JarvisIdeRunCommandResult>
 
   // Templates
   createFromTemplate: (templateName: string) => string | null
@@ -120,7 +128,7 @@ const noop: CodeEditorContextValue = {
   setRunResult: () => {},
 }
 
-const CodeEditorContext = createContext<CodeEditorContextValue>(noop)
+export const CodeEditorContext = createContext<CodeEditorContextValue>(noop)
 
 export function CodeEditorProvider({ children }: { readonly children: ReactNode }) {
   const [control, setControl] = useState<CodeEditorControl | null>(null)
@@ -173,24 +181,4 @@ export function CodeEditorProvider({ children }: { readonly children: ReactNode 
       {children}
     </CodeEditorContext.Provider>
   )
-}
-
-export function useCodeEditorRegister() {
-  const { register, unregister } = useContext(CodeEditorContext)
-  return { register, unregister }
-}
-
-export function useCodeEditor(): CodeEditorControl | null {
-  const { control } = useContext(CodeEditorContext)
-  return control
-}
-
-export function useCodeEditorItems() {
-  const { items, addItem, removeItem, updateItem, activeItemId, setActiveItemId } = useContext(CodeEditorContext)
-  return { items, addItem, removeItem, updateItem, activeItemId, setActiveItemId }
-}
-
-export function useCodeEditorRunning() {
-  const { running, setRunning, runResult, setRunResult } = useContext(CodeEditorContext)
-  return { running, setRunning, runResult, setRunResult }
 }

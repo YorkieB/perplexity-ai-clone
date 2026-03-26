@@ -5,7 +5,7 @@ import { useVision } from '@/hooks/useVision'
 import { useTuneInControl } from '@/contexts/TuneInControlContext'
 import { useBrowserControl, useBrowserGuideMode, useBrowserAutomating, useBrowserAgentSteps } from '@/contexts/BrowserControlContext'
 import { useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
-import { useCodeEditor } from '@/contexts/CodeEditorContext'
+import { useCodeEditor } from '@/contexts/useCodeEditorHooks'
 import { useMusicPlayer, useMusicPlayerGenerating } from '@/contexts/MusicPlayerContext'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
@@ -39,7 +39,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     tuneInControl,
     browserControl,
     browserGuideMode,
-    onBrowserAutomating: (on) => { if (on) clearAgentSteps(); setAutomating(on) },
+    onBrowserAutomating: (on) => { if (on) { clearAgentSteps() } setAutomating(on) },
     onBrowserStep: (step) => { addAgentStep(step) },
     mediaCanvasControl,
     onMediaGenerating: setMediaGenerating,

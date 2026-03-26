@@ -22,7 +22,12 @@ function providerHeaders(model: string): Record<string, string> {
 }
 
 export function llmPrompt(strings: TemplateStringsArray, ...values: unknown[]): string {
-  return strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), '')
+  return strings.reduce((acc, s, i) => {
+    const v = values[i]
+    if (v == null) return acc + s
+    const str = typeof v === 'object' ? JSON.stringify(v) : `${v as string | number | boolean}`
+    return acc + s + str
+  }, '')
 }
 
 export async function callLlm(
@@ -98,6 +103,12 @@ export interface CallLlmToolsResult {
   finishReason?: string
 }
 
+export interface CallLlmWithToolsOptions {
+  signal?: AbortSignal
+  temperature?: number
+  max_tokens?: number
+}
+
 /**
  * Single-round chat completion with tool definitions.
  * Returns the assistant message, which may contain tool_calls instead of (or alongside) content.
@@ -106,13 +117,13 @@ export async function callLlmWithTools(
   messages: LlmToolMessage[],
   model: string,
   tools?: Record<string, unknown>[],
-  signal?: AbortSignal,
+  options?: CallLlmWithToolsOptions,
 ): Promise<CallLlmToolsResult> {
   const body: Record<string, unknown> = {
     model,
     messages,
-    temperature: 0.7,
-    max_tokens: 4096,
+    temperature: options?.temperature ?? 0.7,
+    max_tokens: options?.max_tokens ?? 4096,
   }
 
   if (tools && tools.length > 0) {
@@ -123,7 +134,7 @@ export async function callLlmWithTools(
   const response = await fetch('/api/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
-    signal,
+    signal: options?.signal,
     body: JSON.stringify(body),
   })
 
@@ -161,13 +172,23 @@ export async function runToolLoop(
   model: string,
   tools: Record<string, unknown>[],
   executor: ToolExecutor,
-  options?: { maxRounds?: number; signal?: AbortSignal; onToolCall?: (name: string, args: Record<string, unknown>) => void },
+  options?: {
+    maxRounds?: number
+    signal?: AbortSignal
+    onToolCall?: (name: string, args: Record<string, unknown>) => void
+    temperature?: number
+    max_tokens?: number
+  },
 ): Promise<{ content: string; messages: LlmToolMessage[] }> {
   const maxRounds = options?.maxRounds ?? 30
   const conv = [...messages]
 
   for (let round = 0; round < maxRounds; round++) {
-    const result = await callLlmWithTools(conv, model, tools, options?.signal)
+    const result = await callLlmWithTools(conv, model, tools, {
+      signal: options?.signal,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+    })
 
     if (!result.tool_calls || result.tool_calls.length === 0) {
       return { content: result.content ?? '', messages: conv }
