@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
 import { Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
@@ -42,6 +42,47 @@ export function Message({
   let thinkingPhase: ThinkingPhase = 'done'
   if (message.isStreaming) {
     thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
+  }
+
+  let mainContent: ReactNode
+  if (isUser) {
+    mainContent = (
+      <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
+        {message.content}
+      </p>
+    )
+  } else if (message.isModelCouncil && message.modelResponses) {
+    mainContent = (
+      <ModelCouncilResponse
+        modelResponses={message.modelResponses}
+        convergenceScore={message.modelResponses[0]?.convergenceScore}
+        commonThemes={[]}
+        divergentPoints={[]}
+        onCitationHover={setHighlightedSource}
+      />
+    )
+  } else {
+    mainContent = (
+      <>
+        {!isUser && message.reasoning && (
+          <ThinkingProcessPanel
+            thinking={message.reasoning}
+            phase={thinkingPhase}
+            showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
+          />
+        )}
+        <MarkdownRenderer
+          content={message.content}
+          onCitationHover={setHighlightedSource}
+        />
+        {message.isStreaming && (
+          <span
+            className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
+            aria-hidden
+          />
+        )}
+      </>
+    )
   }
 
   return (
@@ -122,41 +163,7 @@ export function Message({
           )}
           style={{ overflowWrap: 'break-word', wordBreak: 'break-word', overflow: 'hidden' }}
         >
-          {isUser ? (
-            <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
-              {message.content}
-            </p>
-          ) : message.isModelCouncil && message.modelResponses ? (
-            <ModelCouncilResponse
-              modelResponses={message.modelResponses}
-              convergenceScore={
-                message.modelResponses[0]?.convergenceScore
-              }
-              commonThemes={[]}
-              divergentPoints={[]}
-              onCitationHover={setHighlightedSource}
-            />
-          ) : (
-            <>
-              {!isUser && message.reasoning && (
-                <ThinkingProcessPanel
-                  thinking={message.reasoning}
-                  phase={thinkingPhase}
-                  showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
-                />
-              )}
-              <MarkdownRenderer
-                content={message.content}
-                onCitationHover={setHighlightedSource}
-              />
-              {message.isStreaming && (
-                <span
-                  className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
-                  aria-hidden
-                />
-              )}
-            </>
-          )}
+          {mainContent}
         </div>
 
         {!isUser &&

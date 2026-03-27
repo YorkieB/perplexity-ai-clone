@@ -2,11 +2,13 @@
  * Electron shell: serves the Vite build from dist/ on localhost and mirrors
  * dev/preview proxies: POST /api/llm (SSE when stream:true), POST /api/tts, /api/a2e/*, etc.
  */
+const { randomInt, randomBytes } = require('node:crypto')
 const http = require('node:http')
 const https = require('node:https')
 const fs = require('node:fs')
 const path = require('node:path')
-const { execFile, exec } = require('node:child_process')
+const { execFile, exec, spawn } = require('node:child_process')
+const os = require('node:os')
 const { promisify } = require('node:util')
 const { Readable } = require('node:stream')
 const execFileAsync = promisify(execFile)
@@ -19,6 +21,14 @@ const spacesClient = require('./spaces-client.cjs')
 const PROJECT_ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs')
+
+/**
+ * Stable HTTP port for the embedded server (production Electron load from dist/).
+ * OAuth redirect URIs must match exactly; random ports (listen(0)) break Google Cloud redirect registration.
+ * Override: JARVIS_ELECTRON_PORT or ELECTRON_APP_PORT. Register in Google: http://127.0.0.1:<port>/oauth/callback
+ */
+const _electronPort = Number(process.env.JARVIS_ELECTRON_PORT || process.env.ELECTRON_APP_PORT || 53473)
+const ELECTRON_APP_PORT = Number.isFinite(_electronPort) && _electronPort > 0 && _electronPort < 65536 ? _electronPort : 53473
 
 /** Shared session for all in-app `<webview>` tags (cookies, login state). */
 const BROWSER_PARTITION = 'persist:ai-search-browser'
@@ -94,6 +104,121 @@ function getJarvisMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
   return null
 }
+
+// ── Persistent Terminal Session ───────────────────────────────────────────────
+
+const terminalSessions = new Map()
+let terminalIdCounter = 0
+
+function createTerminalSession(cwd) {
+  const id = ++terminalIdCounter
+  const isWin = process.platform === 'win32'
+  const shellCmd = isWin ? 'powershell.exe' : (process.env.SHELL || '/bin/bash')
+  const shellArgs = isWin ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'] : []
+
+  const shell = spawn(shellCmd, shellArgs, {
+    cwd: cwd || os.homedir(),
+    env: { ...process.env, TERM: 'dumb' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+
+  const session = {
+    id,
+    proc: shell,
+    cwd: cwd || os.homedir(),
+    alive: true,
+  }
+
+  shell.on('exit', (code) => {
+    session.alive = false
+    terminalSessions.delete(id)
+    const w = getJarvisMainWindow()
+    if (w && !w.isDestroyed()) {
+      w.webContents.send('terminal-exit', { id, exitCode: code })
+    }
+  })
+
+  shell.stdout.on('data', (chunk) => {
+    const w = getJarvisMainWindow()
+    if (w && !w.isDestroyed()) {
+      w.webContents.send('terminal-data', { id, stream: 'stdout', data: chunk.toString('utf8') })
+    }
+  })
+
+  shell.stderr.on('data', (chunk) => {
+    const w = getJarvisMainWindow()
+    if (w && !w.isDestroyed()) {
+      w.webContents.send('terminal-data', { id, stream: 'stderr', data: chunk.toString('utf8') })
+    }
+  })
+
+  terminalSessions.set(id, session)
+  return session
+}
+
+function registerTerminalIpc() {
+  ipcMain.handle('terminal-create', (_e, opts) => {
+    const cwd = opts?.cwd || os.homedir()
+    const resolved = path.resolve(cwd)
+    let startDir = resolved
+    try {
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+        startDir = os.homedir()
+      }
+    } catch {
+      startDir = os.homedir()
+    }
+    const session = createTerminalSession(startDir)
+    return { id: session.id, cwd: startDir }
+  })
+
+  ipcMain.handle('terminal-write', (_e, opts) => {
+    const { id, data } = opts || {}
+    const session = terminalSessions.get(id)
+    if (!session?.alive) return { ok: false, error: 'no session' }
+    try {
+      session.proc.stdin.write(data)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('terminal-resize', (_event, _opts) => {
+    return { ok: true }
+  })
+
+  ipcMain.handle('terminal-kill', (_e, opts) => {
+    const { id } = opts || {}
+    const session = terminalSessions.get(id)
+    if (!session) return { ok: false, error: 'no session' }
+    try {
+      session.proc.kill()
+      terminalSessions.delete(id)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('terminal-list', () => {
+    const out = []
+    for (const [id, s] of terminalSessions) {
+      out.push({ id, cwd: s.cwd, alive: s.alive })
+    }
+    return out
+  })
+}
+
+function cleanupTerminals() {
+  for (const [, s] of terminalSessions) {
+    try { s.proc.kill() } catch { /* ignore */ }
+  }
+  terminalSessions.clear()
+}
+
+// ── Jarvis IDE IPC ───────────────────────────────────────────────────────────
 
 function registerJarvisIdeIpc() {
   ipcMain.handle('jarvis-ide-app-root', () => PROJECT_ROOT)
@@ -436,15 +561,18 @@ function normalizeDoModels(raw) {
 }
 
 async function fetchInferenceModelsList(authHeader) {
+  console.log('[fetchInferenceModelsList] Calling', DO_INFERENCE + '/models')
   const upstream = await fetch(`${DO_INFERENCE}/models`, {
     headers: {
       Authorization: authHeader,
       Accept: 'application/json',
     },
   })
+  console.log('[fetchInferenceModelsList] Response status:', upstream.status)
   const text = await upstream.text()
   if (!upstream.ok) {
-    const err = new Error(`DigitalOcean Inference ${upstream.status}: ${text}`)
+    console.error('[fetchInferenceModelsList] Error response:', text.slice(0, 200))
+    const err = new Error(`DigitalOcean Inference ${upstream.status}: ${text.slice(0, 500)}`)
     err.status = upstream.status
     throw err
   }
@@ -452,8 +580,10 @@ async function fetchInferenceModelsList(authHeader) {
   try {
     data = JSON.parse(text)
   } catch {
+    console.error('[fetchInferenceModelsList] Invalid JSON response')
     throw new Error('Invalid JSON from DigitalOcean Inference /v1/models')
   }
+  console.log('[fetchInferenceModelsList] Parsed models count:', Array.isArray(data.data) ? data.data.length : 'not an array')
   return Array.isArray(data.data) ? data.data : []
 }
 
@@ -642,7 +772,9 @@ async function handleDigitalOceanModels(req, res) {
   const raw =
     getBearerFromReq(req) || (env.DIGITALOCEAN_API_KEY || env.VITE_DIGITALOCEAN_API_KEY || '').trim()
   const token = raw ? sanitizeToken(raw) : ''
+  console.log('[handleDigitalOceanModels] Token from env or client:', !!token)
   if (!token) {
+    console.warn('[handleDigitalOceanModels] No token provided')
     res.statusCode = 401
     res.setHeader('Content-Type', 'application/json')
     res.end(
@@ -657,12 +789,16 @@ async function handleDigitalOceanModels(req, res) {
   }
   const authHeader = `Bearer ${token}`
   try {
+    console.log('[handleDigitalOceanModels] Calling DO Inference API...')
     const raw = await fetchInferenceModelsList(authHeader)
+    console.log('[handleDigitalOceanModels] Received', raw.length, 'raw models from DO')
     const models = normalizeDoModels(raw)
+    console.log('[handleDigitalOceanModels] Returning', models.length, 'normalized models')
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ models, meta: { count: models.length } }))
   } catch (e) {
+    console.error('[handleDigitalOceanModels] Error:', e instanceof Error ? e.message : e)
     const code =
       e &&
       typeof e === 'object' &&
@@ -940,7 +1076,7 @@ async function searchViaDuckDuckGo(query, maxResults = 6) {
       try {
         const parsed = new URL(href, 'https://duckduckgo.com')
         href = decodeURIComponent(parsed.searchParams.get('uddg') || href)
-      } catch {}
+      } catch { /* ignored */ }
     }
     const title = m[2].replaceAll(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim()
     if (href && title) links.push({ url: href, title })
@@ -953,7 +1089,7 @@ async function searchViaDuckDuckGo(query, maxResults = 6) {
 
   for (let i = 0; i < links.length; i++) {
     let domain = ''
-    try { domain = new URL(links[i].url).hostname.replace('www.', '') } catch {}
+    try { domain = new URL(links[i].url).hostname.replace('www.', '') } catch { /* ignored */ }
     results.push({
       url: links[i].url,
       title: links[i].title,
@@ -1388,7 +1524,7 @@ async function handleJarvisMemoryExtract(req, res) {
     const result = await upstream.json()
     const content = result.choices?.[0]?.message?.content || '[]'
     let facts = []
-    try { const parsed = JSON.parse(content); facts = Array.isArray(parsed) ? parsed : (parsed.facts || []) } catch {}
+    try { const parsed = JSON.parse(content); facts = Array.isArray(parsed) ? parsed : (parsed.facts || []) } catch { /* ignored */ }
     if (facts.length > 0) jarvisDb.addFacts(facts)
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
@@ -1449,7 +1585,7 @@ async function handleJarvisMemorySummarize(req, res) {
     const result = await upstream.json()
     const content = result.choices?.[0]?.message?.content || '{}'
     let parsed = {}
-    try { parsed = JSON.parse(content) } catch {}
+    try { parsed = JSON.parse(content) } catch { /* ignored */ }
     if (parsed.summary) jarvisDb.saveConversationSummary(conversationId, parsed.summary, parsed.topics || '')
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
@@ -1772,7 +1908,7 @@ async function processIngestFile(file, fields, results, errors) {
     let spacesKey = null
     if (spacesClient.isConfigured()) {
       const ext = path.extname(file.filename || '') || ''
-      spacesKey = `rag-docs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
+      spacesKey = `rag-docs/${Date.now()}-${randomBytes(6).toString('hex')}${ext}`
       await spacesClient.uploadFile(spacesKey, file.buffer, file.contentType)
     }
 
@@ -2517,7 +2653,7 @@ async function searchTinyStories(q, limit) {
 
   if (!hfOk) {
     try {
-      const offset = Math.floor(Math.random() * 2000000)
+      const offset = randomInt(2_000_000)
       const fallbackRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=${Math.min(limit, 10)}`)
       if (fallbackRes.ok) {
         const fbData = await fallbackRes.json()
@@ -2698,16 +2834,17 @@ async function handleStoryRandom(req, res) {
   const params = new URL(req.url || '', 'http://localhost').searchParams
   const genre = params.get('genre') || ''
   try {
-    const topic = genre || ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror'][Math.floor(Math.random() * 8)]
+    const topics = ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror']
+    const topic = genre || topics[randomInt(topics.length)]
 
     // Try Gutenberg first
     try {
-      const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { timeoutMs: 10000 })
+      const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${randomInt(3) + 1}`, { timeoutMs: 10000 })
       if (gutRes.ok) {
         const gutData = await gutRes.json()
         const books = gutData.results || []
         if (books.length > 0) {
-          const book = books[Math.floor(Math.random() * books.length)]
+          const book = books[randomInt(books.length)]
           const textUrl = book.formats?.['text/plain; charset=utf-8'] || book.formats?.['text/plain'] || ''
           let content = `(Full text not available in plain text format for this book. Try searching for "${book.title}" to find a readable version.)`
           let hasMore = false
@@ -2730,8 +2867,8 @@ async function handleStoryRandom(req, res) {
     } catch { /* Gutenberg timed out or failed — fall through to HF */ }
 
     // Fallback: random short story from HuggingFace TinyStories
-    const offset = Math.floor(Math.random() * 2000000)
-    const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=1`)
+    const offsetR = randomInt(2_000_000)
+    const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offsetR}&length=1`)
     if (hfRes.ok) {
       const hfData = await hfRes.json()
       const text = hfData.rows?.[0]?.row?.text || ''
@@ -2787,7 +2924,342 @@ async function handleXTweet(req, res) {
   }
 }
 
+// ── Email IMAP/SMTP handler ──
+async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP action router
+  const env = getEnv()
+  const urlPath = req.url?.split('?')[0] || ''
+  const emailAction = urlPath.replace('/api/email/', '')
+  const body = JSON.parse(await readBody(req) || '{}')
+
+  const acctId = (body.account || env.EMAIL_1_ADDRESS || '').trim()
+  let emailAddr = ''
+  let emailPass = ''
+  const imapHost = (env.EMAIL_IMAP_HOST || 'mail.livemail.co.uk').trim()
+  const imapPort = Number.parseInt(env.EMAIL_IMAP_PORT || '993', 10)
+  const smtpHost = (env.EMAIL_SMTP_HOST || 'smtp.livemail.co.uk').trim()
+  const smtpPort = Number.parseInt(env.EMAIL_SMTP_PORT || '465', 10)
+
+  if (acctId === (env.EMAIL_2_ADDRESS || '').trim()) {
+    emailAddr = (env.EMAIL_2_ADDRESS || '').trim()
+    emailPass = (env.EMAIL_2_PASSWORD || '').trim()
+  } else {
+    emailAddr = (env.EMAIL_1_ADDRESS || '').trim()
+    emailPass = (env.EMAIL_1_PASSWORD || '').trim()
+  }
+
+  if (!emailAddr || !emailPass) {
+    res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Email credentials not configured. Set EMAIL_1_ADDRESS and EMAIL_1_PASSWORD in .env' } }))
+    return
+  }
+
+  try {
+    const { ImapFlow } = require('imapflow')
+
+    if (emailAction === 'inbox' || emailAction === 'search') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const folder = body.folder || 'INBOX'
+      const lock = await client.getMailboxLock(folder)
+      try {
+        const limit = body.limit || 20
+        let msgUids
+        if (emailAction === 'search' && body.query) {
+          msgUids = await client.search({ or: [{ subject: body.query }, { from: body.query }, { body: body.query }] })
+          msgUids = msgUids.slice(-limit).reverse()
+        } else {
+          const total = client.mailbox?.exists || 0
+          const from = Math.max(1, total - limit + 1)
+          msgUids = await client.search({ seq: `${from}:*` })
+          msgUids = msgUids.reverse()
+        }
+        const messages = []
+        for (const uid of msgUids.slice(0, limit)) {
+          const msg = await client.fetchOne(uid, { envelope: true, bodyStructure: true, flags: true })
+          if (!msg) continue
+          const env2 = msg.envelope || {}
+          messages.push({
+            uid: msg.uid || uid,
+            messageId: env2.messageId || '',
+            from: (env2.from || []).map(a => a.address ? `${a.name || ''} <${a.address}>`.trim() : a.name || '').join(', '),
+            to: (env2.to || []).map(a => a.address ? `${a.name || ''} <${a.address}>`.trim() : a.name || '').join(', '),
+            subject: env2.subject || '(no subject)',
+            date: env2.date ? new Date(env2.date).toISOString() : '',
+            snippet: '',
+            seen: (msg.flags || new Set()).has(String.raw`\Seen`),
+            hasAttachments: !!(msg.bodyStructure?.childNodes?.length),
+          })
+        }
+        res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ messages }))
+      } finally { lock.release(); await client.logout() }
+      return
+    }
+
+    if (emailAction === 'read') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const lock = await client.getMailboxLock(body.folder || 'INBOX')
+      try {
+        const msg = await client.fetchOne(body.uid, { envelope: true, source: true, flags: true, bodyStructure: true })
+        if (!msg) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Message not found' } })); return }
+        const { simpleParser } = require('mailparser')
+        const parsed = await simpleParser(msg.source)
+        const env2 = msg.envelope || {}
+        res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          message: {
+            uid: msg.uid || body.uid,
+            messageId: env2.messageId || '',
+            from: (env2.from || []).map(a => a.address ? `${a.name || ''} <${a.address}>`.trim() : a.name || '').join(', '),
+            to: (env2.to || []).map(a => a.address || a.name || '').join(', '),
+            cc: (env2.cc || []).map(a => a.address || a.name || '').join(', '),
+            subject: env2.subject || '(no subject)',
+            date: env2.date ? new Date(env2.date).toISOString() : '',
+            body: parsed.text || (parsed.html ? parsed.html.replaceAll(/<[^>]+>/g, '') : '(empty)'),
+            replyTo: (env2.replyTo || []).map(a => a.address || '').join(', '),
+            seen: (msg.flags || new Set()).has(String.raw`\Seen`),
+            hasAttachments: (parsed.attachments || []).length > 0,
+            snippet: (parsed.text || '').slice(0, 200),
+          },
+        }))
+      } finally { lock.release(); await client.logout() }
+      return
+    }
+
+    if (emailAction === 'send') {
+      const nodemailer = require('nodemailer')
+      const transporter = nodemailer.createTransport({ host: smtpHost, port: smtpPort, secure: true, auth: { user: emailAddr, pass: emailPass } })
+      const mailOpts = { from: emailAddr, to: body.to, subject: body.subject, text: body.body }
+      if (body.replyToMessageId) mailOpts.inReplyTo = body.replyToMessageId
+      const info = await transporter.sendMail(mailOpts)
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true, messageId: info.messageId }))
+      return
+    }
+
+    if (emailAction === 'folders') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const boxes = await client.list()
+      await client.logout()
+      const folders = boxes.map(b => ({ name: b.name, path: b.path, messageCount: b.status?.messages || 0, unseen: b.status?.unseen || 0 }))
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ folders }))
+      return
+    }
+
+    if (emailAction === 'move') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const lock = await client.getMailboxLock(body.folder || 'INBOX')
+      try { await client.messageMove(body.uid, body.targetFolder) } finally { lock.release(); await client.logout() }
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    if (emailAction === 'delete') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const lock = await client.getMailboxLock(body.folder || 'INBOX')
+      try { await client.messageDelete(body.uid) } finally { lock.release(); await client.logout() }
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    if (emailAction === 'mark-read') {
+      const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+      await client.connect()
+      const lock = await client.getMailboxLock(body.folder || 'INBOX')
+      try {
+        if (body.read) { await client.messageFlagsAdd(body.uid, [String.raw`\Seen`]) }
+        else { await client.messageFlagsRemove(body.uid, [String.raw`\Seen`]) }
+      } finally { lock.release(); await client.logout() }
+      res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    res.statusCode = 404; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: `Unknown email action: ${emailAction}` } }))
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Email error' } }))
+  }
+}
+
+const { tokenGenerate } = require('@vonage/jwt')
+const vonageShared = require(path.join(__dirname, '..', 'scripts', 'vonage-voice-shared.cjs'))
+
+async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-call validation + NCCO branch
+  const env = getEnv()
+  const appId = (env.VONAGE_APPLICATION_ID || '').trim()
+  const privateKeyPem = vonageShared.loadVonagePrivateKeyPem(env)
+  const fromRaw = (env.VONAGE_FROM || '').trim()
+  if (!appId || !privateKeyPem || !fromRaw) {
+    res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({
+      error: {
+        message: 'Vonage Voice not configured. Set VONAGE_APPLICATION_ID and VONAGE_PRIVATE_KEY (or VONAGE_PRIVATE_KEY_BASE64) and VONAGE_FROM.',
+      },
+    }))
+    return
+  }
+  try {
+    const body = JSON.parse(await readBody(req) || '{}')
+    const rawTo = (body.to || '').trim()
+    const aiMode = body.mode === 'ai_voice' || body.aiVoice === true
+    const text = (body.text || '').trim()
+    if (!rawTo) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Missing "to"' } }))
+      return
+    }
+    if (!aiMode && !text) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Missing "text" (or use mode: "ai_voice" for live AI audio).' } }))
+      return
+    }
+    if (!aiMode && text.length > 3000) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Spoken text too long (max 3000 characters)' } }))
+      return
+    }
+    const toDigits = vonageShared.normalizeVonagePhoneDigits(rawTo)
+    if (toDigits.length < 8 || toDigits.length > 15) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Invalid phone number.' } }))
+      return
+    }
+    const fromDigits = fromRaw.replaceAll(/\D/g, '')
+    if (fromDigits.length < 8 || fromDigits.length > 15) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'VONAGE_FROM must be your Vonage phone number (digits) for Voice.' } }))
+      return
+    }
+    const jwt = tokenGenerate(appId, privateKeyPem)
+    const lang = (body.language || 'en-GB').trim()
+    let ncco
+    if (aiMode) {
+      const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
+      if (!wsUri) {
+        res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          error: {
+            message:
+              'AI voice calls need VONAGE_PUBLIC_WS_URL (public wss:// URL to the media bridge, e.g. ngrok → local VONAGE_AI_VOICE_PORT) and VONAGE_AI_VOICE_BRIDGE_ENABLED=1 with the bridge running.',
+          },
+        }))
+        return
+      }
+      ncco = [
+        {
+          action: 'connect',
+          endpoint: [
+            {
+              type: 'websocket',
+              uri: wsUri,
+              'content-type': 'audio/l16;rate=16000',
+            },
+          ],
+        },
+      ]
+    } else {
+      ncco = [{ action: 'talk', text, language: lang }]
+    }
+    const upstream = await fetch('https://api.nexmo.com/v1/calls', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: [{ type: 'phone', number: toDigits }],
+        from: { type: 'phone', number: fromDigits },
+        ncco,
+      }),
+    })
+    const rawText = await upstream.text()
+    let data = {}
+    try { data = JSON.parse(rawText) } catch { /* ignore */ }
+    if (!upstream.ok) {
+      res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: data.message || rawText.slice(0, 200) || `HTTP ${upstream.status}` } }))
+      return
+    }
+    res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true, callUuid: data.uuid, to: toDigits, mode: aiMode ? 'ai_voice' : 'tts' }))
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Vonage Voice error' } }))
+  }
+}
+
+async function handleVonageSms(req, res) {
+  const env = getEnv()
+  const apiKey = (env.VONAGE_API_KEY || '').trim()
+  const apiSecret = (env.VONAGE_API_SECRET || '').trim()
+  const fromId = (env.VONAGE_FROM || '').trim()
+  if (!apiKey || !apiSecret || !fromId) {
+    res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Vonage not configured. Set VONAGE_API_KEY, VONAGE_API_SECRET, and VONAGE_FROM in .env' } }))
+    return
+  }
+  try {
+    const body = JSON.parse(await readBody(req) || '{}')
+    const rawTo = (body.to || '').trim()
+    const text = (body.text || '').trim()
+    if (!rawTo || !text) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Missing "to" or "text"' } }))
+      return
+    }
+    if (text.length > 1000) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
+      return
+    }
+    let digits = rawTo.replaceAll(/\s+/g, '')
+    if (digits.startsWith('00')) digits = digits.slice(2)
+    if (digits.startsWith('+')) digits = digits.slice(1)
+    digits = digits.replaceAll(/\D/g, '')
+    if (digits.length === 11 && digits.startsWith('0')) {
+      digits = `44${digits.slice(1)}`
+    }
+    if (digits.length < 8 || digits.length > 15) {
+      res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
+      return
+    }
+    const upstream = await fetch('https://rest.nexmo.com/sms/json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        api_secret: apiSecret,
+        to: digits,
+        from: fromId,
+        text,
+      }),
+    })
+    const data = await upstream.json()
+    const msg = data.messages?.[0]
+    if (msg?.status !== '0') {
+      const errText = msg?.['error-text'] || `Vonage status ${msg?.status ?? 'unknown'}`
+      res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: errText } }))
+      return
+    }
+    res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true, messageId: msg['message-id'], to: msg.to || digits }))
+  } catch (e) {
+    res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Vonage error' } }))
+  }
+}
+
 const exactRoutes = [
+  { method: 'POST', path: '/api/vonage/sms', handler: handleVonageSms },
+  { method: 'POST', path: '/api/vonage/call', handler: handleVonageVoiceCall },
   { method: 'POST', path: '/api/x/tweet', handler: handleXTweet },
   { method: 'POST', path: '/api/plaid/link-token', handler: handlePlaidLinkToken },
   { method: 'POST', path: '/api/plaid/exchange', handler: handlePlaidExchange },
@@ -2842,6 +3314,7 @@ const patternRoutes = [
 ]
 
 const prefixRoutes = [
+  { prefix: '/api/email/', methods: ['POST'], handler: handleEmailProxy },
   { prefix: '/api/vision/', handler: handleVisionProxy },
   { prefix: '/api/reliability/', handler: handleReliabilityProxy },
   { prefix: '/api/a2e/', handler: handleA2eProxy },
@@ -2989,12 +3462,20 @@ function startLocalServer() {
       upstreamReq.end()
     })
 
-    s.listen(0, '127.0.0.1', () => {
+    s.listen(ELECTRON_APP_PORT, '127.0.0.1', () => {
       const addr = s.address()
-      const port = typeof addr === 'object' && addr ? addr.port : 0
+      const port = typeof addr === 'object' && addr ? addr.port : ELECTRON_APP_PORT
       resolve({ server: s, port })
     })
-    s.on('error', reject)
+    s.on('error', (err) => {
+      if (err?.code === 'EADDRINUSE') {
+        console.error(
+          `[electron] Port ${ELECTRON_APP_PORT} is in use. Set JARVIS_ELECTRON_PORT to a free port and add ` +
+            `http://127.0.0.1:<that-port>/oauth/callback to your OAuth client (Google Cloud Console).`,
+        )
+      }
+      reject(err)
+    })
   })
 }
 
@@ -3071,9 +3552,15 @@ app.whenReady().then(() => {
   })
 
   loadEnvFromFile()
+  try {
+    require('./vonage-ai-voice-bridge.cjs').startFromElectron(getEnv)
+  } catch (e) {
+    console.error('[vonage-ai-voice-bridge] failed to start:', e instanceof Error ? e.message : e)
+  }
   setupBrowserSession()
   registerBrowserIpc()
   registerJarvisIdeIpc()
+  registerTerminalIpc()
 
   // Initialise RAG database schema (pgvector) if configured
   if (ragDb.isConfigured()) {
@@ -3084,6 +3571,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  cleanupTerminals()
   if (server) {
     server.close()
     server = null

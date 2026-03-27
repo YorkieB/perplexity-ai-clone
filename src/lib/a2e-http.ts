@@ -70,7 +70,7 @@ export async function a2eParseJson<T>(res: Response): Promise<T> {
  * Handles A2E `{ code, data }` envelopes, `{ message }`, and `{ error: { message } }`.
  */
 export function formatA2eHttpError(res: Response, bodyText: string): string {
-  const statusLine = `${res.status}${res.statusText ? ` ${res.statusText}` : ''}`.trim()
+  const statusLine = (String(res.status) + (res.statusText ? ' ' + res.statusText : '')).trim()
   const trimmed = bodyText.trim()
   if (!trimmed) return statusLine
 
@@ -78,11 +78,13 @@ export function formatA2eHttpError(res: Response, bodyText: string): string {
   try {
     j = JSON.parse(trimmed)
   } catch {
-    return `${statusLine}: ${trimmed.length <= 400 ? trimmed : `${trimmed.slice(0, 400)}…`}`
+    const snippet = trimmed.length <= 400 ? trimmed : trimmed.slice(0, 400) + '…'
+    return `${statusLine}: ${snippet}`
   }
 
   if (!j || typeof j !== 'object' || Array.isArray(j)) {
-    return `${statusLine}: ${trimmed.length <= 400 ? trimmed : `${trimmed.slice(0, 400)}…`}`
+    const snippet = trimmed.length <= 400 ? trimmed : trimmed.slice(0, 400) + '…'
+    return `${statusLine}: ${snippet}`
   }
 
   const o = j as Record<string, unknown>
@@ -111,7 +113,8 @@ export function formatA2eHttpError(res: Response, bodyText: string): string {
     return `${statusLine}: ${parts.join(' — ')}`
   }
 
-  return `${statusLine}: ${trimmed.length <= 500 ? trimmed : `${trimmed.slice(0, 500)}…`}`
+  const tail = trimmed.length <= 500 ? trimmed : trimmed.slice(0, 500) + '…'
+  return `${statusLine}: ${tail}`
 }
 
 /**

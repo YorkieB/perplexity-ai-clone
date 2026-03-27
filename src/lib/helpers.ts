@@ -1,7 +1,8 @@
 import { UploadedFile } from './types'
+import { randomIdSegment } from '@/lib/secure-random'
 
 export function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+  return `${Date.now()}-${randomIdSegment()}`
 }
 
 export function generateThreadTitle(firstMessage: string): string {

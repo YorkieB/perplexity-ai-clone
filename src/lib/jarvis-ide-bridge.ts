@@ -42,7 +42,7 @@ export async function ideOpenFilesFromDisk(): Promise<Array<{ path: string; name
       const out: Array<{ path: string; name: string; content: string }> = []
       let pending = files.length
       for (const f of Array.from(files)) {
-        void f.text().then((text) => {
+        f.text().then((text) => {
           out.push({ path: f.name, name: f.name, content: text })
           pending -= 1
           if (pending === 0) resolve(out)

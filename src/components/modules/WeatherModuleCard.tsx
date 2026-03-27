@@ -13,22 +13,16 @@ import {
 } from '@/lib/ip-approx-location'
 import { GenericDummyModuleCard } from '@/components/modules/GenericDummyModuleCard'
 
-type LocationSource = 'gps' | 'ip' | 'default'
+type LocationSource = 'ip' | 'default'
 
 type LoadState =
-  | { status: 'locating'; phase: 'gps' | 'ip' }
+  | { status: 'locating' }
   | { status: 'loading'; lat: number; lon: number }
   | { status: 'ready'; data: OpenMeteoForecastResult; source: LocationSource; hint?: string }
   | { status: 'error'; message: string; code?: number }
 
-const GEO_OPTIONS: PositionOptions = {
-  enableHighAccuracy: false,
-  timeout: 20_000,
-  maximumAge: 5 * 60 * 1000,
-}
-
 export function WeatherModuleCard() {
-  const [state, setState] = useState<LoadState>({ status: 'locating', phase: 'gps' })
+  const [state, setState] = useState<LoadState>({ status: 'locating' })
 
   const loadFromPosition = useCallback(
     async (lat: number, lon: number, source: LocationSource, hint?: string) => {
@@ -47,7 +41,7 @@ export function WeatherModuleCard() {
   )
 
   const tryIpThenDefault = useCallback(async () => {
-    setState({ status: 'locating', phase: 'ip' })
+    setState({ status: 'locating' })
     try {
       const ipLoc = await fetchApproximateLocationFromIp()
       const hint = formatIpLocationHint(ipLoc)
@@ -62,34 +56,11 @@ export function WeatherModuleCard() {
     }
   }, [loadFromPosition])
 
-  const requestLocation = useCallback(() => {
-    const onGeoError = () => {
-      void tryIpThenDefault()
-    }
-
-    if (!navigator.geolocation) {
-      void tryIpThenDefault()
-      return
-    }
-    setState({ status: 'locating', phase: 'gps' })
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        void loadFromPosition(pos.coords.latitude, pos.coords.longitude, 'gps')
-      },
-      onGeoError,
-      GEO_OPTIONS
-    )
-  }, [loadFromPosition, tryIpThenDefault])
-
   useEffect(() => {
-    requestLocation()
-  }, [requestLocation])
+    void tryIpThenDefault()
+  }, [tryIpThenDefault])
 
   if (state.status === 'locating') {
-    const msg =
-      state.phase === 'ip'
-        ? 'Finding approximate location…'
-        : 'Requesting your location…'
     return (
       <GenericDummyModuleCard
         title="Weather"
@@ -99,7 +70,7 @@ export function WeatherModuleCard() {
       >
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-muted/40 py-8">
           <Loader2 className="size-8 animate-spin text-muted-foreground" aria-hidden />
-          <p className="text-center text-xs text-muted-foreground">{msg}</p>
+          <p className="text-center text-xs text-muted-foreground">Finding approximate location…</p>
         </div>
       </GenericDummyModuleCard>
     )
@@ -131,7 +102,7 @@ export function WeatherModuleCard() {
       >
         <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-3">
           <p className="text-xs text-muted-foreground leading-snug">{state.message}</p>
-          <Button type="button" variant="secondary" size="sm" className="w-full gap-2" onClick={requestLocation}>
+          <Button type="button" variant="secondary" size="sm" className="w-full gap-2" onClick={() => void tryIpThenDefault()}>
             <MapPin className="size-3.5" />
             Try again
           </Button>
@@ -141,12 +112,8 @@ export function WeatherModuleCard() {
   }
 
   const { data, source, hint } = state
-  const sub =
-    source === 'gps'
-      ? `${formatCoordsShort(data.latitude, data.longitude)} · Open-Meteo`
-      : hint
-        ? `${hint} · Open-Meteo`
-        : `${formatCoordsShort(data.latitude, data.longitude)} · Open-Meteo`
+  const coordsLine = `${formatCoordsShort(data.latitude, data.longitude)} · Open-Meteo`
+  const sub = hint ? `${hint} · Open-Meteo` : coordsLine
 
   return (
     <GenericDummyModuleCard
@@ -169,6 +136,11 @@ export function WeatherModuleCard() {
               </span>
             ))}
           </div>
+        )}
+        {source === 'default' && (
+          <p className="text-[10px] text-muted-foreground text-center">
+            Location is approximate (IP or fallback). Open-Meteo forecast.
+          </p>
         )}
       </div>
     </GenericDummyModuleCard>

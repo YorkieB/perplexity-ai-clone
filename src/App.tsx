@@ -29,6 +29,8 @@ import { AgentBrowserPanel } from '@/components/AgentBrowserPanel'
 import { VoiceMode } from '@/components/VoiceMode'
 import { WebBrowserModal } from '@/components/WebBrowserModal'
 import { AppModuleRails } from '@/components/layout/AppModuleRails'
+import { HealthDashboardPage } from '@/components/HealthDashboardRoute'
+import { canAccessHealthDashboard, HEALTH_DASHBOARD_403_FLAG } from '@/lib/healthDashboardAccess'
 import { TuneInControlProvider } from '@/contexts/TuneInControlContext'
 import { BrowserControlProvider, useBrowserControl, useBrowserGuideMode } from '@/contexts/BrowserControlContext'
 import { MediaCanvasProvider, useMediaCanvas, useMediaCanvasGenerating } from '@/contexts/MediaCanvasContext'
@@ -73,7 +75,7 @@ function toWorkspaceFile(file: UploadedFile): WorkspaceFile {
 function MainApp() {
   const [threads, setThreads] = useLocalStorage<Thread[]>('threads', [])
   const [workspaces, setWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
-  const [userSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
+  const [userSettings, setUserSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
@@ -102,11 +104,18 @@ function MainApp() {
     onWake: () => setVoiceModalOpen(true),
   })
 
+  const [mainAutopilot, setMainAutopilot] = useState(false)
+  const [mainAutopilotRunning, setMainAutopilotRunning] = useState(false)
+  const mainAutopilotAbortRef = useRef<AbortController | null>(null)
+
   const browserControl = useBrowserControl()
   const { guideMode: browserGuideMode } = useBrowserGuideMode()
   const mediaCanvasControl = useMediaCanvas()
   const { setGenerating: setMediaGenerating, setGeneratingLabel: setMediaGeneratingLabel } = useMediaCanvasGenerating()
   const codeEditorControl = useCodeEditor()
+  const codeEditorControlRef = useRef(codeEditorControl)
+  codeEditorControlRef.current = codeEditorControl
+  const getCodeEditorControl = useRef(() => codeEditorControlRef.current).current
   const musicPlayerControl = useMusicPlayer()
   const { setGenerating: setMusicGenerating, setGeneratingLabel: setMusicGeneratingLabel } = useMusicPlayerGenerating()
 
@@ -126,8 +135,21 @@ function MainApp() {
   }, [activeThread?.messages.length])
 
   useEffect(() => {
-    const id = setInterval(() => { void checkAndFireScheduled() }, 30000)
+    const id = setInterval(() => { checkAndFireScheduled().catch(() => {}) }, 30000)
     return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    try {
+      if (globalThis.sessionStorage?.getItem(HEALTH_DASHBOARD_403_FLAG)) {
+        globalThis.sessionStorage.removeItem(HEALTH_DASHBOARD_403_FLAG)
+        toast.error(
+          '403 Forbidden: Health dashboard is only available in development or when VITE_JARVIS_ADMIN_KEY is set (use the same value as server JARVIS_ADMIN_KEY).',
+        )
+      }
+    } catch {
+      /* storage blocked */
+    }
   }, [])
 
   const handleNewThread = () => {
@@ -267,8 +289,13 @@ function MainApp() {
     }
   }
 
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string) => {
+  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilotFlag?: boolean) => {
     setIsGenerating(true)
+    const isAutopilot = autopilotFlag === true
+    if (isAutopilot) {
+      setMainAutopilotRunning(true)
+      mainAutopilotAbortRef.current = new AbortController()
+    }
     const workspaceForQuery = activeWorkspace
     const useWebSearchForQuery = workspaceForQuery?.includeWebSearch ?? globalWebSearchEnabled
     const workspaceFiles = workspaceForQuery?.workspaceFiles || []
@@ -304,6 +331,10 @@ function MainApp() {
     }
 
     try {
+      if (isAutopilot) {
+        setCodeEditorOpen(true)
+      }
+
       let webSources: Source[] = []
 
       if (useWebSearchForQuery) {
@@ -411,6 +442,7 @@ function MainApp() {
           modeInstruction,
           learnedContext,
           thinkingDepth,
+          autopilot: isAutopilot,
         })
 
         let sourceGuidance: string
@@ -424,30 +456,75 @@ function MainApp() {
           sourceGuidance = 'Answer the query using your knowledge and available tools.'
         }
 
+        const autopilotHint = isAutopilot
+          ? '\n\nYou are in AUTOPILOT mode. Work autonomously — plan, code, run, fix, iterate. Do not ask permission. End with [AUTOPILOT: COMPLETED], [AUTOPILOT: CONTINUING], or [AUTOPILOT: BLOCKED].'
+          : ''
+
         const userPrompt = `${contextSection}${ragContext}${combinedFileContext}
 
 User query: ${query}
 
-${sourceGuidance}`
+${sourceGuidance}${autopilotHint}`
 
         const chatModel = selectedModel || 'gpt-4o-mini'
-        const { content: response, reasoning } = await runChatWithTools({
-          systemPrompt: sysPrompt,
-          userPrompt,
-          model: chatModel,
-          browserControl,
-          guideMode: browserGuideMode,
-          mediaCanvasControl,
-          onMediaGenerating: setMediaGenerating,
-          onMediaGeneratingLabel: setMediaGeneratingLabel,
-          openMediaCanvas: () => setMediaCanvasOpen(true),
-          codeEditorControl,
-          openCodeEditor: () => setCodeEditorOpen(true),
-          musicPlayerControl,
-          openMusicPlayer: () => setMusicPlayerOpen(true),
-          onMusicGenerating: setMusicGenerating,
-          onMusicGeneratingLabel: setMusicGeneratingLabel,
-        })
+
+        const runOnce = async (prompt: string) => {
+          return runChatWithTools({
+            systemPrompt: sysPrompt,
+            userPrompt: prompt,
+            model: chatModel,
+            browserControl,
+            guideMode: browserGuideMode,
+            mediaCanvasControl,
+            onMediaGenerating: setMediaGenerating,
+            onMediaGeneratingLabel: setMediaGeneratingLabel,
+            openMediaCanvas: () => setMediaCanvasOpen(true),
+            codeEditorControl,
+            getCodeEditorControl,
+            openCodeEditor: () => setCodeEditorOpen(true),
+            musicPlayerControl,
+            openMusicPlayer: () => setMusicPlayerOpen(true),
+            onMusicGenerating: setMusicGenerating,
+            onMusicGeneratingLabel: setMusicGeneratingLabel,
+            maxRounds: isAutopilot ? 60 : undefined,
+            signal: isAutopilot ? mainAutopilotAbortRef.current?.signal : undefined,
+            userSettings,
+            setUserSettings,
+          })
+        }
+
+        let { content: response, reasoning } = await runOnce(userPrompt)
+
+        if (isAutopilot) {
+          let continuations = 0
+          const maxContinuations = 10
+          while (
+            continuations < maxContinuations &&
+            response.includes('[AUTOPILOT: CONTINUING]') &&
+            !mainAutopilotAbortRef.current?.signal.aborted
+          ) {
+            continuations++
+            const contMsg: MessageType = {
+              id: generateId(),
+              role: 'assistant',
+              content: response,
+              reasoning: reasoning || undefined,
+              createdAt: Date.now(),
+              modelUsed: chatModel,
+              focusMode,
+            }
+            setThreads((current) =>
+              (current || []).map((t) =>
+                t.id === thread.id ? { ...t, messages: [...t.messages, contMsg], updatedAt: Date.now() } : t
+              )
+            )
+            const contResult = await runOnce(
+              `Continue your autonomous work (continuation ${String(continuations)}). Pick up where you left off.\n\n${autopilotHint}`
+            )
+            response = contResult.content
+            reasoning = contResult.reasoning
+          }
+        }
 
         const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
 
@@ -480,7 +557,17 @@ ${sourceGuidance}`
       console.error(error)
     } finally {
       setIsGenerating(false)
+      if (isAutopilot) {
+        setMainAutopilotRunning(false)
+        mainAutopilotAbortRef.current = null
+      }
     }
+  }
+
+  const stopMainAutopilot = () => {
+    mainAutopilotAbortRef.current?.abort()
+    setMainAutopilotRunning(false)
+    toast.info('Autopilot stopped')
   }
 
   const handleIdeChat = async (payload: IdeChatPayload): Promise<{ content: string; reasoning?: string }> => {
@@ -514,24 +601,45 @@ ${sourceGuidance}`
       modeInstruction,
       learnedContext,
       thinkingDepth,
+      autopilot: payload.autopilot,
     })
+
+    const autopilotHint = payload.autopilot
+      ? '\n\nYou are in AGENT mode. Work autonomously — plan, code, run, fix, iterate. Do not ask permission. End with [AUTOPILOT: COMPLETED], [AUTOPILOT: CONTINUING], or [AUTOPILOT: BLOCKED].'
+      : ''
+
+    const modeHint = payload.mode === 'composer' && !payload.autopilot
+      ? '\n\n[Composer mode] Analyse the request carefully. First show a clear step-by-step plan of what files to change and how. Only apply changes when the user confirms or explicitly asks you to apply.'
+      : ''
+
+    const attachmentContext = payload.attachments?.length
+      ? `\n\n## Attached context\n${payload.attachments
+          .map((a) =>
+            a.isImage
+              ? `[Image attached: ${a.name}]`
+              : `### ${a.name}\n\`\`\`\n${a.content.slice(0, 10000)}\n\`\`\``
+          )
+          .join('\n\n')}`
+      : ''
 
     const userPrompt = `${ragContext}
 
 ## Jarvis IDE — current session
-${payload.ideContextBlock}
+${payload.ideContextBlock}${attachmentContext}
 
 User message: ${payload.userMessage}${presetExtra}
 
-You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions. Answer the user's question and use tools as needed.`
+You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions. For git operations use git_* tools. Answer the user's question and use tools as needed.${autopilotHint}${modeHint}`
 
     const chatModel = payload.model?.trim() || 'gpt-4o-mini'
+    const isAutopilot = payload.autopilot === true
     const { content, reasoning } = await runChatWithTools({
       systemPrompt: sysPrompt,
       userPrompt,
       model: chatModel,
       temperature: payload.temperature,
-      max_tokens: payload.max_tokens,
+      max_tokens: isAutopilot ? Math.max(payload.max_tokens ?? 4096, 8192) : payload.max_tokens,
+      maxRounds: isAutopilot ? 60 : undefined,
       browserControl,
       guideMode: browserGuideMode,
       mediaCanvasControl,
@@ -539,11 +647,14 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
       onMediaGeneratingLabel: setMediaGeneratingLabel,
       openMediaCanvas: () => setMediaCanvasOpen(true),
       codeEditorControl,
+      getCodeEditorControl,
       openCodeEditor: () => setCodeEditorOpen(true),
       musicPlayerControl,
       openMusicPlayer: () => setMusicPlayerOpen(true),
       onMusicGenerating: setMusicGenerating,
       onMusicGeneratingLabel: setMusicGeneratingLabel,
+      userSettings,
+      setUserSettings,
     })
 
     return { content, reasoning: reasoning || undefined }
@@ -653,6 +764,10 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
                 onVoiceOpen={() => setVoiceModalOpen(true)}
+                autopilot={mainAutopilot}
+                onToggleAutopilot={() => setMainAutopilot((p) => !p)}
+                onStopAutopilot={stopMainAutopilot}
+                autopilotRunning={mainAutopilotRunning}
               />
             </div>
           </div>
@@ -705,6 +820,10 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 advancedMode={advancedMode || false}
                 onAdvancedModeChange={setAdvancedMode}
                 onVoiceOpen={() => setVoiceModalOpen(true)}
+                autopilot={mainAutopilot}
+                onToggleAutopilot={() => setMainAutopilot((p) => !p)}
+                onStopAutopilot={stopMainAutopilot}
+                autopilotRunning={mainAutopilotRunning}
               />
             </div>
           </div>
@@ -728,6 +847,10 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               advancedMode={advancedMode}
               onAdvancedModeChange={setAdvancedMode}
               onVoiceOpen={() => setVoiceModalOpen(true)}
+              autopilot={mainAutopilot}
+              onToggleAutopilot={() => setMainAutopilot((p) => !p)}
+              onStopAutopilot={stopMainAutopilot}
+              autopilotRunning={mainAutopilotRunning}
             />
           </div>
         </div>
@@ -822,6 +945,16 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
       </Suspense>
 
       <MusicPlayerModal open={musicPlayerOpen} onOpenChange={setMusicPlayerOpen} />
+
+      {canAccessHealthDashboard() ? (
+        <a
+          href="/health"
+          className="fixed bottom-2 right-2 z-[100] rounded px-1.5 py-0.5 text-[10px] tracking-tight text-zinc-500 opacity-40 transition-opacity hover:opacity-90 hover:text-zinc-400"
+          title="Observability dashboard (dev or admin key)"
+        >
+          health
+        </a>
+      ) : null}
     </div>
     </TuneInControlProvider>
     </MusicPlayerProvider>
@@ -832,8 +965,12 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
 }
 
 function App() {
-  if (globalThis.location.pathname === '/oauth/callback') {
+  const path = globalThis.location.pathname
+  if (path === '/oauth/callback') {
     return <OAuthCallback />
+  }
+  if (path === '/health') {
+    return <HealthDashboardPage />
   }
   return <MainApp />
 }

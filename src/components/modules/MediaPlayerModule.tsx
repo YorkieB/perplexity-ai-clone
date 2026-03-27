@@ -80,6 +80,7 @@ export function MediaPlayerModule() {
     return () => {
       cancelled = true
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotifyLinked, fixedEmbed, settings?.oauthTokens?.spotify?.expiresAt, settings?.oauthTokens?.spotify?.accessToken])
 
   const embedSrc = useMemo(

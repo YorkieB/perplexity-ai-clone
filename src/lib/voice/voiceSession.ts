@@ -31,18 +31,12 @@ export class NullVoiceSession implements VoiceSession {
 
   disconnect(): void {}
 
-  on<E extends VoiceEventName>(event: E, handler: VoiceEventHandler<E>): void {
-    void event
-    void handler
-  }
+  on<E extends VoiceEventName>(_event: E, _handler: VoiceEventHandler<E>): void {}
 
-  off<E extends VoiceEventName>(event: E, handler: VoiceEventHandler<E>): void {
-    void event
-    void handler
-  }
+  off<E extends VoiceEventName>(_event: E, _handler: VoiceEventHandler<E>): void {}
 
   sendAudioChunk(chunk: ArrayBuffer | Uint8Array): void {
-    void chunk
+    if (chunk.byteLength < 0) return
   }
 
   abortAssistant(): void {}

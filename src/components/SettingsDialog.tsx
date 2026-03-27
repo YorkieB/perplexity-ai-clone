@@ -22,6 +22,8 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
+type OAuthCloudProvider = 'googledrive' | 'onedrive' | 'github' | 'dropbox'
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
@@ -114,7 +116,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     toast.success('OAuth credentials saved securely')
   }
 
-  const handleOAuthConnect = (provider: 'googledrive' | 'onedrive' | 'github' | 'dropbox') => {
+  const handleOAuthConnect = (provider: OAuthCloudProvider) => {
     const clientId = localClientIds[provider]
     const clientSecret = localClientSecrets[provider]
 
@@ -734,36 +736,42 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 {previewingId === v.voice_id ? <Stop size={14} /> : <Play size={14} />}
                               </Button>
                             )}
-                            {alreadyAdded ? (
-                              <Badge variant="outline" className="text-xs">Added</Badge>
-                            ) : addingVoiceId === v.voice_id ? (
-                              <div className="flex items-center gap-1">
-                                <Input
-                                  className="h-7 w-32 text-xs"
-                                  placeholder="Display name"
-                                  value={addingVoiceName}
-                                  onChange={(e) => setAddingVoiceName(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && addingVoiceName.trim()) {
-                                      addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
-                                    }
-                                  }}
-                                />
-                                <Button
-                                  size="sm"
-                                  variant="default"
-                                  className="h-7 px-2"
-                                  disabled={!addingVoiceName.trim()}
-                                  onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
-                                >
-                                  <Plus size={12} />
+                            {(() => {
+                              if (alreadyAdded) {
+                                return <Badge variant="outline" className="text-xs">Added</Badge>
+                              }
+                              if (addingVoiceId === v.voice_id) {
+                                return (
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      className="h-7 w-32 text-xs"
+                                      placeholder="Display name"
+                                      value={addingVoiceName}
+                                      onChange={(e) => setAddingVoiceName(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && addingVoiceName.trim()) {
+                                          addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
+                                        }
+                                      }}
+                                    />
+                                    <Button
+                                      size="sm"
+                                      variant="default"
+                                      className="h-7 px-2"
+                                      disabled={!addingVoiceName.trim()}
+                                      onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
+                                    >
+                                      <Plus size={12} />
+                                    </Button>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
+                                  <Plus size={14} className="mr-1" /> Add
                                 </Button>
-                              </div>
-                            ) : (
-                              <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
-                                <Plus size={14} className="mr-1" /> Add
-                              </Button>
-                            )}
+                              )
+                            })()}
                           </div>
                         </div>
                       )
@@ -826,36 +834,42 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 {previewingId === v.voice_id ? <Stop size={14} /> : <Play size={14} />}
                               </Button>
                             )}
-                            {alreadyAdded ? (
-                              <Badge variant="outline" className="text-xs">Added</Badge>
-                            ) : addingVoiceId === v.voice_id ? (
-                              <div className="flex items-center gap-1">
-                                <Input
-                                  className="h-7 w-28 text-xs"
-                                  placeholder="Display name"
-                                  value={addingVoiceName}
-                                  onChange={(e) => setAddingVoiceName(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && addingVoiceName.trim()) {
-                                      addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
-                                    }
-                                  }}
-                                />
-                                <Button
-                                  size="sm"
-                                  variant="default"
-                                  className="h-7 px-2"
-                                  disabled={!addingVoiceName.trim()}
-                                  onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
-                                >
-                                  <Plus size={12} />
+                            {(() => {
+                              if (alreadyAdded) {
+                                return <Badge variant="outline" className="text-xs">Added</Badge>
+                              }
+                              if (addingVoiceId === v.voice_id) {
+                                return (
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      className="h-7 w-28 text-xs"
+                                      placeholder="Display name"
+                                      value={addingVoiceName}
+                                      onChange={(e) => setAddingVoiceName(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && addingVoiceName.trim()) {
+                                          addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)
+                                        }
+                                      }}
+                                    />
+                                    <Button
+                                      size="sm"
+                                      variant="default"
+                                      className="h-7 px-2"
+                                      disabled={!addingVoiceName.trim()}
+                                      onClick={() => addVoiceToSettings(v.voice_id, addingVoiceName.trim(), v.voice_id, v.description, v.preview_url)}
+                                    >
+                                      <Plus size={12} />
+                                    </Button>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
+                                  <Plus size={14} />
                                 </Button>
-                              </div>
-                            ) : (
-                              <Button variant="outline" size="sm" onClick={() => { setAddingVoiceId(v.voice_id); setAddingVoiceName(v.name) }}>
-                                <Plus size={14} />
-                              </Button>
-                            )}
+                              )
+                            })()}
                           </div>
                         </div>
                       )

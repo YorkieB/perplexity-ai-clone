@@ -1333,7 +1333,8 @@ export async function fetchCharacterList(params?: { user_video_twin_id?: string;
   if (params?.user_video_twin_id) q.set('user_video_twin_id', params.user_video_twin_id)
   if (params?.type) q.set('type', params.type)
   const qs = q.toString()
-  const res = await a2eFetch(`/v1/anchor/character_list${qs ? `?${qs}` : ''}`)
+  const path = qs ? '/v1/anchor/character_list?' + qs : '/v1/anchor/character_list'
+  const res = await a2eFetch(path)
   const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>[]>>(res)
   return assertOk(json)
 }

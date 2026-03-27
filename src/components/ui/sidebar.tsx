@@ -6,6 +6,7 @@ import { VariantProps, cva } from "class-variance-authority"
 import PanelLeftIcon from "lucide-react/dist/esm/icons/panel-left"
 
 import { useIsMobile } from "@/hooks/use-mobile"
+import { randomIntInclusive } from "@/lib/secure-random"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -608,7 +609,7 @@ function SidebarMenuSkeleton({
 }) {
   // Random width between 50 to 90%.
   const width = useMemo(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`
+    return `${randomIntInclusive(50, 89)}%`
   }, [])
 
   return (

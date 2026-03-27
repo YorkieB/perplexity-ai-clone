@@ -8,18 +8,21 @@ import type { MusicPlayerControl } from '@/contexts/MusicPlayerContext'
 import { runBrowserAgent } from '@/lib/browser-agent'
 import { generateImage, editImage, createVideo } from '@/lib/media-api'
 import { runCode } from '@/lib/code-runner'
-import { searchHuggingFace, fetchDatasetSample } from '@/lib/hf-api'
-import { searchGitHub, fetchGitHubFile } from '@/lib/github-api'
+import { searchHuggingFace } from '@/lib/hf-api'
+import { searchGitHub } from '@/lib/github-api'
 import { generateMusic } from '@/lib/suno-api'
 import { getBalances, getTransactions, getSpendingSummary } from '@/lib/plaid-api'
 import { searchStories, getStoryContent, getRandomStory, continueReading, jumpToPage, getCurrentBook } from '@/lib/story-api'
 import { postTweet, readSocialFeed, readComments, replyViaBrowser } from '@/lib/social-api'
 import { quickScan } from '@/lib/hallucination-guard'
 import { schedulePost, listScheduledPostsSummary, cancelScheduledPost } from '@/lib/social-scheduler'
+import { emailListInbox, emailReadMessage, emailSend, emailSearch, emailListFolders, emailDelete, emailMarkRead } from '@/lib/email-api'
+import { vonageSendSms, vonageVoiceCall, vonageAiVoiceCall } from '@/lib/vonage-api'
 import { getVoiceThinkingPrompt } from '@/lib/thinking-engine'
 import { analyzeExchangeAsync, getLearnedContext, getLearningStats } from '@/lib/learning-engine'
 import type { BehavioralChunk } from '@/lib/behavioral-engine'
 import { parseBehavioralMarkup, stripBehavioralMarkup, hasUnclosedTag, buildPersonalityInstructions } from '@/lib/behavioral-engine'
+import type { UserSettings } from '@/lib/types'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { getVoiceProfileMap, getDefaultVoiceProfile } from '@/lib/voice-registry'
 
@@ -50,6 +53,7 @@ export interface UseRealtimeVoiceOptions {
   voiceRegistry?: { defaultVoiceId: string | null; voices: VoiceProfile[] } | null
   enableVoiceAnalysis?: boolean
   onVocalState?: (state: string) => void
+  userSettings?: UserSettings
 }
 
 export interface UseRealtimeVoiceReturn {
@@ -69,15 +73,15 @@ export interface UseRealtimeVoiceReturn {
 // ─── Story voice output helpers ──────────────────────────────────────────────
 
 function stripStoryMetaForVoice(output: string, hasMore: boolean): string {
-  let text = output
-    .replace(/\[AUTO-CONTINUE:[^\]]*\]/g, '')
-    .replace(/📖\s*.+\n/g, '')
-    .replace(/Author:\s*.+\n/g, '')
-    .replace(/Pages:\s*.+\n/g, '')
-    .replace(/Source:\s*.+\n/g, '')
-    .replace(/📄\s*Page \d+ of \d+\..*/g, '')
-    .replace(/📕\s*End of book\..*/g, '')
-    .replace(/---\s*$/gm, '')
+  const text = output
+    .replaceAll(/\[AUTO-CONTINUE:[^\]]*\]/g, '')
+    .replaceAll(/📖\s*.+\n/g, '')
+    .replaceAll(/Author:\s*.+\n/g, '')
+    .replaceAll(/Pages:\s*.+\n/g, '')
+    .replaceAll(/Source:\s*.+\n/g, '')
+    .replaceAll(/📄\s*Page \d+ of \d+\..*/g, '')
+    .replaceAll(/📕\s*End of book\..*/g, '')
+    .replaceAll(/---\s*$/gm, '')
     .trim()
   const directive = hasMore
     ? '[MANDATORY RULE: Read ONLY the book text below word for word. When you reach the end, just STOP. Do NOT say anything else — no "shall I continue", no "would you like to keep reading", no commentary. Just read and stop.]\n\n'
@@ -85,17 +89,39 @@ function stripStoryMetaForVoice(output: string, hasMore: boolean): string {
   return directive + text
 }
 
+// NOSONAR(S5869) — single alternation for many natural “continue?” phrasings in story TTS cleanup
 const CONTINUE_QUESTION_RE = /\b(would you like (me to |to )?(continue|keep (going|reading)|read more|go on)|shall I (continue|keep (going|reading)|go on)|want (me to )?(continue|keep (going|reading))|ready for (the next|more)|let me know (if|when)|should I (continue|keep|go on))\b[?.!]*/gi
 
 function stripContinuationQuestions(text: string): string {
   return text
-    .replace(CONTINUE_QUESTION_RE, '')
-    .replace(/\bCertainly!\s*/g, '')
-    .replace(/\bSure!\s*/g, '')
-    .replace(/\bOf course!\s*/g, '')
-    .replace(/\bAbsolutely!\s*/g, '')
-    .replace(/\n{3,}/g, '\n\n')
+    .replaceAll(CONTINUE_QUESTION_RE, '')
+    .replaceAll(/\bCertainly!\s*/g, '')
+    .replaceAll(/\bSure!\s*/g, '')
+    .replaceAll(/\bOf course!\s*/g, '')
+    .replaceAll(/\bAbsolutely!\s*/g, '')
+    .replaceAll(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+/** Shared Realtime tool output (no response.cancel — unlike browser/media tools). */
+function sendRealtimeVoiceToolOutput(ws: WebSocket | null | undefined, callId: string, output: string): void {
+  if (ws?.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+  ws.send(JSON.stringify({ type: 'response.create' }))
+}
+
+function requireGoogleDriveAccessToken(settings: UserSettings | null | undefined): string {
+  const tok = settings?.oauthTokens?.googledrive
+  if (!tok) throw new Error('Not connected to Google')
+  return tok.accessToken
+}
+
+/** Realtime tool output after cancelling any in-flight response (browser / media tools). */
+function sendVoiceToolOutputWithCancel(ws: WebSocket | null | undefined, callId: string, output: string): void {
+  if (ws?.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify({ type: 'response.cancel' }))
+  ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+  ws.send(JSON.stringify({ type: 'response.create' }))
 }
 
 // ─── PCM16 helpers ────────────────────────────────────────────────────────────
@@ -190,10 +216,11 @@ interface BuildInstructionsOpts {
   isElevenLabs?: boolean
   hasVoiceAnalysis?: boolean
   learnedContext?: string
+  hasGoogleServices?: boolean
 }
 
 function buildInstructions(opts: BuildInstructionsOpts): string {
-  const { mem, hasVision = false, hasTuneIn = false, hasRag = false, hasBrowser = false, browserGuideMode = false, hasMedia = false, voiceNames = [], isElevenLabs = false } = opts
+  const { mem, hasVision = false, hasTuneIn = false, hasRag = false, hasBrowser = false, browserGuideMode = false, hasMedia = false, voiceNames = [], isElevenLabs = false, hasGoogleServices = false } = opts
   let base = `You are Jarvis, a personal AI assistant. Always respond in English. Keep responses concise and conversational — aim for 2-4 sentences unless detail is truly needed. Speak in plain natural language. No markdown, no bullet points.
 
 CRITICAL SYSTEM FACT — YOU HAVE PERSISTENT MEMORY:
@@ -268,6 +295,25 @@ IMPORTANT RULES:
 - When the user asks "what do you have on file" or "what documents do I have", use manage_documents with action "list".
 - When answering questions, proactively use rag_search to check if relevant information exists in the knowledge base before answering from general knowledge.
 - Choose the appropriate format: use "md" for notes and general content, "docx" for formal documents and letters, "pdf" for reports and presentations.`
+  }
+
+  if (hasGoogleServices) {
+    base += `
+
+CRITICAL SYSTEM FACT — YOU HAVE GOOGLE DRIVE & CALENDAR ACCESS:
+You have four Google tools that provide full access to the user's Google Drive and Calendar:
+
+1. list_calendar_events — Get upcoming calendar events. Returns events with dates, times, and descriptions.
+2. create_calendar_event — Create a new event on the user's Google Calendar.
+3. list_drive_files — Browse files and folders in Google Drive. Can navigate through folder structure.
+4. search_drive_files — Search Google Drive by filename or content.
+
+IMPORTANT RULES:
+- When the user asks about their calendar, upcoming events, or meetings, use list_calendar_events.
+- When the user asks to schedule something or create a calendar event, use create_calendar_event.
+- When the user asks to find, access, or list their Google Drive files, use list_drive_files or search_drive_files.
+- When the user mentions documents stored in Drive, use search_drive_files to find and read them.
+- Do NOT say "I don't have access to your calendar" or "I can't see your Google Drive." You CAN. Use these tools.`
   }
 
   if (hasBrowser) {
@@ -458,6 +504,34 @@ SAFETY RULES:
 4. For reading feeds/comments, summarize the key posts naturally in conversation.
 === END SOCIAL MEDIA MANAGER ===`
 
+  base += `
+
+=== EMAIL ===
+You have full email access (IMAP + SMTP) for two accounts: contact@yorkiebrown.uk (primary/default) and yorkie@yorkiebrown.uk.
+
+Available tools:
+- email_list_inbox: List recent emails. Returns sender, subject, date, read status. Defaults to contact@yorkiebrown.uk.
+- email_read: Read the full content of a specific email by UID.
+- email_send: Send an email. Supports reply threading via replyToMessageId.
+- email_search: Search emails by keyword across subject, sender, and body.
+- email_list_folders: List all IMAP folders/mailboxes.
+- email_delete: Permanently delete an email.
+- email_mark_read: Mark an email as read or unread.
+
+When the user asks "check my emails", "any new mail?", or similar, use email_list_inbox.
+When they ask to reply to an email, first read it with email_read to get the Message-ID, then use email_send with replyToMessageId.
+Do NOT say "I don't have access to email" or "I can't manage emails." You CAN. Use the email tools.
+=== END EMAIL ===
+
+=== SMS & VOICE CALLS ===
+You can send SMS and make phone calls via Vonage:
+- vonage_send_sms: Send an SMS text message. Only when the user explicitly asks.
+- vonage_voice_call: Outbound call where Vonage speaks text using TTS (one-shot script, not live conversation).
+- vonage_ai_voice_call: Live two-way AI phone call (audio streams through a WebSocket bridge: STT → LLM → TTS). Only if the bridge is configured.
+
+Do NOT say you cannot send texts or make calls. You CAN, via Vonage.
+=== END SMS & VOICE CALLS ===`
+
   if (isElevenLabs) {
     base += buildPersonalityInstructions(voiceNames)
   }
@@ -581,6 +655,7 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
     voiceRegistry,
     enableVoiceAnalysis,
     onVocalState,
+    userSettings,
   } = opts
 
   const isEL = ttsProvider === 'elevenlabs'
@@ -658,6 +733,9 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const openMediaCanvasRef = useRef(openMediaCanvas)
   useEffect(() => { openMediaCanvasRef.current = openMediaCanvas }, [openMediaCanvas])
 
+  const userSettingsRef = useRef(userSettings)
+  useEffect(() => { userSettingsRef.current = userSettings }, [userSettings])
+
   // Voice analysis refs
   const vaEnabledRef = useRef(enableVoiceAnalysis ?? false)
   useEffect(() => { vaEnabledRef.current = enableVoiceAnalysis ?? false }, [enableVoiceAnalysis])
@@ -720,7 +798,7 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   }, [getPlayCtx])
 
   const stopPlay = useCallback(() => {
-    for (const s of srcsRef.current) { try { s.stop() } catch {} }
+    for (const s of srcsRef.current) { try { s.stop() } catch { /* ignored */ } }
     srcsRef.current = []
     nextTRef.current = 0
     elAbortRef.current?.abort()
@@ -745,7 +823,7 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
       body.voice_settings = {
         stability: voiceSettings.stability ?? 0.5,
         similarity_boost: voiceSettings.similarity_boost ?? 0.75,
-        style: voiceSettings.style ?? 0.0,
+        style: voiceSettings.style ?? 0,
         use_speaker_boost: true,
       }
     }
@@ -845,7 +923,7 @@ Assistant: ${ai || ''}`
 
       const result = await res.json()
       const content = result.choices?.[0]?.message?.content || '{}'
-      let facts: { category: string; fact: string }[] = []
+      const facts: { category: string; fact: string }[] = []
       try {
         const parsed = JSON.parse(content)
         const raw: unknown[] = Array.isArray(parsed) ? parsed : (parsed.facts || [])
@@ -854,7 +932,7 @@ Assistant: ${ai || ''}`
             facts.push({ category: String((f as Record<string, unknown>).category), fact: String((f as Record<string, unknown>).fact) })
           }
         }
-      } catch {}
+      } catch { /* ignored */ }
 
       if (facts.length > 0) {
         fetch('/api/jarvis-memory', {
@@ -890,7 +968,7 @@ Assistant: ${ai || ''}`
       // ElevenLabs path: bypass the LLM entirely and send text straight to TTS
       if (isEL) {
         directTTSRef.current = true
-        const rawText = output.replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+        const rawText = output.replaceAll(/\[MANDATORY RULE:[^\]]*\]/g, '').replaceAll(/\[Read the final[^\]]*\]/g, '').trim()
         if (rawText) {
           const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
           elQueueRef.current.push(...chunks)
@@ -1003,7 +1081,7 @@ Assistant: ${ai || ''}`
       finishTurn()
     }
   }, [speakEL, playSfx, setS, finishTurn])
-  processElQueueRef.current = processElQueue
+  processElQueueRef.current = () => { processElQueue().catch(() => {}) }
 
   // ── Voice analysis sender ────────────────────────────────────────────────
 
@@ -1060,7 +1138,7 @@ Assistant: ${ai || ''}`
       // output bleeding back into the mic from triggering barge-in.
       if (stateRef.current === 'speaking') {
         let sumSq = 0
-        for (let i = 0; i < samples.length; i++) sumSq += samples[i] * samples[i]
+        for (const s of samples) sumSq += s * s
         const rms = Math.sqrt(sumSq / samples.length)
         if (rms < 0.06) return // below threshold — likely speaker bleed, discard
       }
@@ -1087,6 +1165,7 @@ Assistant: ${ai || ''}`
     }
     src.connect(proc)
     proc.connect(ctx.destination)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const stopMic = useCallback(() => {
@@ -1110,24 +1189,22 @@ Assistant: ${ai || ''}`
         if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
           // Debounce barge-in: wait 250ms to confirm it's real user speech,
           // not speaker bleed that slipped past the energy gate.
-          if (!bargeInTimerRef.current) {
-            bargeInTimerRef.current = setTimeout(() => {
-              bargeInTimerRef.current = null
-              if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
-                autoReadRef.current.pending = false
-                stopPlay()
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
-                  wsRef.current.send(JSON.stringify({ type: 'response.cancel' }))
-                }
-                aiAccRef.current = ''
-                setAiText('')
-                setInterimTranscript('Listening…')
-                setS('listening')
-                elBufRef.current = ''
-                elDoneRef.current = false
+          bargeInTimerRef.current ??= setTimeout(() => {
+            bargeInTimerRef.current = null
+            if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
+              autoReadRef.current.pending = false
+              stopPlay()
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'response.cancel' }))
               }
-            }, 250)
-          }
+              aiAccRef.current = ''
+              setAiText('')
+              setInterimTranscript('Listening…')
+              setS('listening')
+              elBufRef.current = ''
+              elDoneRef.current = false
+            }
+          }, 250)
         } else {
           stopPlay()
           aiAccRef.current = ''
@@ -1255,7 +1332,7 @@ Assistant: ${ai || ''}`
 
         if (fnName === 'web_search') {
           let args: { query?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           const query = args.query || ''
           if (query && callId) {
             setS('thinking')
@@ -1310,7 +1387,7 @@ Assistant: ${ai || ''}`
           }
         } else if (fnName === 'tune_in') {
           let args: { action?: string; query?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           const ctrl = tuneInRef.current
           if (!ctrl || !callId) break
 
@@ -1363,7 +1440,7 @@ Assistant: ${ai || ''}`
           }
         } else if (fnName === 'rag_search') {
           let args: { query?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           const query = args.query || ''
           if (!query || !callId) break
           setS('thinking')
@@ -1398,7 +1475,7 @@ Assistant: ${ai || ''}`
             })
         } else if (fnName === 'create_document') {
           let args: { title?: string; content?: string; format?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!args.title || !args.content || !callId) break
           setS('thinking')
           fetch('/api/rag/create-document', {
@@ -1427,18 +1504,116 @@ Assistant: ${ai || ''}`
                 ws.send(JSON.stringify({ type: 'response.create' }))
               }
             })
+        } else if (fnName === 'list_calendar_events') {
+          let args: { limit?: number; days_ahead?: number } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          if (!callId) break
+          setS('thinking')
+          void (async () => {
+            try {
+              const token = requireGoogleDriveAccessToken(userSettingsRef.current)
+              
+              const res = await fetch('/api/calendar/events', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessToken: token, limit: args.limit || 10, daysAhead: args.days_ahead || 30 }),
+              })
+              const data = await res.json()
+              let output: string
+              if (data.error) {
+                output = `Calendar error: ${data.error.message || 'failed to fetch events'}`
+              } else if (!data.events || data.events.length === 0) {
+                output = 'No upcoming calendar events found.'
+              } else {
+                output = data.events.map((e: Record<string, string>) => `• ${e.summary || '(no title)'} — ${e.start || '(no time)'}`).join('\n')
+              }
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, output)
+            } catch (e) {
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, `Calendar access error: ${e instanceof Error ? e.message : 'unknown error'}`)
+            }
+          })()
+        } else if (fnName === 'create_calendar_event') {
+          let args: { title?: string; start_time?: string; end_time?: string; description?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          if (!args.title || !args.start_time || !callId) break
+          setS('thinking')
+          void (async () => {
+            try {
+              const token = requireGoogleDriveAccessToken(userSettingsRef.current)
+              
+              const res = await fetch('/api/calendar/create-event', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessToken: token, title: args.title, startTime: args.start_time, endTime: args.end_time, description: args.description }),
+              })
+              const data = await res.json()
+              const output = data.error ? `Failed to create event: ${data.error.message}` : `Event "${args.title}" created successfully.`
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, output)
+            } catch (e) {
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, `Calendar error: ${e instanceof Error ? e.message : 'unknown error'}`)
+            }
+          })()
+        } else if (fnName === 'list_drive_files') {
+          let args: { folder_id?: string; query?: string; limit?: number } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          if (!callId) break
+          setS('thinking')
+          void (async () => {
+            try {
+              const token = requireGoogleDriveAccessToken(userSettingsRef.current)
+              
+              const res = await fetch('/api/drive/list', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessToken: token, folderId: args.folder_id, query: args.query, limit: args.limit || 20 }),
+              })
+              const data = await res.json()
+              let output: string
+              if (data.error) {
+                output = `Drive error: ${data.error.message || 'failed to list files'}`
+              } else if (!data.files || data.files.length === 0) {
+                output = 'No files found in this folder.'
+              } else {
+                output = data.files.map((f: Record<string, string>) => `• ${f.name} ${f.mimeType?.includes('folder') ? '(folder)' : ''}`).join('\n')
+              }
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, output)
+            } catch (e) {
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, `Drive access error: ${e instanceof Error ? e.message : 'unknown error'}`)
+            }
+          })()
+        } else if (fnName === 'search_drive_files') {
+          let args: { query?: string; limit?: number } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const query = args.query || ''
+          if (!query || !callId) break
+          setS('thinking')
+          void (async () => {
+            try {
+              const token = requireGoogleDriveAccessToken(userSettingsRef.current)
+              
+              const res = await fetch('/api/drive/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessToken: token, query, limit: args.limit || 10 }),
+              })
+              const data = await res.json()
+              let output: string
+              if (data.error) {
+                output = `Search error: ${data.error.message || 'failed to search'}`
+              } else if (!data.files || data.files.length === 0) {
+                output = `No files found matching "${query}"`
+              } else {
+                output = data.files.map((f: Record<string, string>) => `• ${f.name}`).join('\n')
+              }
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, output)
+            } catch (e) {
+              sendRealtimeVoiceToolOutput(wsRef.current, callId, `Search error: ${e instanceof Error ? e.message : 'unknown error'}`)
+            }
+          })()
         } else if (fnName === 'manage_documents') {
           let args: { action?: string; document_id?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
-
-          const sendRagResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
 
           if (args.action === 'list') {
             setS('thinking')
@@ -1447,48 +1622,36 @@ Assistant: ${ai || ''}`
               .then((data: { documents?: Array<{ id: string; title: string; filename: string; source: string; chunk_count: number; created_at: string }> }) => {
                 const docs = data.documents ?? []
                 if (docs.length === 0) {
-                  sendRagResult('No documents stored in the knowledge base yet.')
+                  sendRealtimeVoiceToolOutput(wsRef.current, callId, 'No documents stored in the knowledge base yet.')
                 } else {
                   const list = docs.map((d, i) => `${i + 1}. "${d.title}" (${d.source}, ${d.chunk_count} chunks, created ${new Date(d.created_at).toLocaleDateString()}) ID: ${d.id}`).join('\n')
-                  sendRagResult(`${docs.length} document(s) in the knowledge base:\n${list}`)
+                  sendRealtimeVoiceToolOutput(wsRef.current, callId, `${docs.length} document(s) in the knowledge base:\n${list}`)
                 }
               })
-              .catch(() => sendRagResult('Failed to list documents.'))
+              .catch(() => sendRealtimeVoiceToolOutput(wsRef.current, callId, 'Failed to list documents.'))
           } else if (args.action === 'delete' && args.document_id) {
             setS('thinking')
             fetch(`/api/rag/documents/${encodeURIComponent(args.document_id)}`, { method: 'DELETE' })
               .then(r => r.json())
               .then((data: { ok?: boolean; error?: { message?: string } }) => {
                 if (data.ok) {
-                  sendRagResult(`Document ${args.document_id} deleted successfully.`)
+                  sendRealtimeVoiceToolOutput(wsRef.current, callId, `Document ${args.document_id} deleted successfully.`)
                 } else {
-                  sendRagResult(data.error?.message ?? 'Failed to delete document.')
+                  sendRealtimeVoiceToolOutput(wsRef.current, callId, data.error?.message ?? 'Failed to delete document.')
                 }
               })
-              .catch(() => sendRagResult('Failed to delete document.'))
+              .catch(() => sendRealtimeVoiceToolOutput(wsRef.current, callId, 'Failed to delete document.'))
           } else {
-            sendRagResult(`Unknown manage_documents action: ${args.action ?? 'none'}`)
+            sendRealtimeVoiceToolOutput(wsRef.current, callId, `Unknown manage_documents action: ${args.action ?? 'none'}`)
           }
         } else if (fnName === 'browser_action') {
           let args: { action?: string; url?: string; ref?: string; text?: string; direction?: string; tab_id?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           const bc = browserRef.current
           if (!callId) break
 
-          const sendBrowserResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'response.cancel' }))
-              ws.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: { type: 'function_call_output', call_id: callId, output },
-              }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
-
           if (!bc) {
-            sendBrowserResult('Browser control is not available. The browser may not be open.')
+            sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Browser control is not available. The browser may not be open.')
             break
           }
 
@@ -1498,118 +1661,114 @@ Assistant: ${ai || ''}`
             try {
               switch (args.action) {
                 case 'navigate': {
-                  if (!args.url) { sendBrowserResult('Missing url parameter.'); return }
+                  if (!args.url) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Missing url parameter.'); return }
                   bc.openBrowser()
                   await new Promise(r => setTimeout(r, 300))
                   const navResult = await bc.navigate(args.url)
                   await new Promise(r => setTimeout(r, 1000))
-                  sendBrowserResult(navResult.ok
-                    ? `Navigated to ${navResult.url}. Page title: ${navResult.title || '(no title)'}. Use snapshot to see page elements.`
-                    : `Failed to navigate to ${args.url}.`)
+                  sendVoiceToolOutputWithCancel(
+                    wsRef.current,
+                    callId,
+                    navResult.ok
+                      ? `Navigated to ${navResult.url}. Page title: ${navResult.title || '(no title)'}. Use snapshot to see page elements.`
+                      : `Failed to navigate to ${args.url}.`,
+                  )
                   return
                 }
                 case 'snapshot': {
                   const tree = await bc.snapshot()
-                  sendBrowserResult(tree)
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, tree)
                   return
                 }
                 case 'click': {
-                  if (!args.ref) { sendBrowserResult('Missing ref parameter. Run snapshot first to get element refs.'); return }
+                  if (!args.ref) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Missing ref parameter. Run snapshot first to get element refs.'); return }
                   const clickRes = await bc.click(args.ref)
                   if (clickRes.ok) {
                     await new Promise(r => setTimeout(r, 800))
-                    sendBrowserResult(`Clicked element ${args.ref}. Use snapshot to see the updated page.`)
+                    sendVoiceToolOutputWithCancel(wsRef.current, callId, `Clicked element ${args.ref}. Use snapshot to see the updated page.`)
                   } else {
-                    sendBrowserResult(`Could not click ${args.ref}. It may no longer exist — run snapshot to refresh refs.`)
+                    sendVoiceToolOutputWithCancel(wsRef.current, callId, `Could not click ${args.ref}. It may no longer exist — run snapshot to refresh refs.`)
                   }
                   return
                 }
                 case 'type': {
-                  if (!args.ref || !args.text) { sendBrowserResult('Missing ref or text parameter.'); return }
+                  if (!args.ref || !args.text) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Missing ref or text parameter.'); return }
                   const typeRes = await bc.type(args.ref, args.text)
-                  sendBrowserResult(typeRes.ok
-                    ? `Typed "${args.text}" into element ${args.ref}.`
-                    : `Could not type into ${args.ref}. Run snapshot to refresh refs.`)
+                  sendVoiceToolOutputWithCancel(
+                    wsRef.current,
+                    callId,
+                    typeRes.ok
+                      ? `Typed "${args.text}" into element ${args.ref}.`
+                      : `Could not type into ${args.ref}. Run snapshot to refresh refs.`,
+                  )
                   return
                 }
                 case 'extract_text': {
                   const eText = await bc.extractText()
-                  sendBrowserResult(eText || '(empty page)')
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, eText || '(empty page)')
                   return
                 }
                 case 'scroll': {
-                  const dir = (args.direction === 'up' ? 'up' : 'down') as 'up' | 'down'
+                  const dir: 'up' | 'down' = args.direction === 'up' ? 'up' : 'down'
                   await bc.scroll(dir)
-                  sendBrowserResult(`Scrolled ${dir}. Use snapshot to see new content.`)
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, `Scrolled ${dir}. Use snapshot to see new content.`)
                   return
                 }
                 case 'go_back': {
                   await bc.goBack()
                   await new Promise(r => setTimeout(r, 800))
-                  sendBrowserResult('Went back. Use snapshot to see the page.')
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId,'Went back. Use snapshot to see the page.')
                   return
                 }
                 case 'go_forward': {
                   await bc.goForward()
                   await new Promise(r => setTimeout(r, 800))
-                  sendBrowserResult('Went forward. Use snapshot to see the page.')
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId,'Went forward. Use snapshot to see the page.')
                   return
                 }
                 case 'new_tab': {
                   const tabRes = await bc.newTab(args.url as string | undefined)
                   if (tabRes.ok) {
                     if (args.url) await new Promise(r => setTimeout(r, 1500))
-                    sendBrowserResult(`Opened new tab (id: ${tabRes.tabId}). Use snapshot to see it.`)
+                    sendVoiceToolOutputWithCancel(wsRef.current, callId, `Opened new tab (id: ${tabRes.tabId}). Use snapshot to see it.`)
                   } else {
-                    sendBrowserResult('Failed to open new tab (tab limit may be reached).')
+                    sendVoiceToolOutputWithCancel(wsRef.current, callId,'Failed to open new tab (tab limit may be reached).')
                   }
                   return
                 }
                 case 'switch_tab': {
-                  if (!args.tab_id) { sendBrowserResult('Missing tab_id parameter.'); return }
+                  if (!args.tab_id) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Missing tab_id parameter.'); return }
                   const stRes = await bc.switchTab(args.tab_id as string)
-                  sendBrowserResult(stRes.ok ? `Switched to tab ${args.tab_id}. Use snapshot to see the page.` : `Tab ${args.tab_id} not found.`)
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, stRes.ok ? `Switched to tab ${args.tab_id}. Use snapshot to see the page.` : `Tab ${args.tab_id} not found.`)
                   return
                 }
                 case 'close_tab': {
-                  if (!args.tab_id) { sendBrowserResult('Missing tab_id parameter.'); return }
+                  if (!args.tab_id) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Missing tab_id parameter.'); return }
                   const ctRes = await bc.closeTab(args.tab_id as string)
-                  sendBrowserResult(ctRes.ok ? `Closed tab ${args.tab_id}.` : `Could not close tab ${args.tab_id}.`)
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, ctRes.ok ? `Closed tab ${args.tab_id}.` : `Could not close tab ${args.tab_id}.`)
                   return
                 }
                 case 'list_tabs': {
                   const tabsList = bc.listTabs()
-                  if (tabsList.length === 0) { sendBrowserResult('No tabs open.'); return }
-                  sendBrowserResult(tabsList.map(t => `${t.active ? '* ' : '  '}[${t.id}] ${t.title} — ${t.url}`).join('\n'))
+                  if (tabsList.length === 0) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'No tabs open.'); return }
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, tabsList.map(t => `${t.active ? '* ' : '  '}[${t.id}] ${t.title} — ${t.url}`).join('\n'))
                   return
                 }
                 default:
-                  sendBrowserResult(`Unknown browser action: ${args.action ?? 'none'}`)
+                  sendVoiceToolOutputWithCancel(wsRef.current, callId, `Unknown browser action: ${args.action ?? 'none'}`)
               }
             } catch (e) {
-              sendBrowserResult(`Browser action failed: ${e instanceof Error ? e.message : String(e)}`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Browser action failed: ${e instanceof Error ? e.message : String(e)}`)
             }
           })()
         } else if (fnName === 'browser_task') {
           let args: { goal?: string; save_results?: boolean } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           const bc = browserRef.current
           if (!callId) break
 
-          const sendTaskResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'response.cancel' }))
-              ws.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: { type: 'function_call_output', call_id: callId, output },
-              }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
-
           if (!bc || !args.goal) {
-            sendTaskResult(bc ? 'Missing goal parameter.' : 'Browser control is not available.')
+            sendVoiceToolOutputWithCancel(wsRef.current, callId, bc ? 'Missing goal parameter.' : 'Browser control is not available.')
             break
           }
 
@@ -1641,9 +1800,9 @@ Assistant: ${ai || ''}`
                 output += `\n\nSaved to knowledge base: ${result.savedDocuments.join(', ')}`
               }
               output += `\n(Completed in ${result.steps.length} steps)`
-              sendTaskResult(output)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, output)
             } catch (e) {
-              sendTaskResult(`Browser task failed: ${e instanceof Error ? e.message : String(e)}`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Browser task failed: ${e instanceof Error ? e.message : String(e)}`)
             } finally {
               onBrowserAutomatingRef.current?.(false)
             }
@@ -1651,20 +1810,8 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'generate_image') {
           let args: { prompt?: string; size?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.prompt) break
-
-          const sendMediaResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'response.cancel' }))
-              ws.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: { type: 'function_call_output', call_id: callId, output },
-              }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
 
           setS('thinking')
           onMediaGeneratingRef.current?.(true)
@@ -1679,9 +1826,9 @@ Assistant: ${ai || ''}`
               const result = await generateImage(args.prompt!, { size: sizeMap[args.size || 'square'] || '1024x1024' })
               const mc = mediaCanvasRef.current
               if (mc) mc.showImage(result, args.prompt)
-              sendMediaResult(`Image generated successfully and displayed in the Media Canvas. The user can see it now.`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Image generated successfully and displayed in the Media Canvas. The user can see it now.`)
             } catch (e) {
-              sendMediaResult(`Image generation failed: ${e instanceof Error ? e.message : String(e)}`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Image generation failed: ${e instanceof Error ? e.message : String(e)}`)
             } finally {
               onMediaGeneratingRef.current?.(false)
               onMediaGeneratingLabelRef.current?.('')
@@ -1690,20 +1837,8 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'generate_video') {
           let args: { prompt?: string; duration?: number } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.prompt) break
-
-          const sendMediaResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'response.cancel' }))
-              ws.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: { type: 'function_call_output', call_id: callId, output },
-              }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
 
           setS('thinking')
           onMediaGeneratingRef.current?.(true)
@@ -1720,9 +1855,9 @@ Assistant: ${ai || ''}`
               })
               const mc = mediaCanvasRef.current
               if (mc) mc.showVideo(result, args.prompt)
-              sendMediaResult(`Video generated successfully and playing in the Media Canvas.`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Video generated successfully and playing in the Media Canvas.`)
             } catch (e) {
-              sendMediaResult(`Video generation failed: ${e instanceof Error ? e.message : String(e)}`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Video generation failed: ${e instanceof Error ? e.message : String(e)}`)
             } finally {
               onMediaGeneratingRef.current?.(false)
               onMediaGeneratingLabelRef.current?.('')
@@ -1731,25 +1866,13 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'edit_image') {
           let args: { instruction?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.instruction) break
 
-          const sendMediaResult = (output: string) => {
-            const ws = wsRef.current
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'response.cancel' }))
-              ws.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: { type: 'function_call_output', call_id: callId, output },
-              }))
-              ws.send(JSON.stringify({ type: 'response.create' }))
-            }
-          }
-
           const mc = mediaCanvasRef.current
-          if (!mc) { sendMediaResult('Media Canvas is not open.'); break }
+          if (!mc) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'Media Canvas is not open.'); break }
           const currentImage = mc.getCurrentImageBase64()
-          if (!currentImage) { sendMediaResult('No image is currently loaded in the Media Canvas.'); break }
+          if (!currentImage) { sendVoiceToolOutputWithCancel(wsRef.current, callId, 'No image is currently loaded in the Media Canvas.'); break }
 
           setS('thinking')
           onMediaGeneratingRef.current?.(true)
@@ -1759,9 +1882,9 @@ Assistant: ${ai || ''}`
             try {
               const result = await editImage(currentImage, args.instruction!, { quality: 'high' })
               mc.applyEdit(result)
-              sendMediaResult(`Image edited successfully. The updated image is displayed in the Media Canvas.`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Image edited successfully. The updated image is displayed in the Media Canvas.`)
             } catch (e) {
-              sendMediaResult(`Image edit failed: ${e instanceof Error ? e.message : String(e)}`)
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, `Image edit failed: ${e instanceof Error ? e.message : String(e)}`)
             } finally {
               onMediaGeneratingRef.current?.(false)
               onMediaGeneratingLabelRef.current?.('')
@@ -1770,7 +1893,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'show_code') {
           let args: { code?: string; language?: string; filename?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.code || !args.language) break
 
           const ctrl = codeEditorRef.current
@@ -1792,7 +1915,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'run_code') {
           let args: { code?: string; language?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.code || !args.language) break
 
           setS('thinking')
@@ -1821,7 +1944,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName.startsWith('ide_') || fnName === 'ide_toggle_preview') {
           let args: Record<string, unknown> = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
 
           setS('thinking')
@@ -1842,9 +1965,12 @@ Assistant: ${ai || ''}`
             }
             let output = ''
             try {
+              // NOSONAR(S1471) — mirrors chat-tools IDE dispatch for voice parity
               switch (fnName) {
                 case 'ide_create_file': {
-                  const id = ctrl.createFile(args.filename as string, args.code as string || '', args.language as string || 'javascript')
+                  const code = typeof args.code === 'string' ? args.code : ''
+                  const lang = typeof args.language === 'string' ? args.language : 'javascript'
+                  const id = ctrl.createFile(args.filename as string, code, lang)
                   output = `File "${args.filename}" created (ID: ${id}).`
                   break
                 }
@@ -1867,7 +1993,7 @@ Assistant: ${ai || ''}`
                   const fid = args.file_id as string | undefined
                   if (fid) {
                     const content = ctrl.getFileContent(fid)
-                    output = content != null ? content : 'File not found.'
+                    output = content ?? 'File not found.'
                   } else {
                     const af = ctrl.getActiveFile()
                     output = af ? `File: ${af.filename}\n---\n${af.code}` : 'No active file.'
@@ -1879,6 +2005,9 @@ Assistant: ${ai || ''}`
                   break
                 case 'ide_delete_file':
                   output = ctrl.deleteFile(args.file_id as string) ? 'File deleted.' : 'File not found.'
+                  break
+                case 'ide_rename_file':
+                  output = ctrl.renameFile(args.file_id as string, args.new_name as string) ? `File renamed to "${args.new_name}".` : 'File not found.'
                   break
                 case 'ide_run_and_fix': {
                   const af = ctrl.getActiveFile()
@@ -1895,8 +2024,12 @@ Assistant: ${ai || ''}`
                 }
                 case 'ide_find_in_file': {
                   const matches = ctrl.findInFile(args.query as string)
-                  output = matches.length === 0 ? 'No matches.'
-                    : `Found ${matches.length} match(es):\n${matches.slice(0, 20).map(m => `  Line ${m.line}, Col ${m.column}: ${m.text}`).join('\n')}`
+                  const matchLines = matches
+                    .slice(0, 20)
+                    .map((m) => '  Line ' + String(m.line) + ', Col ' + String(m.column) + ': ' + m.text)
+                    .join('\n')
+                  output =
+                    matches.length === 0 ? 'No matches.' : `Found ${matches.length} match(es):\n${matchLines}`
                   break
                 }
                 case 'ide_toggle_preview':
@@ -1910,8 +2043,14 @@ Assistant: ${ai || ''}`
                 }
                 case 'ide_search_all_files': {
                   const results = ctrl.searchAllFiles(args.query as string)
-                  output = results.length === 0 ? 'No matches across files.'
-                    : `Found ${results.length} match(es):\n${results.slice(0, 20).map(r => `  ${r.filename}:${r.line}: ${r.text}`).join('\n')}`
+                  const resultLines = results
+                    .slice(0, 20)
+                    .map((r) => '  ' + r.filename + ':' + String(r.line) + ': ' + r.text)
+                    .join('\n')
+                  output =
+                    results.length === 0
+                      ? 'No matches across files.'
+                      : `Found ${results.length} match(es):\n${resultLines}`
                   break
                 }
                 case 'ide_go_to_line':
@@ -1924,8 +2063,23 @@ Assistant: ${ai || ''}`
                   break
                 case 'ide_get_problems': {
                   const probs = ctrl.getProblems()
-                  output = probs.length === 0 ? 'No problems detected.'
-                    : `${probs.length} problem(s):\n${probs.map(p => `  ${p.source}:${p.line}:${p.column} [${p.severity}] ${p.message}`).join('\n')}`
+                  const probLines = probs
+                    .map(
+                      (p) =>
+                        '  ' +
+                        p.source +
+                        ':' +
+                        String(p.line) +
+                        ':' +
+                        String(p.column) +
+                        ' [' +
+                        p.severity +
+                        '] ' +
+                        p.message
+                    )
+                    .join('\n')
+                  output =
+                    probs.length === 0 ? 'No problems detected.' : `${probs.length} problem(s):\n${probLines}`
                   break
                 }
                 case 'ide_get_terminal_output':
@@ -1935,6 +2089,18 @@ Assistant: ${ai || ''}`
                   ctrl.toggleTerminal()
                   output = 'Terminal toggled.'
                   break
+                case 'ide_run_terminal': {
+                  const cmd = (typeof args.command === 'string' ? args.command : '').trim()
+                  if (!cmd) { output = 'Provide a command (e.g. npm run build).'; break }
+                  const r = await ctrl.runTerminalCommand(cmd)
+                  let o = ''
+                  if (r.stdout) o += `stdout:\n${r.stdout}\n\n`
+                  if (r.stderr) o += `stderr:\n${r.stderr}\n\n`
+                  if (r.exitCode != null) o += `exit code: ${String(r.exitCode)}\n`
+                  if (r.error) o += `note: ${r.error}\n`
+                  output = o.trim() || '(command finished with no output)'
+                  break
+                }
                 case 'ide_toggle_zen_mode':
                   ctrl.toggleZenMode()
                   output = 'Zen mode toggled.'
@@ -1996,16 +2162,28 @@ Assistant: ${ai || ''}`
                   break
                 case 'ide_get_outline': {
                   const symbols = ctrl.getOutlineSymbols()
-                  output = symbols.length === 0 ? 'No symbols found in the current file.'
-                    : `${symbols.length} symbol(s):\n${symbols.map(s => `  Line ${s.line}: [${s.kind}] ${s.name}`).join('\n')}`
+                  const symLines = symbols
+                    .map((s) => '  Line ' + String(s.line) + ': [' + s.kind + '] ' + s.name)
+                    .join('\n')
+                  output =
+                    symbols.length === 0
+                      ? 'No symbols found in the current file.'
+                      : `${symbols.length} symbol(s):\n${symLines}`
                   break
                 }
-                case 'ide_get_available_templates':
-                  output = `Available templates:\n${ctrl.getAvailableTemplates().map(t => `  - ${t}`).join('\n')}`
+                case 'ide_get_available_templates': {
+                  const templateLines = ctrl.getAvailableTemplates().map((t) => '  - ' + t).join('\n')
+                  output = 'Available templates:\n' + templateLines
                   break
-                case 'ide_get_available_themes':
-                  output = `Available themes:\n${ctrl.getAvailableThemes().map(t => `  - ${t.id}: ${t.label}`).join('\n')}`
+                }
+                case 'ide_get_available_themes': {
+                  const themeLines = ctrl
+                    .getAvailableThemes()
+                    .map((t) => '  - ' + t.id + ': ' + t.label)
+                    .join('\n')
+                  output = 'Available themes:\n' + themeLines
                   break
+                }
                 default:
                   output = `Unknown IDE command: ${fnName}`
               }
@@ -2021,7 +2199,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'search_huggingface') {
           let args: { query?: string; type?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.query) break
 
           setS('thinking')
@@ -2044,7 +2222,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'search_github') {
           let args: { query?: string; type?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.query) break
 
           setS('thinking')
@@ -2067,7 +2245,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'generate_music') {
           let args: { prompt?: string; style?: string; instrumental?: boolean } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.prompt) break
 
           setS('thinking')
@@ -2109,7 +2287,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'get_account_balances' || fnName === 'get_transactions' || fnName === 'get_spending_summary') {
           let args: { start_date?: string; end_date?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
 
           setS('thinking')
@@ -2135,7 +2313,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'search_stories') {
           let args: { query?: string; source?: string } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId || !args.query) break
 
           setS('thinking')
@@ -2158,18 +2336,21 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'tell_story') {
           let args: { story_id?: string; source?: string; random?: boolean; genre?: string; page?: number } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
 
           setS('thinking')
           void (async () => {
             let output: string
             try {
-              const fetchPromise = args.random
-                ? getRandomStory(args.genre)
-                : args.story_id && args.source
-                  ? getStoryContent(args.story_id, args.source as 'gutenberg' | 'huggingface', args.page || 1)
-                  : Promise.resolve('Missing story_id or source. Search for stories first with search_stories, or set random=true.')
+              let fetchPromise: Promise<string>
+              if (args.random) {
+                fetchPromise = getRandomStory(args.genre)
+              } else if (args.story_id && args.source) {
+                fetchPromise = getStoryContent(args.story_id, args.source as 'gutenberg' | 'huggingface', args.page || 1)
+              } else {
+                fetchPromise = Promise.resolve('Missing story_id or source. Search for stories first with search_stories, or set random=true.')
+              }
               const timeout = new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Story fetch timed out after 25 seconds. The server may be slow — please try again.')), 25000))
               output = await Promise.race([fetchPromise, timeout])
             } catch (e) {
@@ -2185,7 +2366,7 @@ Assistant: ${ai || ''}`
               ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '[Reading aloud]' } }))
               ws.send(JSON.stringify({ type: 'response.cancel' }))
               const rawText = stripStoryMetaForVoice(output, autoReadRef.current.pending)
-                .replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+                .replaceAll(/\[MANDATORY RULE:[^\]]*\]/g, '').replaceAll(/\[Read the final[^\]]*\]/g, '').trim()
               if (rawText) {
                 const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
                 elQueueRef.current.push(...chunks)
@@ -2209,7 +2390,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'continue_reading') {
           let args: { page?: number } = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
 
           setS('thinking')
@@ -2230,7 +2411,7 @@ Assistant: ${ai || ''}`
               ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '[Reading aloud]' } }))
               ws.send(JSON.stringify({ type: 'response.cancel' }))
               const rawText = stripStoryMetaForVoice(output, autoReadRef.current.pending)
-                .replace(/\[MANDATORY RULE:[^\]]*\]/g, '').replace(/\[Read the final[^\]]*\]/g, '').trim()
+                .replaceAll(/\[MANDATORY RULE:[^\]]*\]/g, '').replaceAll(/\[Read the final[^\]]*\]/g, '').trim()
               if (rawText) {
                 const chunks = parseBehavioralMarkup(rawText, voiceMapRef.current)
                 elQueueRef.current.push(...chunks)
@@ -2253,7 +2434,7 @@ Assistant: ${ai || ''}`
 
         } else if (fnName === 'post_to_x' || fnName === 'post_reply' || fnName === 'read_social_feed' || fnName === 'read_comments' || fnName === 'schedule_post') {
           let args: Record<string, unknown> = {}
-          try { args = JSON.parse(msg.arguments as string) } catch {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
           if (!callId) break
 
           setS('thinking')
@@ -2335,6 +2516,62 @@ Assistant: ${ai || ''}`
               }
             }
           })()
+
+        } else if (fnName?.startsWith('email_') || fnName === 'vonage_send_sms' || fnName === 'vonage_voice_call' || fnName === 'vonage_ai_voice_call') {
+          if (!callId) break
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          setS('thinking')
+          ;(async () => {
+            let output = ''
+            try {
+              switch (fnName) {
+                case 'email_list_inbox':
+                  output = await emailListInbox(args.account as string, args.folder as string, args.limit as number)
+                  break
+                case 'email_read':
+                  output = await emailReadMessage(args.account as string || 'contact@yorkiebrown.uk', args.uid as number)
+                  break
+                case 'email_send':
+                  output = await emailSend(
+                    args.account as string || 'contact@yorkiebrown.uk',
+                    args.to as string, args.subject as string, args.body as string,
+                    args.replyToMessageId as string,
+                  )
+                  break
+                case 'email_search':
+                  output = await emailSearch(args.account as string, args.query as string, args.folder as string)
+                  break
+                case 'email_list_folders':
+                  output = await emailListFolders(args.account as string)
+                  break
+                case 'email_delete':
+                  output = await emailDelete(args.account as string || 'contact@yorkiebrown.uk', args.uid as number)
+                  break
+                case 'email_mark_read':
+                  output = await emailMarkRead(args.account as string || 'contact@yorkiebrown.uk', args.uid as number, args.read as boolean)
+                  break
+                case 'vonage_send_sms':
+                  output = await vonageSendSms(args.to as string, args.text as string)
+                  break
+                case 'vonage_voice_call':
+                  output = await vonageVoiceCall(args.to as string, args.text as string, args.language as string)
+                  break
+                case 'vonage_ai_voice_call':
+                  output = await vonageAiVoiceCall(args.to as string)
+                  break
+                default:
+                  output = `Unknown tool: ${fnName}`
+              }
+            } catch (e) {
+              output = `${fnName} error: ${e instanceof Error ? e.message : String(e)}`
+            }
+            const ws = wsRef.current
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+              ws.send(JSON.stringify({ type: 'response.create' }))
+            }
+          })()
         }
         break
       }
@@ -2401,12 +2638,14 @@ Assistant: ${ai || ''}`
         const hasMedia = Boolean(mediaCanvasRef.current)
         const registeredVoiceNames = Array.from(voiceMapRef.current.values()).map(v => v.name)
         const learnedCtx = await getLearnedContext().catch(() => '')
+        const hasGoogleServices = Boolean(userSettings?.oauthTokens?.googledrive && userSettings?.connectedServices?.googledrive)
         const instructions = buildInstructions({
           mem: memory, hasVision: visionAvailable, hasTuneIn, hasRag, hasBrowser,
           browserGuideMode: browserGuideModeRef.current ?? false, hasMedia,
           voiceNames: registeredVoiceNames, isElevenLabs: isEL,
           hasVoiceAnalysis: vaEnabledRef.current,
           learnedContext: learnedCtx,
+          hasGoogleServices,
         })
 
         const tools: Record<string, unknown>[] = [
@@ -2489,6 +2728,65 @@ Assistant: ${ai || ''}`
             },
           },
         )
+
+        // Google Drive & Calendar tools — available if user has connected Google
+        if (hasGoogleServices) {
+          tools.push(
+            {
+              type: 'function',
+              name: 'list_calendar_events',
+              description: 'Get upcoming calendar events from Google Calendar. Use when the user asks about their schedule, meetings, or upcoming events.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  limit: { type: 'number', description: 'Max number of events to return (default: 10)' },
+                  days_ahead: { type: 'number', description: 'How many days ahead to look (default: 30)' },
+                },
+              },
+            },
+            {
+              type: 'function',
+              name: 'create_calendar_event',
+              description: 'Create a new event on the user\'s Google Calendar.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string', description: 'Event title' },
+                  start_time: { type: 'string', description: 'Start time (ISO 8601 format or natural language like "tomorrow 2pm")' },
+                  end_time: { type: 'string', description: 'End time (ISO 8601 format or natural language)' },
+                  description: { type: 'string', description: 'Event description' },
+                },
+                required: ['title', 'start_time'],
+              },
+            },
+            {
+              type: 'function',
+              name: 'list_drive_files',
+              description: 'List files and folders in Google Drive. Can navigate through folder structure.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  folder_id: { type: 'string', description: 'Specific folder ID to list (default: root/My Drive)' },
+                  query: { type: 'string', description: 'Optional filter query' },
+                  limit: { type: 'number', description: 'Max files to return (default: 20)' },
+                },
+              },
+            },
+            {
+              type: 'function',
+              name: 'search_drive_files',
+              description: 'Search Google Drive files by name or content.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  query: { type: 'string', description: 'Search query (filename, content, or keywords)' },
+                  limit: { type: 'number', description: 'Max results (default: 10)' },
+                },
+                required: ['query'],
+              },
+            }
+          )
+        }
 
         if (hasBrowser) {
           tools.push(
@@ -2645,6 +2943,12 @@ Assistant: ${ai || ''}`
           },
           {
             type: 'function',
+            name: 'ide_rename_file',
+            description: 'Rename a file in the IDE.',
+            parameters: { type: 'object', properties: { file_id: { type: 'string' }, new_name: { type: 'string' } }, required: ['file_id', 'new_name'] },
+          },
+          {
+            type: 'function',
             name: 'ide_run_and_fix',
             description: 'Run the active file, check for errors, and return results.',
             parameters: { type: 'object', properties: {} },
@@ -2702,6 +3006,12 @@ Assistant: ${ai || ''}`
             name: 'ide_toggle_terminal',
             description: 'Show or hide the terminal panel.',
             parameters: { type: 'object', properties: {} },
+          },
+          {
+            type: 'function',
+            name: 'ide_run_terminal',
+            description: 'Run a shell command in the workspace folder (desktop app only). Output appears in the terminal.',
+            parameters: { type: 'object', properties: { command: { type: 'string', description: 'Shell command to run (e.g. npm install, python script.py)' } }, required: ['command'] },
           },
           {
             type: 'function',
@@ -2851,10 +3161,7 @@ Assistant: ${ai || ''}`
               required: ['prompt'],
             },
           },
-        )
-
         // Financial tools — always available (server returns 401 gracefully if not configured)
-        tools.push(
           {
             type: 'function',
             name: 'get_account_balances',
@@ -2887,10 +3194,7 @@ Assistant: ${ai || ''}`
               required: [],
             },
           },
-        )
-
         // Story tools — always available
-        tools.push(
           {
             type: 'function',
             name: 'search_stories',
@@ -3002,14 +3306,150 @@ Assistant: ${ai || ''}`
               required: ['action'],
             },
           },
+          {
+            type: 'function',
+            name: 'learning_stats',
+            description: 'Show what Jarvis has learned about the user over time. Use when the user asks what you have learned or wants to see your learning progress.',
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+        // Email tools
+          {
+            type: 'function',
+            name: 'email_list_inbox',
+            description: 'List recent emails from the inbox. Defaults to contact@yorkiebrown.uk.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address to check (default: contact@yorkiebrown.uk)' },
+                folder: { type: 'string', description: 'IMAP folder (default: INBOX)' },
+                limit: { type: 'number', description: 'Max emails (default: 20)' },
+              },
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_read',
+            description: 'Read the full content of a specific email by UID.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address' },
+                uid: { type: 'number', description: 'The email UID from inbox listing' },
+              },
+              required: ['uid'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_send',
+            description: 'Send an email. Supports reply threading.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Send-from address (default: contact@yorkiebrown.uk)' },
+                to: { type: 'string', description: 'Recipient(s), comma-separated' },
+                subject: { type: 'string', description: 'Subject line' },
+                body: { type: 'string', description: 'Email body text' },
+                replyToMessageId: { type: 'string', description: 'Message-ID header for reply threading' },
+              },
+              required: ['to', 'subject', 'body'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_search',
+            description: 'Search emails by keyword across subject, sender, body.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address to search' },
+                query: { type: 'string', description: 'Search keyword' },
+                folder: { type: 'string', description: 'Folder to search (default: INBOX)' },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_list_folders',
+            description: 'List all email folders/mailboxes.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address' },
+              },
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_delete',
+            description: 'Permanently delete an email.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address' },
+                uid: { type: 'number', description: 'The email UID' },
+                folder: { type: 'string', description: 'Folder (default: INBOX)' },
+              },
+              required: ['uid'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'email_mark_read',
+            description: 'Mark an email as read or unread.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account: { type: 'string', description: 'Email address' },
+                uid: { type: 'number', description: 'The email UID' },
+                read: { type: 'boolean', description: 'true = mark read, false = mark unread' },
+                folder: { type: 'string', description: 'Folder (default: INBOX)' },
+              },
+              required: ['uid', 'read'],
+            },
+          },
+        // Vonage SMS + Voice
+          {
+            type: 'function',
+            name: 'vonage_send_sms',
+            description: 'Send an SMS text message via Vonage. Only when the user explicitly asks.',
+            parameters: {
+              type: 'object',
+              properties: {
+                to: { type: 'string', description: 'Phone number (international format)' },
+                text: { type: 'string', description: 'Message body (max 1000 chars)' },
+              },
+              required: ['to', 'text'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'vonage_voice_call',
+            description: 'Place an outbound phone call — Vonage TTS speaks your message aloud (scripted only).',
+            parameters: {
+              type: 'object',
+              properties: {
+                to: { type: 'string', description: 'Phone number (international format)' },
+                text: { type: 'string', description: 'Exact words to speak (max 3000 chars)' },
+                language: { type: 'string', description: 'TTS language/locale (default: en-GB)' },
+              },
+              required: ['to', 'text'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'vonage_ai_voice_call',
+            description: 'Start a live two-way AI phone call via WebSocket bridge (STT → LLM → TTS).',
+            parameters: {
+              type: 'object',
+              properties: {
+                to: { type: 'string', description: 'Phone number (international format)' },
+              },
+              required: ['to'],
+            },
+          },
         )
-
-        tools.push({
-          type: 'function',
-          name: 'learning_stats',
-          description: 'Show what Jarvis has learned about the user over time. Use when the user asks what you have learned or wants to see your learning progress.',
-          parameters: { type: 'object', properties: {}, required: [] },
-        })
 
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],
@@ -3035,7 +3475,7 @@ Assistant: ${ai || ''}`
         setS('listening')
       }
 
-      ws.onmessage = (ev) => { try { onMsg(JSON.parse(ev.data as string)) } catch {} }
+      ws.onmessage = (ev) => { try { onMsg(JSON.parse(ev.data as string)) } catch { /* ignored */ } }
       ws.onerror = (e) => {
         console.error('[voice] WebSocket error:', e)
         setErrorMessage(`WebSocket connection failed (${wsUrl})`)
@@ -3059,6 +3499,7 @@ Assistant: ${ai || ''}`
       console.error('[Realtime] open error:', err)
       setErrorMessage(err instanceof Error ? err.message : 'Failed to connect')
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, voice, isEL, startMic, onMsg, stopMic, stopPlay, setS])
 
   const close = useCallback(() => {

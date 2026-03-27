@@ -15,6 +15,88 @@
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
 import type { ServerResponse } from 'node:http'
+import { randomInt } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { tokenGenerate } from '@vonage/jwt'
+
+const requireVonage = createRequire(import.meta.url)
+const _pluginDir = dirname(fileURLToPath(import.meta.url))
+const vonageShared = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-voice-shared.cjs')) as {
+  normalizeVonagePhoneDigits: (raw: string) => string
+  loadVonagePrivateKeyPem: (env: Record<string, string>) => string
+  buildVonageAiVoiceWebSocketUri: (env: Record<string, string>) => string | null
+}
+
+/** ImapFlow envelope address shape (minimal for formatting). */
+type MailAddr = { name?: string; address?: string }
+
+function formatAddrLine(addrs: MailAddr[] | undefined): string {
+  return (addrs || []).map((a) => (a.address ? `${a.name || ''} <${a.address}>`.trim() : a.name || '')).join(', ')
+}
+
+function formatAddrPlain(addrs: MailAddr[] | undefined): string {
+  return (addrs || []).map((a) => a.address || a.name || '').join(', ')
+}
+
+function plaidApiBaseUrl(plaidEnv: string): string {
+  if (plaidEnv === 'production') return 'https://production.plaid.com'
+  if (plaidEnv === 'development') return 'https://development.plaid.com'
+  return 'https://sandbox.plaid.com'
+}
+
+type MailListRow = {
+  uid: number
+  messageId: string
+  from: string
+  to: string
+  subject: string
+  date: string
+  snippet: string
+  seen: boolean
+  hasAttachments: boolean
+}
+
+type ImapEnvelope = {
+  messageId?: string
+  subject?: string
+  date?: Date | string
+  from?: MailAddr[]
+  to?: MailAddr[]
+  cc?: MailAddr[]
+  replyTo?: MailAddr[]
+}
+
+type ImapFetchMsg = {
+  uid?: number
+  envelope?: ImapEnvelope
+  flags?: Set<string>
+  bodyStructure?: { childNodes?: unknown[] }
+  source?: Buffer
+} | null
+
+type ImapFlowClient = {
+  connect: () => Promise<void>
+  logout: () => Promise<void>
+  getMailboxLock: (folder: string) => Promise<{ release: () => void }>
+  mailbox?: { exists?: number }
+  search: (q: Record<string, unknown>) => Promise<number[]>
+  fetchOne: (uid: number, opts: Record<string, unknown>) => Promise<ImapFetchMsg>
+  messageMove: (uid: number, target: string) => Promise<void>
+  messageDelete: (uid: number) => Promise<void>
+  list: () => Promise<Array<{ name: string; path: string; status?: { messages?: number; unseen?: number } }>>
+}
+
+type ImapFlowModule = { ImapFlow: new (opts: Record<string, unknown>) => ImapFlowClient }
+
+type MailparserModule = {
+  simpleParser: (src: Buffer | undefined) => Promise<{ text?: string; html?: string; attachments?: unknown[] }>
+}
+
+type NodemailerLike = {
+  createTransport: (opts: Record<string, unknown>) => { sendMail: (opts: Record<string, unknown>) => Promise<{ messageId?: string }> }
+}
 
 function readBody(req: Connect.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -69,7 +151,8 @@ async function fetchRetry(url: string, opts: RequestInit & { timeoutMs?: number 
     const ms = opts.timeoutMs || 15000
     const timer = setTimeout(() => ctrl.abort(), ms)
     try {
-      const { timeoutMs: _, ...fetchOpts } = opts as Record<string, unknown>
+      const fetchOpts = { ...(opts as Record<string, unknown>) }
+      delete fetchOpts.timeoutMs
       const res = await fetch(url, { ...fetchOpts, signal: ctrl.signal } as RequestInit)
       clearTimeout(timer)
       if (res.ok || !RETRYABLE_CODES.has(res.status) || attempt === retries) return res
@@ -555,7 +638,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       const clientId = (env.PLAID_CLIENT_ID || '').trim()
       const secret = (env.PLAID_SECRET || '').trim()
       const plaidEnv = (env.PLAID_ENV || 'sandbox').trim()
-      const base = plaidEnv === 'production' ? 'https://production.plaid.com' : plaidEnv === 'development' ? 'https://development.plaid.com' : 'https://sandbox.plaid.com'
+      const base = plaidApiBaseUrl(plaidEnv)
       if (!clientId || !secret) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing PLAID_CLIENT_ID or PLAID_SECRET' } })); return }
       const reqBody = req.method === 'POST' ? JSON.parse(await readBody(req) || '{}') : {}
       const upstream = await fetch(`${base}${endpoint}`, {
@@ -573,7 +656,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         const clientId = (env.PLAID_CLIENT_ID || '').trim()
         const secret = (env.PLAID_SECRET || '').trim()
         const plaidEnv = (env.PLAID_ENV || 'sandbox').trim()
-        const base = plaidEnv === 'production' ? 'https://production.plaid.com' : plaidEnv === 'development' ? 'https://development.plaid.com' : 'https://sandbox.plaid.com'
+        const base = plaidApiBaseUrl(plaidEnv)
         if (!clientId || !secret) { res.statusCode = 401; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Missing PLAID_CLIENT_ID or PLAID_SECRET' } })); return }
         const upstream = await fetch(`${base}/link/token/create`, {
           method: 'POST',
@@ -619,7 +702,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         const clientId = (env.PLAID_CLIENT_ID || '').trim()
         const secret = (env.PLAID_SECRET || '').trim()
         const plaidEnv = (env.PLAID_ENV || 'sandbox').trim()
-        const base = plaidEnv === 'production' ? 'https://production.plaid.com' : plaidEnv === 'development' ? 'https://development.plaid.com' : 'https://sandbox.plaid.com'
+        const base = plaidApiBaseUrl(plaidEnv)
         const upstream = await fetch(`${base}/transactions/get`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -628,6 +711,378 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         const text = await upstream.text()
         res.statusCode = upstream.status; res.setHeader('Content-Type', 'application/json'); res.end(text)
       } catch (e) { res.statusCode = 502; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: (e as Error).message } })); }
+      return
+    }
+
+    // ── Email IMAP/SMTP proxy ──
+    if (path?.startsWith('/api/email/') && req.method === 'POST') {
+      const env = getEnv()
+      const emailAction = path.replace('/api/email/', '')
+      const body = JSON.parse(await readBody(req) || '{}')
+
+      const acctId = (body.account || env.EMAIL_1_ADDRESS || '').trim()
+      let emailAddr = ''
+      let emailPass = ''
+      const imapHost = (env.EMAIL_IMAP_HOST || 'mail.livemail.co.uk').trim()
+      const imapPort = parseInt(env.EMAIL_IMAP_PORT || '993', 10)
+      const smtpHost = (env.EMAIL_SMTP_HOST || 'smtp.livemail.co.uk').trim()
+      const smtpPort = parseInt(env.EMAIL_SMTP_PORT || '465', 10)
+
+      if (acctId === (env.EMAIL_2_ADDRESS || '').trim()) {
+        emailAddr = (env.EMAIL_2_ADDRESS || '').trim()
+        emailPass = (env.EMAIL_2_PASSWORD || '').trim()
+      } else {
+        emailAddr = (env.EMAIL_1_ADDRESS || '').trim()
+        emailPass = (env.EMAIL_1_PASSWORD || '').trim()
+      }
+
+      if (!emailAddr || !emailPass) {
+        res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Email credentials not configured. Set EMAIL_1_ADDRESS and EMAIL_1_PASSWORD in .env' } }))
+        return
+      }
+
+      try {
+        const { ImapFlow } = await import('imapflow') as ImapFlowModule
+
+        if (emailAction === 'inbox' || emailAction === 'search') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const folder = body.folder || 'INBOX'
+          const lock = await client.getMailboxLock(folder)
+          try {
+            const limit = body.limit || 20
+            let msgUids: number[]
+            if (emailAction === 'search' && body.query) {
+              msgUids = (await client.search({ or: [{ subject: body.query }, { from: body.query }, { body: body.query }] })) as number[]
+              msgUids = msgUids.slice(-limit).reverse()
+            } else {
+              const total = client.mailbox?.exists || 0
+              const from = Math.max(1, total - limit + 1)
+              msgUids = (await client.search({ seq: `${from}:*` })) as number[]
+              msgUids = msgUids.reverse()
+            }
+            const messages: MailListRow[] = []
+            for (const uid of msgUids.slice(0, limit)) {
+              const msg = await client.fetchOne(uid, { envelope: true, bodyStructure: true, flags: true })
+              if (!msg) continue
+              const env2 = msg.envelope || {}
+              messages.push({
+                uid: msg.uid || uid,
+                messageId: env2.messageId || '',
+                from: formatAddrLine(env2.from),
+                to: formatAddrLine(env2.to),
+                subject: env2.subject || '(no subject)',
+                date: env2.date ? new Date(env2.date).toISOString() : '',
+                snippet: '',
+                seen: (msg.flags || new Set()).has('\\Seen'),
+                hasAttachments: !!(msg.bodyStructure?.childNodes?.length),
+              })
+            }
+            res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ messages }))
+          } finally { lock.release(); await client.logout() }
+          return
+        }
+
+        if (emailAction === 'read') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const lock = await client.getMailboxLock(body.folder || 'INBOX')
+          try {
+            const msg = await client.fetchOne(body.uid, { envelope: true, source: true, flags: true, bodyStructure: true })
+            if (!msg) { res.statusCode = 404; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: { message: 'Message not found' } })); return }
+            const { simpleParser } = await import('mailparser') as MailparserModule
+            const parsed = await simpleParser(msg.source)
+            const env2 = msg.envelope || {}
+            res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({
+              message: {
+                uid: msg.uid || body.uid,
+                messageId: env2.messageId || '',
+                from: formatAddrLine(env2.from),
+                to: formatAddrLine(env2.to),
+                cc: formatAddrPlain(env2.cc),
+                subject: env2.subject || '(no subject)',
+                date: env2.date ? new Date(env2.date).toISOString() : '',
+                body: parsed.text || parsed.html?.replace(/<[^>]+>/g, '') || '(empty)',
+                replyTo: formatAddrPlain(env2.replyTo),
+                seen: (msg.flags || new Set()).has('\\Seen'),
+                hasAttachments: (parsed.attachments || []).length > 0,
+                snippet: (parsed.text || '').slice(0, 200),
+              },
+            }))
+          } finally { lock.release(); await client.logout() }
+          return
+        }
+
+        if (emailAction === 'send') {
+          const nodemailerRaw = await import('nodemailer') as unknown as NodemailerLike & { default?: NodemailerLike }
+          const nodemailer = nodemailerRaw.default ?? nodemailerRaw
+          const transporter = nodemailer.createTransport({ host: smtpHost, port: smtpPort, secure: true, auth: { user: emailAddr, pass: emailPass } })
+          const mailOpts: Record<string, unknown> = { from: emailAddr, to: body.to, subject: body.subject, text: body.body }
+          if (body.replyToMessageId) mailOpts.inReplyTo = body.replyToMessageId
+          const info = await transporter.sendMail(mailOpts)
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ ok: true, messageId: info.messageId }))
+          return
+        }
+
+        if (emailAction === 'folders') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const boxes = await client.list()
+          await client.logout()
+          const folders = boxes.map((b) => ({ name: b.name, path: b.path, messageCount: b.status?.messages || 0, unseen: b.status?.unseen || 0 }))
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ folders }))
+          return
+        }
+
+        if (emailAction === 'move') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const lock = await client.getMailboxLock(body.folder || 'INBOX')
+          try { await client.messageMove(body.uid, body.targetFolder) } finally { lock.release(); await client.logout() }
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        if (emailAction === 'delete') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const lock = await client.getMailboxLock(body.folder || 'INBOX')
+          try { await client.messageDelete(body.uid) } finally { lock.release(); await client.logout() }
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        if (emailAction === 'mark-read') {
+          const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
+          await client.connect()
+          const lock = await client.getMailboxLock(body.folder || 'INBOX')
+          try {
+            if (body.read) { await client.messageFlagsAdd(body.uid, ['\\Seen']) }
+            else { await client.messageFlagsRemove(body.uid, ['\\Seen']) }
+          } finally { lock.release(); await client.logout() }
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        res.statusCode = 404; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: `Unknown email action: ${emailAction}` } }))
+      } catch (e) {
+        res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
+      return
+    }
+
+    // ── Vonage SMS proxy ──
+    if (path === '/api/vonage/sms' && req.method === 'POST') {
+      try {
+        const env = getEnv()
+        const apiKey = (env.VONAGE_API_KEY || '').trim()
+        const apiSecret = (env.VONAGE_API_SECRET || '').trim()
+        const fromId = (env.VONAGE_FROM || '').trim()
+        if (!apiKey || !apiSecret || !fromId) {
+          res.statusCode = 401
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Vonage not configured. Set VONAGE_API_KEY, VONAGE_API_SECRET, and VONAGE_FROM in .env' } }))
+          return
+        }
+        const body = JSON.parse(await readBody(req) || '{}') as { to?: string; text?: string }
+        const rawTo = (body.to || '').trim()
+        const text = (body.text || '').trim()
+        if (!rawTo || !text) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Missing "to" or "text"' } }))
+          return
+        }
+        if (text.length > 1000) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
+          return
+        }
+        let digits = rawTo.replace(/\s+/g, '')
+        if (digits.startsWith('00')) digits = digits.slice(2)
+        if (digits.startsWith('+')) digits = digits.slice(1)
+        digits = digits.replace(/\D/g, '')
+        if (digits.length === 11 && digits.startsWith('0')) {
+          digits = `44${digits.slice(1)}`
+        }
+        if (digits.length < 8 || digits.length > 15) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
+          return
+        }
+        const upstream = await fetch('https://rest.nexmo.com/sms/json', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: apiKey,
+            api_secret: apiSecret,
+            to: digits,
+            from: fromId,
+            text,
+          }),
+        })
+        const data = await upstream.json() as { messages?: Array<{ status?: string; 'message-id'?: string; to?: string; 'error-text'?: string }> }
+        const msg = data.messages?.[0]
+        if (!msg || msg.status !== '0') {
+          const errText = msg?.['error-text'] || `Vonage status ${msg?.status ?? 'unknown'}`
+          res.statusCode = 502
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: errText } }))
+          return
+        }
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ ok: true, messageId: msg['message-id'], to: msg.to || digits }))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
+      return
+    }
+
+    // ── Vonage Voice (outbound TTS call) ──
+    if (path === '/api/vonage/call' && req.method === 'POST') {
+      try {
+        const env = getEnv()
+        const appId = (env.VONAGE_APPLICATION_ID || '').trim()
+        const privateKeyPem = vonageShared.loadVonagePrivateKeyPem(env)
+        const fromRaw = (env.VONAGE_FROM || '').trim()
+        if (!appId || !privateKeyPem || !fromRaw) {
+          res.statusCode = 401
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({
+            error: {
+              message:
+                'Vonage Voice not configured. Create a Voice application at dashboard.nexmo.com, set VONAGE_APPLICATION_ID and VONAGE_PRIVATE_KEY (or VONAGE_PRIVATE_KEY_BASE64), and VONAGE_FROM (your Vonage number).',
+            },
+          }))
+          return
+        }
+        const body = JSON.parse(await readBody(req) || '{}') as {
+          to?: string
+          text?: string
+          language?: string
+          mode?: string
+          aiVoice?: boolean
+        }
+        const rawTo = (body.to || '').trim()
+        const aiMode = body.mode === 'ai_voice' || body.aiVoice === true
+        const text = (body.text || '').trim()
+        if (!rawTo) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Missing "to"' } }))
+          return
+        }
+        if (!aiMode && !text) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Missing "text" (or use mode: "ai_voice" for live AI audio).' } }))
+          return
+        }
+        if (!aiMode && text.length > 3000) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Spoken text too long (max 3000 characters)' } }))
+          return
+        }
+        const toDigits = vonageShared.normalizeVonagePhoneDigits(rawTo)
+        if (toDigits.length < 8 || toDigits.length > 15) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
+          return
+        }
+        const fromDigits = fromRaw.replace(/\D/g, '')
+        if (fromDigits.length < 8 || fromDigits.length > 15) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'VONAGE_FROM must be your Vonage phone number (E.164 digits) for Voice calls.' } }))
+          return
+        }
+        const jwt = tokenGenerate(appId, privateKeyPem)
+        const lang = (body.language || 'en-GB').trim()
+        let ncco: Array<Record<string, unknown>>
+        if (aiMode) {
+          const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
+          if (!wsUri) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({
+              error: {
+                message:
+                  'AI voice calls need VONAGE_PUBLIC_WS_URL (public wss:// URL to the media bridge, e.g. ngrok → local VONAGE_AI_VOICE_PORT) and the bridge running.',
+              },
+            }))
+            return
+          }
+          ncco = [
+            {
+              action: 'connect',
+              endpoint: [
+                {
+                  type: 'websocket',
+                  uri: wsUri,
+                  'content-type': 'audio/l16;rate=16000',
+                },
+              ],
+            },
+          ]
+        } else {
+          ncco = [
+            {
+              action: 'talk',
+              text,
+              language: lang,
+            },
+          ]
+        }
+        const upstream = await fetch('https://api.nexmo.com/v1/calls', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            to: [{ type: 'phone', number: toDigits }],
+            from: { type: 'phone', number: fromDigits },
+            ncco,
+          }),
+        })
+        const rawText = await upstream.text()
+        let data: { uuid?: string; message?: string; type?: string } = {}
+        try {
+          data = JSON.parse(rawText) as typeof data
+        } catch {
+          /* not json */
+        }
+        if (!upstream.ok) {
+          res.statusCode = 502
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: data.message || rawText.slice(0, 200) || `HTTP ${String(upstream.status)}` } }))
+          return
+        }
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ ok: true, callUuid: data.uuid, to: toDigits, mode: aiMode ? 'ai_voice' : 'tts' }))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
       return
     }
 
@@ -669,7 +1124,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
 
           if (!hfOk) {
             try {
-              const offset = Math.floor(Math.random() * 2000000)
+              const offset = randomInt(2_000_000)
               const fallbackRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=${Math.min(limit, 10)}`)
               if (fallbackRes.ok) {
                 const fbData = await fallbackRes.json() as { rows: Array<{ row_idx: number; row: { text: string } }> }
@@ -737,15 +1192,16 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       const params = new URL(req.url || '', 'http://localhost').searchParams
       const genre = params.get('genre') || ''
       try {
-        const topic = genre || ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror'][Math.floor(Math.random() * 8)]
+        const topics = ['adventure', 'fairy tale', 'mystery', 'fantasy', 'fable', 'science fiction', 'romance', 'horror'] as const
+        const topic = genre || topics[randomInt(topics.length)]
 
         try {
-          const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${Math.floor(Math.random() * 3) + 1}`, { timeoutMs: 10000 })
+          const gutRes = await fetchRetry(`https://gutendex.com/books?topic=${encodeURIComponent(topic)}&page=${randomInt(3) + 1}`, { timeoutMs: 10000 })
           if (gutRes.ok) {
             const gutData = await gutRes.json() as { results: Array<{ id: number; title: string; authors: Array<{ name: string }>; formats: Record<string, string> }> }
             const books = gutData.results || []
             if (books.length > 0) {
-              const book = books[Math.floor(Math.random() * books.length)]
+              const book = books[randomInt(books.length)]
               const textUrl = book.formats?.['text/plain; charset=utf-8'] || book.formats?.['text/plain'] || ''
               let content = '(Full text not available in plain text format.)'
               let hasMore = false
@@ -772,8 +1228,8 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
           }
         } catch { /* Gutenberg timed out — fall through to HF */ }
 
-        const offset = Math.floor(Math.random() * 2000000)
-        const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offset}&length=1`)
+        const offsetR = randomInt(2_000_000)
+        const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${offsetR}&length=1`)
         if (hfRes.ok) {
           const hfData = await hfRes.json() as { rows: Array<{ row: { text: string } }> }
           const text = hfData.rows?.[0]?.row?.text || ''

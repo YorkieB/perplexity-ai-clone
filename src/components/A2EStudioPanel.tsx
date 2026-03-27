@@ -391,7 +391,7 @@ function NanoForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function I2VForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('I2V')
+  const [name] = useState('I2V')
   const [imageUrl, setImageUrl] = useState('')
   const [prompt, setPrompt] = useState('')
   const [neg, setNeg] = useState(
@@ -454,7 +454,7 @@ function I2VForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function TPForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Talking photo')
+  const [name] = useState('Talking photo')
   const [imageUrl, setImageUrl] = useState('')
   const [audioUrl, setAudioUrl] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -519,7 +519,7 @@ function TPForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function TVForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Talking video')
+  const [name] = useState('Talking video')
   const [videoUrl, setVideoUrl] = useState('')
   const [audioUrl, setAudioUrl] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -582,7 +582,7 @@ function TVForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function AvatarForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [title, setTitle] = useState('Avatar video')
+  const [title] = useState('Avatar video')
   const [anchorId, setAnchorId] = useState('')
   const [anchorType, setAnchorType] = useState('0')
   const [audioSrc, setAudioSrc] = useState('')
@@ -760,7 +760,7 @@ function VoiceForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function CapForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Remove captions')
+  const [name] = useState('Remove captions')
   const [source, setSource] = useState('')
   return (
     <div className="space-y-4">
@@ -795,7 +795,7 @@ function CapForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function DubForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Dub')
+  const [name] = useState('Dub')
   const [source, setSource] = useState('')
   const [sourceLang, setSourceLang] = useState('zh')
   const [targetLang, setTargetLang] = useState('en')
@@ -908,7 +908,7 @@ function VtoForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function MotionForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Motion')
+  const [name] = useState('Motion')
   const [imageUrl, setImageUrl] = useState('')
   const [videoUrl, setVideoUrl] = useState('')
   const [pos, setPos] = useState('a person, natural motion')
@@ -962,7 +962,7 @@ function MotionForm({ busy, setBusy, onTaskDone }: FormProps) {
 }
 
 function FaceSwapForm({ busy, setBusy, onTaskDone }: FormProps) {
-  const [name, setName] = useState('Face swap')
+  const [name] = useState('Face swap')
   const [faceUrl, setFaceUrl] = useState('')
   const [videoUrl, setVideoUrl] = useState('')
   return (

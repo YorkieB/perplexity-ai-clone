@@ -56,7 +56,7 @@ function NativePlayButton({
     const el = audioRef.current
     if (!el || !streamUrl || disabled) return
     if (el.paused) {
-      void el.play().catch(() => {
+      el.play().catch(() => {
         /* autoplay / decode — ignore */
       })
     } else {
@@ -79,13 +79,11 @@ function NativePlayButton({
       )}
       aria-label={playing ? 'Pause' : 'Play'}
     >
-      {loading ? (
-        <Loader2 className="size-6 animate-spin text-slate-200" aria-hidden />
-      ) : playing ? (
-        <Pause className="size-6" aria-hidden />
-      ) : (
-        <Play className="ml-1 size-7" aria-hidden />
-      )}
+      {(() => {
+        if (loading) return <Loader2 className="size-6 animate-spin text-slate-200" aria-hidden />
+        if (playing) return <Pause className="size-6" aria-hidden />
+        return <Play className="ml-1 size-7" aria-hidden />
+      })()}
     </button>
   )
 }

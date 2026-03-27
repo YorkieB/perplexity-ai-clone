@@ -16,7 +16,7 @@ function modelLabel(modelId: string): string {
 }
 
 function copyText(text: string) {
-  void navigator.clipboard.writeText(text).catch(() => {})
+  navigator.clipboard.writeText(text).catch(() => {})
 }
 
 interface A2ECreationModalProps {

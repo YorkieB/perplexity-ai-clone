@@ -2,6 +2,8 @@
 
 export type IdeReasoningMode = 'off' | 'minimal' | 'full' | 'auto'
 
+export type IdeChatMode = 'chat' | 'composer' | 'agent'
+
 export type IdeAiPreset =
   | 'edit_with_ai'
   | 'explain'
@@ -21,6 +23,17 @@ export type IdeAiPreset =
   | 'insert_code'
   | 'insert_file'
 
+export interface IdeAttachment {
+  /** Display name (filename or label). */
+  name: string
+  /** Text content for text files; data-URL (base64) for images. */
+  content: string
+  /** MIME type, e.g. "text/plain", "image/png". */
+  mimeType: string
+  /** True when content is a data-URL / base64 image. */
+  isImage: boolean
+}
+
 export interface IdeChatPayload {
   userMessage: string
   ideContextBlock: string
@@ -29,6 +42,11 @@ export interface IdeChatPayload {
   temperature?: number
   max_tokens?: number
   reasoningMode?: IdeReasoningMode
+  autopilot?: boolean
+  /** Current panel mode (chat / composer / agent). */
+  mode?: IdeChatMode
+  /** Files or images the user attached to the message. */
+  attachments?: IdeAttachment[]
 }
 
 export function presetToInstruction(preset: IdeAiPreset): string {
@@ -39,12 +57,12 @@ export function presetToInstruction(preset: IdeAiPreset): string {
     refactor: 'Refactor the active code for clarity and maintainability without changing behavior. Use IDE tools to apply edits.',
     tests: 'Generate unit tests for the active code. Create new files with ide_create_file if needed.',
     document: 'Add or improve documentation (comments / docstrings) for the active code using IDE tools.',
-    composer_open: 'The user opened Composer. Help them plan the next coding steps for the active workspace.',
-    composer_apply: 'Apply the previously discussed plan to the codebase using IDE tools. Make concrete file edits.',
-    composer_review: 'Review the diff between the last assistant suggestion and the current file; summarize risks and improvements.',
+    composer_open: 'The user opened Composer mode. Analyse the workspace, propose a step-by-step plan for the next coding task, and wait for confirmation before making changes.',
+    composer_apply: 'Apply the previously discussed plan to the codebase using IDE tools. Make concrete file edits now.',
+    composer_review: 'Review the diff between the last assistant suggestion and the current file; summarise risks and improvements.',
     agent_start: 'Start or continue an autonomous agent-style plan for the user goal using browser and IDE tools as needed.',
-    agent_stop: 'Stop autonomous actions and summarize what was done.',
-    agent_logs: 'Summarize recent tool usage and outputs relevant to the IDE session.',
+    agent_stop: 'Stop autonomous actions and summarise what was done.',
+    agent_logs: 'Summarise recent tool usage and outputs relevant to the IDE session.',
     agent_rerun: 'Re-run the last logical step (e.g. re-run code or re-check problems) using IDE tools.',
     chat_open: 'The user focused the IDE chat. Greet briefly and offer help with the active file.',
     chat_clear: 'Acknowledge chat clear; no action needed unless the user asks something new.',

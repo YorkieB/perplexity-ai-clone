@@ -36,6 +36,7 @@ declare global {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface ImportMetaEnv {
   readonly VITE_TAVILY_API_KEY?: string
   /** When true, use DigitalOcean inference with token from server `DIGITALOCEAN_API_KEY` in `.env` */

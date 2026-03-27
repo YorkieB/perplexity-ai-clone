@@ -43,8 +43,8 @@ const SUSPICIOUS_URL_RE = /https?:\/\/[^\s)>\]]+/g
 const FAKE_STAT_RE = /(?:according to|studies show|research shows|data shows|statistics show|a recent study|a \d{4} study)\s/gi
 const FAKE_QUOTE_RE = /(?:as .{2,40} (?:once )?said|"[^"]{10,200}".*(?:[—–-])\s*[A-Z])/g
 const FABRICATED_YEAR_RE = /(?:in|since|from|by)\s+20(?:2[5-9]|[3-9]\d)\b/gi
-const PERCENTAGE_RE = /\d{1,3}(?:\.\d+)?%/g
-const SPECIFIC_NUMBER_RE = /(?:approximately|roughly|about|exactly|over|more than|nearly)\s+[\d,.]+\s+(?:million|billion|trillion|thousand|people|users|customers|employees)/gi
+const _PERCENTAGE_RE = /\d{1,3}(?:\.\d+)?%/g
+const _SPECIFIC_NUMBER_RE = /(?:approximately|roughly|about|exactly|over|more than|nearly)\s+[\d,.]+\s+(?:million|billion|trillion|thousand|people|users|customers|employees)/gi
 
 function runPatternChecks(response: string): HallucinationFlag[] {
   const flags: HallucinationFlag[] = []
@@ -124,7 +124,7 @@ function isLikelyFabricatedUrl(url: string): boolean {
 
 // ── LLM-based deep validation ───────────────────────────────────────────────
 
-const VALIDATOR_PROMPT = `You are a strict fact-checking auditor. Your job is to identify hallucinations in an AI assistant's response.
+const _VALIDATOR_PROMPT = `You are a strict fact-checking auditor. Your job is to identify hallucinations in an AI assistant's response.
 
 A hallucination is any claim, fact, statistic, URL, quote, date, name, or reference that:
 1. Is not directly supported by the provided SOURCE EVIDENCE
@@ -231,8 +231,6 @@ export async function validateResponse(opts: GuardOptions): Promise<{
   report: HallucinationReport
 }> {
   const patternFlags = runPatternChecks(opts.response)
-
-  const hasCriticalPattern = patternFlags.some(f => f.severity === 'critical' || f.severity === 'high')
 
   const llmReport = await runLlmValidation({
     response: opts.response,

@@ -14,9 +14,15 @@ export async function searchGitHub(
   if (!data.items?.length) return `No ${type} found for "${query}".`
 
   if (type === 'repositories') {
-    return data.items.slice(0, limit).map((r, i) =>
-      `${i + 1}. **${r.full_name}** — ${r.description?.slice(0, 120) || 'No description'}${r.stargazers_count ? ` (${r.stargazers_count.toLocaleString()} stars)` : ''}`
-    ).join('\n')
+    return data.items
+      .slice(0, limit)
+      .map((r, i) => {
+        const stars = r.stargazers_count
+          ? ' (' + r.stargazers_count.toLocaleString() + ' stars)'
+          : ''
+        return `${i + 1}. **${r.full_name}** — ${r.description?.slice(0, 120) || 'No description'}${stars}`
+      })
+      .join('\n')
   }
   return data.items.slice(0, limit).map((r, i) =>
     `${i + 1}. **${r.repository?.full_name}/${r.path}** — [link](${r.html_url})`

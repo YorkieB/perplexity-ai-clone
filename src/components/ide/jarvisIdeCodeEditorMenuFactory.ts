@@ -21,6 +21,7 @@ import {
   ideToggleFullscreen,
   ideWalkFiles,
 } from '@/lib/jarvis-ide-bridge'
+import { randomIdSegment } from '@/lib/secure-random'
 import { buildJarvisIdeMenus } from '@/components/ide/jarvisIdeFullMenus'
 import type { JarvisIdeMenuFactoryInput } from '@/components/ide/useJarvisIdeMenuContext'
 import { createJarvisIdeMenuContext } from '@/components/ide/useJarvisIdeMenuContext'
@@ -145,6 +146,7 @@ export interface JarvisIdeCodeEditorMenuFactoryParams {
 
   ideChatModel: string
   setIdeChatModel: (v: string) => void
+  ideChatModelOptions: Array<{ id: string; label: string }>
   ideTemp: number
   setIdeTemp: (v: number) => void
   ideMaxTok: number
@@ -152,8 +154,10 @@ export interface JarvisIdeCodeEditorMenuFactoryParams {
   ideReasoning: import('@/lib/jarvis-ide-chat-types').IdeReasoningMode
   setIdeReasoning: (v: import('@/lib/jarvis-ide-chat-types').IdeReasoningMode) => void
 
+  restartTerminalSession: () => Promise<void>
+
   firePresetChat: (preset: IdeAiPreset, userMessage: string) => Promise<void>
-  sendIdePayload: (payload: import('@/lib/jarvis-ide-chat-types').IdeChatPayload) => Promise<void>
+  sendIdePayload: (payload: import('@/lib/jarvis-ide-chat-types').IdeChatPayload) => Promise<string | null>
   setIdeChatMessages: Dispatch<SetStateAction<import('@/components/IdeChatPanel').IdeChatMessage[]>>
   createIdeUserMessage: (text: string) => import('@/components/IdeChatPanel').IdeChatMessage
   clearIdeChat: () => void
@@ -185,7 +189,7 @@ export function buildJarvisIdeMenuFactoryInput(p: JarvisIdeCodeEditorMenuFactory
     p.showOutputTab ||
     p.showDebugConsole
 
-  const mkId = () => `code-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  const mkId = () => `code-${Date.now()}-${randomIdSegment()}`
 
   const fileOpenFile = async () => {
     const files = await ideOpenFilesFromDisk()
@@ -537,23 +541,28 @@ export function buildJarvisIdeMenuFactoryInput(p: JarvisIdeCodeEditorMenuFactory
     terminalNew: () => {
       p.setShowTerminal(true)
       p.setBottomTab('terminal')
-      p.setTerminalHistory((h) => [...h, { type: 'info', text: '[New terminal session]', time: Date.now() }])
+      p.restartTerminalSession()
     },
     terminalSplit: () => {
       p.setShowTerminal(true)
       p.setBottomTab('terminal')
-      p.setTerminalHistory((h) => [...h, { type: 'info', text: '[Split terminal]', time: Date.now() }])
+      toast.info('Split terminal is not yet supported — using single session')
     },
     terminalKill: () => {
+      const ide = (globalThis as unknown as { jarvisIde?: import('@/types/jarvis-ide').JarvisIdeApi }).jarvisIde
+      if (ide?.terminalList) {
+        ide.terminalList().then((sessions) => {
+          for (const s of sessions) ide.terminalKill({ id: s.id })
+        })
+      }
       p.setTerminalHistory([])
-      toast.info('Terminal buffer cleared')
+      toast.info('Terminal killed')
     },
     terminalRename: () => {
-      const name = globalThis.prompt('Terminal name', 'Terminal')
-      if (name) toast.success(`Terminal label: ${name}`)
+      toast.info('Terminal rename is not supported in single-session mode')
     },
     terminalClear: () => p.setTerminalHistory([]),
-    terminalFocusNext: () => toast.info('Single terminal view — use New/Split for more'),
+    terminalFocusNext: () => toast.info('Single terminal view'),
     terminalFocusPrev: () => toast.info('Single terminal view'),
 
     helpDocumentation: () => {
@@ -661,8 +670,16 @@ export function buildJarvisIdeMenuFactoryInput(p: JarvisIdeCodeEditorMenuFactory
     },
 
     modelSelect: () => {
-      const n = globalThis.prompt('Model id', p.ideChatModel)?.trim()
-      if (n) p.setIdeChatModel(n)
+      const opts = p.ideChatModelOptions
+      const hint = opts.map((m, i) => `${String(i + 1)}. ${m.label} (${m.id})`).join('\n')
+      const n = globalThis.prompt(`Select model:\n${hint}\n\nEnter number or model ID:`, p.ideChatModel)?.trim()
+      if (!n) return
+      const numChoice = Number.parseInt(n, 10)
+      if (!Number.isNaN(numChoice) && numChoice >= 1 && numChoice <= opts.length) {
+        p.setIdeChatModel(opts[numChoice - 1].id)
+      } else {
+        p.setIdeChatModel(n)
+      }
     },
     modelTemperature: () => {
       const n = globalThis.prompt('Temperature 0–2', String(p.ideTemp))

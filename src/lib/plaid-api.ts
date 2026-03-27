@@ -87,7 +87,8 @@ export async function getBalances(): Promise<string> {
     const currency = a.balances.iso_currency_code || 'GBP'
     const available = a.balances.available != null ? `${currency} ${a.balances.available.toFixed(2)}` : 'N/A'
     const current = a.balances.current != null ? `${currency} ${a.balances.current.toFixed(2)}` : 'N/A'
-    return `${a.name} (${a.type}${a.subtype ? `/${a.subtype}` : ''}, ****${a.mask || '??'}): Available: ${available}, Current: ${current}`
+    const sub = a.subtype ? '/' + a.subtype : ''
+    return `${a.name} (${a.type}${sub}, ****${a.mask || '??'}): Available: ${available}, Current: ${current}`
   }).join('\n')
 }
 

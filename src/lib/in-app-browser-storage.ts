@@ -2,6 +2,8 @@
  * Bookmarks and history for the in-app browser (localStorage; persists in Electron renderer).
  */
 
+import { randomIdSegment } from '@/lib/secure-random'
+
 export interface BrowserBookmark {
   id: string
   url: string
@@ -52,7 +54,7 @@ export function addBookmark(url: string, title: string): BrowserBookmark {
     return existing
   }
   const b: BrowserBookmark = {
-    id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    id: `bm_${Date.now()}_${randomIdSegment()}`,
     url: u,
     title: title.trim() || u,
     createdAt: Date.now(),
@@ -75,7 +77,7 @@ export function appendHistory(url: string, title: string): void {
   if (!u || u.startsWith('about:')) return
   const list = loadHistory().filter((h) => h.url !== u)
   const entry: BrowserHistoryEntry = {
-    id: `h_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    id: `h_${Date.now()}_${randomIdSegment()}`,
     url: u,
     title: title.trim() || u,
     visitedAt: Date.now(),

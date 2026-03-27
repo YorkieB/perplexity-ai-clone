@@ -3,6 +3,7 @@
  * Stores scheduled posts in localStorage and fires them when due.
  */
 
+import { randomIdSegment } from '@/lib/secure-random'
 import { postTweet } from './social-api'
 
 export interface ScheduledPost {
@@ -37,7 +38,7 @@ export function schedulePost(
   scheduledTime: string,
 ): ScheduledPost {
   const post: ScheduledPost = {
-    id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `sched-${Date.now()}-${randomIdSegment()}`,
     platform,
     text,
     scheduledTime,

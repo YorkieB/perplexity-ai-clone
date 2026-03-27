@@ -50,7 +50,10 @@ export function AgentBrowserPanel({ open, onOpenChange }: AgentBrowserPanelProps
       data.error != null
         ? `Error: ${data.error}`
         : JSON.stringify(data.result ?? data, null, 2)
-    setOutput((prev) => `${prev ? `${prev}\n\n---\n\n` : ''}${label}\n${text}`)
+    setOutput((prev) => {
+      const sep = prev ? `${prev}\n\n---\n\n` : ''
+      return `${sep}${label}\n${text}`
+    })
   }
 
   const runNavigate = async () => {

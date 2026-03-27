@@ -34,9 +34,12 @@ export async function searchHuggingFace(
   const data = await res.json() as { results: Array<{ id: string; description?: string; downloads?: number; pipeline_tag?: string }> }
   if (!data.results?.length) return `No ${type} found for "${query}".`
 
-  return data.results.map((r, i) =>
-    `${i + 1}. **${r.id}** — ${r.description?.slice(0, 120) || r.pipeline_tag || 'No description'}${r.downloads ? ` (${r.downloads.toLocaleString()} downloads)` : ''}`
-  ).join('\n')
+  return data.results
+    .map((r, i) => {
+      const dl = r.downloads ? ' (' + r.downloads.toLocaleString() + ' downloads)' : ''
+      return `${i + 1}. **${r.id}** — ${r.description?.slice(0, 120) || r.pipeline_tag || 'No description'}${dl}`
+    })
+    .join('\n')
 }
 
 export async function fetchDatasetSample(

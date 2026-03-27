@@ -56,7 +56,9 @@ export async function searchStories(
     const authorStr = r.authors.length > 0 ? ` by ${r.authors.join(', ')}` : ''
     const sourceTag = r.source === 'gutenberg' ? '[Book]' : '[Short Story]'
     const subjects = r.subjects?.slice(0, 3).join(', ')
-    return `${i + 1}. ${sourceTag} **${r.title}**${authorStr}${subjects ? ` — ${subjects}` : ''}\n   ID: ${r.id} | Source: ${r.source}${r.snippet ? `\n   "${r.snippet.slice(0, 150)}..."` : ''}`
+    const subjPart = subjects ? ' — ' + subjects : ''
+    const snippetPart = r.snippet ? '\n   "' + r.snippet.slice(0, 150) + '..."' : ''
+    return `${i + 1}. ${sourceTag} **${r.title}**${authorStr}${subjPart}\n   ID: ${r.id} | Source: ${r.source}${snippetPart}`
   }).join('\n')
 }
 

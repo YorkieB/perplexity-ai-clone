@@ -91,7 +91,7 @@ export function MessageActionToolbar({
     setSpeaking(true)
     const { done, cancel } = playTts(plain, { voice: ttsVoice })
     ttsCancelRef.current = cancel
-    void done.finally(() => {
+    done.finally(() => {
       ttsCancelRef.current = null
       setSpeaking(false)
     })

@@ -179,7 +179,7 @@ export function useWakeWord(opts: UseWakeWordOptions): UseWakeWordReturn {
       // Retry resume periodically if still suspended
       const resumeInterval = setInterval(() => {
         if (audioCtx && audioCtx.state === 'suspended') {
-          void audioCtx.resume().catch(() => {})
+          audioCtx.resume().catch(() => {})
         } else {
           clearInterval(resumeInterval)
         }
@@ -192,11 +192,12 @@ export function useWakeWord(opts: UseWakeWordOptions): UseWakeWordReturn {
       source.connect(analyser)
       const freqData = new Uint8Array(analyser.frequencyBinCount)
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : 'audio/ogg'
+      let mimeType = 'audio/ogg'
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        mimeType = 'audio/webm;codecs=opus'
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        mimeType = 'audio/webm'
+      }
 
       try {
         recorder = new MediaRecorder(stream, { mimeType })
@@ -221,7 +222,7 @@ export function useWakeWord(opts: UseWakeWordOptions): UseWakeWordReturn {
       }
     }
 
-    void init()
+    init().catch(() => {})
 
     return () => {
       cancelled = true
@@ -231,7 +232,7 @@ export function useWakeWord(opts: UseWakeWordOptions): UseWakeWordReturn {
       if (recorder?.state === 'recording') {
         try { recorder.stop() } catch { /* cleanup */ }
       }
-      if (audioCtx) void audioCtx.close().catch(() => {})
+      if (audioCtx) audioCtx.close().catch(() => {})
       if (stream) stream.getTracks().forEach(t => t.stop())
       setIsListening(false)
     }

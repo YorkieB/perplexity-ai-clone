@@ -69,8 +69,14 @@ export function pickPreferredSpeechVoice(
   const exactLang = source.filter((v) => v.lang.replace('_', '-').toLowerCase() === preferredLang.toLowerCase())
   const langFamily = source.filter((v) => v.lang.toLowerCase().startsWith(primary + '-'))
 
-  const pool =
-    exactLang.length > 0 ? exactLang : langFamily.length > 0 ? langFamily : source.filter((v) => v.lang.toLowerCase().startsWith('en'))
+  let pool: typeof source
+  if (exactLang.length > 0) {
+    pool = exactLang
+  } else if (langFamily.length > 0) {
+    pool = langFamily
+  } else {
+    pool = source.filter((v) => v.lang.toLowerCase().startsWith('en'))
+  }
 
   const finalPool = pool.length > 0 ? pool : source
 

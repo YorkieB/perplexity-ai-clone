@@ -13,6 +13,17 @@ export interface JarvisIdeRunCommandResult {
   error?: string
 }
 
+export interface JarvisTerminalDataEvent {
+  id: number
+  stream: 'stdout' | 'stderr'
+  data: string
+}
+
+export interface JarvisTerminalExitEvent {
+  id: number
+  exitCode: number | null
+}
+
 export interface JarvisIdeApi {
   appRoot: () => Promise<string>
   openFiles: () => Promise<Array<{ path: string; name: string; content?: string; error?: string }>>
@@ -32,6 +43,13 @@ export interface JarvisIdeApi {
   toggleFullscreen: () => Promise<boolean>
   git: (opts: { cwd: string; args: string[] }) => Promise<JarvisIdeGitResult>
   runCommand: (opts: { cwd: string; command: string }) => Promise<JarvisIdeRunCommandResult>
+
+  terminalCreate: (opts?: { cwd?: string }) => Promise<{ id: number; cwd: string }>
+  terminalWrite: (opts: { id: number; data: string }) => Promise<{ ok: boolean; error?: string }>
+  terminalKill: (opts: { id: number }) => Promise<{ ok: boolean; error?: string }>
+  terminalList: () => Promise<Array<{ id: number; cwd: string; alive: boolean }>>
+  onTerminalData: (handler: (event: JarvisTerminalDataEvent) => void) => () => void
+  onTerminalExit: (handler: (event: JarvisTerminalExitEvent) => void) => () => void
 }
 
 declare global {

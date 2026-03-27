@@ -15,7 +15,9 @@ export default defineConfig(({ mode }) => {
     build: {
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
+        external: ['faiss-node'],
         output: {
+          /* eslint-disable sonarjs/cognitive-complexity -- explicit Rollup vendor chunk map */
           manualChunks(id) {
             if (id.includes('node_modules')) {
               if (/[\\/]react(-dom)?[\\/]/.test(id) || id.includes('react-error-boundary')) return 'vendor-react'
@@ -37,6 +39,7 @@ export default defineConfig(({ mode }) => {
               if (id.includes('react-plaid-link')) return 'vendor-plaid'
             }
           },
+          /* eslint-enable sonarjs/cognitive-complexity */
         },
       },
     },
@@ -46,12 +49,18 @@ export default defineConfig(({ mode }) => {
       },
     },
     optimizeDeps: {
+      exclude: ['faiss-node'],
       esbuildOptions: {
         define: { 'process.env.NODE_ENV': '"development"' },
       },
     },
     server: {
       proxy: {
+        /** Jarvis health dashboard (`HealthDashboard.tsx`) — set `VITE_HEALTH_API_PROXY` to your Express bind URL. */
+        '/api/health': {
+          target: env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:3000',
+          changeOrigin: true,
+        },
         '/ws/realtime': {
           target: 'wss://api.openai.com',
           ws: true,

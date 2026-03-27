@@ -38,6 +38,17 @@ function hostAllowed(urlStr) {
   })
 }
 
+/** Reflect only local dev origins; never use wildcard ACAO. */
+const LOCAL_DEV_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i
+
+function corsAllowOrigin(req) {
+  const origin = req.headers.origin
+  if (typeof origin === 'string' && LOCAL_DEV_ORIGIN_RE.test(origin)) {
+    return origin
+  }
+  return `http://127.0.0.1:${PORT}`
+}
+
 let mcpClient = null
 let connectPromise = null
 
@@ -61,11 +72,11 @@ async function getMcpClient() {
   return connectPromise
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, req, status, body) {
   const data = JSON.stringify(body)
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': corsAllowOrigin(req),
   })
   res.end(data)
 }
@@ -86,10 +97,49 @@ function readBody(req) {
   })
 }
 
+async function handleHealth(req, res) {
+  try {
+    await getMcpClient()
+    sendJson(res, req, 200, { ok: true, mcp: 'connected' })
+  } catch (e) {
+    sendJson(res, req, 503, {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+    })
+  }
+}
+
+async function handleTools(req, res) {
+  try {
+    const client = await getMcpClient()
+    const listed = await client.listTools()
+    sendJson(res, req, 200, { tools: listed.tools ?? [] })
+  } catch (e) {
+    sendJson(res, req, 500, { error: e instanceof Error ? e.message : String(e) })
+  }
+}
+
+async function handleCall(req, res) {
+  const body = await readBody(req)
+  const name = body?.name
+  const args = body?.arguments ?? {}
+  if (!name || typeof name !== 'string') {
+    sendJson(res, req, 400, { error: 'Missing tool name' })
+    return
+  }
+  if (name === 'browser_navigate' && typeof args.url === 'string' && !hostAllowed(args.url)) {
+    sendJson(res, req, 403, { error: 'URL host not in AGENT_BROWSER_ALLOW_HOSTS allowlist' })
+    return
+  }
+  const client = await getMcpClient()
+  const result = await client.callTool({ name, arguments: args })
+  sendJson(res, req, 200, { result })
+}
+
 const server = createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': corsAllowOrigin(req),
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     })
@@ -99,53 +149,25 @@ const server = createServer(async (req, res) => {
 
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
 
-  if (req.method === 'GET' && url.pathname === '/health') {
-    try {
-      await getMcpClient()
-      sendJson(res, 200, { ok: true, mcp: 'connected' })
-    } catch (e) {
-      sendJson(res, 503, {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-      })
+  try {
+    if (req.method === 'GET' && url.pathname === '/health') {
+      await handleHealth(req, res)
+      return
     }
+    if (req.method === 'GET' && url.pathname === '/tools') {
+      await handleTools(req, res)
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/call') {
+      await handleCall(req, res)
+      return
+    }
+  } catch (e) {
+    sendJson(res, req, 500, { error: e instanceof Error ? e.message : String(e) })
     return
   }
 
-  if (req.method === 'GET' && url.pathname === '/tools') {
-    try {
-      const client = await getMcpClient()
-      const listed = await client.listTools()
-      sendJson(res, 200, { tools: listed.tools ?? [] })
-    } catch (e) {
-      sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
-    }
-    return
-  }
-
-  if (req.method === 'POST' && url.pathname === '/call') {
-    try {
-      const body = await readBody(req)
-      const name = body?.name
-      const args = body?.arguments ?? {}
-      if (!name || typeof name !== 'string') {
-        sendJson(res, 400, { error: 'Missing tool name' })
-        return
-      }
-      if (name === 'browser_navigate' && typeof args.url === 'string' && !hostAllowed(args.url)) {
-        sendJson(res, 403, { error: 'URL host not in AGENT_BROWSER_ALLOW_HOSTS allowlist' })
-        return
-      }
-      const client = await getMcpClient()
-      const result = await client.callTool({ name, arguments: args })
-      sendJson(res, 200, { result })
-    } catch (e) {
-      sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
-    }
-    return
-  }
-
-  sendJson(res, 404, { error: 'Not found' })
+  sendJson(res, req, 404, { error: 'Not found' })
 })
 
 server.listen(PORT, '127.0.0.1', () => {

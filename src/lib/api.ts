@@ -156,20 +156,25 @@ export async function executeModelCouncil(
   selectedModels: string[] = ['gpt-4o', 'gpt-4o-mini']
 ): Promise<ModelCouncilResult> {
   const models = selectedModels.length > 0 ? selectedModels : ['gpt-4o', 'gpt-4o-mini']
-  
+
+  let answerStyleInstruction: string
+  if (contextSection) {
+    answerStyleInstruction =
+      'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
+  } else if (fileContext) {
+    answerStyleInstruction =
+      'Analyze the provided files and answer the user query based on the file content.'
+  } else {
+    answerStyleInstruction = 'Provide a helpful, accurate answer based on your knowledge.'
+  }
+
   const basePrompt = `You are an advanced AI research assistant.${
     systemPrompt ? ` ${systemPrompt}` : ''
   }${contextSection}${fileContext}
 
 User query: ${query}
 
-${
-  contextSection
-    ? 'Using the web search results provided above, give a comprehensive answer that synthesizes information from multiple sources. Reference the sources naturally in your response.'
-    : fileContext
-    ? 'Analyze the provided files and answer the user query based on the file content.'
-    : 'Provide a helpful, accurate answer based on your knowledge.'
-}`
+${answerStyleInstruction}`
 
   const responses = await Promise.all(
     models.map(async (model) => {

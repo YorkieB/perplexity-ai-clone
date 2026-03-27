@@ -50,10 +50,12 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     onMusicGeneratingLabel: setMusicGeneratingLabel,
     voiceRegistry: settings?.voiceRegistry ?? null,
     enableVoiceAnalysis: settings?.enableVoiceAnalysis ?? false,
+    userSettings: settings,
   })
 
   const handleBargeIn = useCallback(() => {
     pipeline.bargeIn()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipeline.bargeIn])
 
   useEffect(() => {

@@ -43,12 +43,16 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string) => void
+  readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilot?: boolean) => void
   readonly isLoading?: boolean
   readonly placeholder?: string
   readonly advancedMode: boolean
   readonly onAdvancedModeChange: (enabled: boolean) => void
   readonly onVoiceOpen?: () => void
+  readonly autopilot?: boolean
+  readonly onToggleAutopilot?: () => void
+  readonly onStopAutopilot?: () => void
+  readonly autopilotRunning?: boolean
 }
 
 export function QueryInput({
@@ -58,6 +62,10 @@ export function QueryInput({
   advancedMode,
   onAdvancedModeChange,
   onVoiceOpen,
+  autopilot = false,
+  onToggleAutopilot,
+  onStopAutopilot,
+  autopilotRunning = false,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -86,8 +94,14 @@ export function QueryInput({
     if (!useDigitalOcean) { setDoModels([]); return }
     let cancelled = false
     fetchDigitalOceanModels(doToken || undefined)
-      .then((list) => { if (!cancelled) setDoModels(list) })
-      .catch(() => { if (!cancelled) setDoModels([]) })
+      .then((list) => { 
+        if (!cancelled) {
+          setDoModels(list)
+          if (list.length === 0) {
+            console.warn('[QueryInput] No DigitalOcean models available, using fallback')
+          }
+        }
+      })
     return () => { cancelled = true }
   }, [useDigitalOcean, doToken])
 
@@ -97,7 +111,7 @@ export function QueryInput({
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
     ]
     const doItems = doModels.map((m) => ({
-      id: m.id,
+      id: `do:${m.id}`,
       label: m.name,
     }))
     return [...openai, ...doItems]
@@ -127,7 +141,7 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel)
+      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel, autopilot)
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
@@ -459,9 +473,38 @@ export function QueryInput({
         </div>
 
         <div className="px-3 pb-2 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 mt-1">
-          <span className="text-xs text-muted-foreground">
-            Type / for search modes and shortcuts
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              Type / for search modes and shortcuts
+            </span>
+            {onToggleAutopilot && (
+              <button
+                type="button"
+                onClick={onToggleAutopilot}
+                className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
+                style={{
+                  borderColor: autopilot ? '#22c55e50' : undefined,
+                  background: autopilot ? '#22c55e18' : undefined,
+                  color: autopilot ? '#22c55e' : undefined,
+                }}
+                title={autopilot ? 'Disable autopilot mode' : 'Enable autopilot — Jarvis works autonomously'}
+              >
+                {autopilot ? '⏸' : '▶'} Autopilot
+                {autopilot && autopilotRunning && (
+                  <span className="ml-1 h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                )}
+              </button>
+            )}
+            {autopilot && autopilotRunning && onStopAutopilot && (
+              <button
+                type="button"
+                onClick={onStopAutopilot}
+                className="rounded-md border border-red-500/30 px-2 py-1 text-[11px] font-bold text-red-500 hover:bg-red-500/10"
+              >
+                ■ Stop
+              </button>
+            )}
+          </div>
           <button
             type="button"
             id="query-input-voice"

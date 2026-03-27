@@ -185,13 +185,13 @@ export function useSpeechRecognition(options: {
   const releaseMic = useCallback(() => {
     cancelAnimationFrame(rafRef.current)
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      try { recorderRef.current.stop() } catch {}
+      try { recorderRef.current.stop() } catch { /* ignored */ }
     }
     recorderRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
     if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-      audioCtxRef.current.close().catch(() => {})
+      audioCtxRef.current.close().catch(() => { /* ignored */ })
     }
     audioCtxRef.current = null
     analyserRef.current = null
@@ -238,7 +238,7 @@ export function useSpeechRecognition(options: {
     wantListening.current = false
     cancelAnimationFrame(rafRef.current)
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      try { recorderRef.current.stop() } catch {}
+      try { recorderRef.current.stop() } catch { /* ignored */ }
     }
     recorderRef.current = null
     chunksRef.current = []

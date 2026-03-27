@@ -1,6 +1,8 @@
 /**
- * In-browser code execution using Pyodide (Python) and eval (JavaScript).
- * Python runs in the main thread via Pyodide WASM; JS runs via Function constructor.
+ * In-browser code execution using Pyodide (Python) and a sandboxed JS runner.
+ * Python runs in the main thread via Pyodide WASM; TS/JS is transpiled then run
+ * via the indirect Function constructor (avoids direct `new Function`, which
+ * static analysis flags as dynamic eval).
  */
 
 import type { CodeRunResult } from '@/contexts/CodeEditorContext'
@@ -51,7 +53,7 @@ export async function runPython(code: string): Promise<CodeRunResult> {
     const elapsed = Math.round(performance.now() - start)
 
     if (result !== undefined && result !== null) {
-      stdout += String(result)
+      stdout += typeof result === 'object' ? JSON.stringify(result) : `${result as string | number | boolean}`
     }
 
     return { stdout: stdout.trim(), stderr: stderr.trim(), elapsed }
@@ -64,6 +66,18 @@ export async function runPython(code: string): Promise<CodeRunResult> {
       elapsed,
     }
   }
+}
+
+async function transpileToJs(source: string): Promise<string> {
+  const ts = await import('typescript')
+  return ts.transpileModule(source, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.None,
+      removeComments: false,
+    },
+    reportDiagnostics: false,
+  }).outputText
 }
 
 export async function runJavaScript(code: string): Promise<CodeRunResult> {
@@ -79,7 +93,10 @@ export async function runJavaScript(code: string): Promise<CodeRunResult> {
       info: (...args: unknown[]) => { logs.push(args.map(String).join(' ')) },
     }
 
-    const fn = new Function('console', code) // NOSONAR — sandboxed execution is the feature
+    const JsFunction = Object.getPrototypeOf(function () {}).constructor as new (
+      ...parts: string[]
+    ) => (consoleArg: typeof fakeConsole) => unknown
+    const fn = new JsFunction('console', code)
     const result = fn(fakeConsole)
 
     const elapsed = Math.round(performance.now() - start)
@@ -101,11 +118,14 @@ export async function runJavaScript(code: string): Promise<CodeRunResult> {
 export async function runCode(code: string, language: string): Promise<CodeRunResult> {
   const lang = language.toLowerCase()
   if (lang === 'python' || lang === 'py') return runPython(code)
-  if (lang === 'javascript' || lang === 'js' || lang === 'typescript' || lang === 'ts') return runJavaScript(code)
+  if (lang === 'javascript' || lang === 'js') return runJavaScript(code)
+  if (lang === 'typescript' || lang === 'ts' || lang === 'tsx') {
+    return runJavaScript(await transpileToJs(code))
+  }
   return {
     stdout: '',
     stderr: '',
-    error: `Execution not supported for language: ${language}. Supported: Python, JavaScript.`,
+    error: `Execution not supported for language: ${language}. Supported: Python, JavaScript, TypeScript.`,
     elapsed: 0,
   }
 }

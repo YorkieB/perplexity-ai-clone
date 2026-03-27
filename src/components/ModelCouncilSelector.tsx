@@ -16,7 +16,7 @@ import { Hammer, CheckCircle } from '@phosphor-icons/react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { fetchDigitalOceanModels } from '@/lib/digitalocean-api'
-import { toast } from 'sonner'
+
 import { ModelBadges } from '@/components/ModelBadges'
 
 interface ModelOption {
@@ -42,10 +42,7 @@ const defaultUserSettings: UserSettings = {
 const fallbackModels: ModelOption[] = [
   { id: 'gpt-4o', name: 'GPT-4o', description: 'Latest OpenAI model with strong reasoning and speed' },
   { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Efficient and cost-effective with good performance' },
-  { id: 'claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', description: "Anthropic's latest model with excellent reasoning and analysis" },
-  { id: 'claude-3-opus', name: 'Claude 3 Opus', description: 'Top-tier Anthropic model for complex tasks' },
-  { id: 'claude-3-haiku', name: 'Claude 3 Haiku', description: 'Fast and efficient Claude model for quick responses' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: "Google's fast multimodal model with broad capabilities" },
+  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', description: 'Capable OpenAI model for complex reasoning tasks' },
 ]
 
 interface ModelCouncilSelectorProps {
@@ -76,7 +73,7 @@ export function ModelCouncilSelector({
   const availableModels: ModelOption[] = useMemo(() => {
     if (useDigitalOceanCatalog && remoteModels.length > 0) {
       return remoteModels.map((m, i) => ({
-        id: m.id,
+        id: `do:${m.id}`,
         name: m.name,
         description: m.description || 'DigitalOcean serverless model',
         badge: i < 3 ? 'DO' : undefined,
@@ -99,11 +96,12 @@ export function ModelCouncilSelector({
     setModelsLoading(true)
     fetchDigitalOceanModels(doToken || undefined)
       .then((list) => {
-        if (!cancelled) setRemoteModels(list)
-      })
-      .catch((err: unknown) => {
-        toast.error(err instanceof Error ? err.message : 'Failed to load models')
-        if (!cancelled) setRemoteModels([])
+        if (!cancelled) {
+          setRemoteModels(list)
+          if (list.length === 0) {
+            console.warn('[ModelCouncilSelector] No DigitalOcean models returned, using fallback')
+          }
+        }
       })
       .finally(() => {
         if (!cancelled) setModelsLoading(false)

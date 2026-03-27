@@ -84,6 +84,9 @@ export interface CodeEditorControl {
   getWorkspaceRoot: () => string | null
   runTerminalCommand: (command: string) => Promise<JarvisIdeRunCommandResult>
 
+  // Git
+  runGitCommand: (args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }>
+
   // Templates
   createFromTemplate: (templateName: string) => string | null
   getAvailableTemplates: () => string[]

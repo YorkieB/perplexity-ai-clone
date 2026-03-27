@@ -10,12 +10,19 @@ export type ChatUserContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
 
+const DO_MODEL_PREFIX = 'do:'
+
+/** Strip the `do:` routing prefix (if present) to get the actual model ID for the upstream API. */
+export function stripDoPrefix(model: string): string {
+  return model.startsWith(DO_MODEL_PREFIX) ? model.slice(DO_MODEL_PREFIX.length) : model
+}
+
 /**
  * Returns extra headers needed to route a model to DigitalOcean Gradient inference.
- * Models with a `/` in the ID (e.g. `meta-llama/Llama-3.3-70B-Instruct`) are treated as DO models.
+ * Models prefixed with `do:` (e.g. `do:openai-gpt-5`) or containing `/` are routed to DO.
  */
 function providerHeaders(model: string): Record<string, string> {
-  if (model.includes('/')) {
+  if (model.startsWith(DO_MODEL_PREFIX) || model.includes('/')) {
     return { 'x-llm-provider': 'digitalocean' }
   }
   return {}
@@ -36,7 +43,7 @@ export async function callLlm(
   jsonMode = false
 ): Promise<string> {
   const body: Record<string, unknown> = {
-    model,
+    model: stripDoPrefix(model),
     messages: [
       { role: 'system', content: 'You are a helpful assistant.' },
       { role: 'user', content: prompt },
@@ -120,7 +127,7 @@ export async function callLlmWithTools(
   options?: CallLlmWithToolsOptions,
 ): Promise<CallLlmToolsResult> {
   const body: Record<string, unknown> = {
-    model,
+    model: stripDoPrefix(model),
     messages,
     temperature: options?.temperature ?? 0.7,
     max_tokens: options?.max_tokens ?? 4096,
@@ -248,7 +255,7 @@ export async function* callLlmStream(
     headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
     signal: opts.signal,
     body: JSON.stringify({
-      model,
+      model: stripDoPrefix(model),
       messages: [
         { role: 'system', content: opts.systemPrompt ?? 'You are a helpful assistant.' },
         { role: 'user', content: userContent },

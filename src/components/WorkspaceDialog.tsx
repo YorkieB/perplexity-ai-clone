@@ -24,6 +24,7 @@ export function WorkspaceDialog({ open, onOpenChange, workspace, onSave }: Works
     setName(workspace?.name ?? '')
     setDescription(workspace?.description ?? '')
     setCustomSystemPrompt(workspace?.customSystemPrompt ?? '')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, workspace?.id])
 
   /**

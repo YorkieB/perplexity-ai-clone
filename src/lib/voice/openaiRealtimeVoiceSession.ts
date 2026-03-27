@@ -173,7 +173,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         const [stream] = ev.streams
         if (stream && remoteAudio) {
           remoteAudio.srcObject = stream
-          void remoteAudio.play().catch(() => {
+          remoteAudio.play().catch(() => {
             /* may require user gesture; autoplay policy */
           })
         }
@@ -270,14 +270,13 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       if (generation !== this.connectGeneration) {
         return
       }
-      const err =
-        e instanceof VoiceRealtimeError
-          ? e
-          : new VoiceRealtimeError(
-              'WEBRTC_NEGOTIATION_FAILED',
-              e instanceof Error ? e.message : 'Voice connection failed',
-              { cause: e }
-            )
+      let err: VoiceRealtimeError
+      if (e instanceof VoiceRealtimeError) {
+        err = e
+      } else {
+        const msg = e instanceof Error ? e.message : 'Voice connection failed'
+        err = new VoiceRealtimeError('WEBRTC_NEGOTIATION_FAILED', msg, { cause: e })
+      }
       this.emitError(err)
       this.cleanupTracksAndPc()
       throw err
@@ -319,7 +318,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
 
   sendAudioChunk(chunk: ArrayBuffer | Uint8Array): void {
     /* WebRTC sends mic audio via the added MediaStreamTrack; chunk APIs are for future/non-WebRTC paths. */
-    void chunk
+    if (chunk.byteLength < 0) return
   }
 
   abortAssistant(): void {

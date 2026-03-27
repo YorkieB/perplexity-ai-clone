@@ -117,8 +117,7 @@ export function VoiceConversationModal({
         return
       }
 
-      const { focusMode: fm, timeRange: tr, useVoiceSearch: uvs, workspaceSystemPrompt: ws } =
-        voiceCtxRef.current
+      const { focusMode: fm, useVoiceSearch: uvs, workspaceSystemPrompt: ws } = voiceCtxRef.current
       const systemPrompt = ws?.trim()
         ? `You are a helpful assistant. ${ws.trim()}`
         : 'You are a helpful assistant.'
@@ -245,7 +244,7 @@ export function VoiceConversationModal({
         const transcript = (r[0]?.transcript ?? '').trim()
         if (r.isFinal && transcript) {
           setLastHeard(transcript)
-          void runVoiceTurnRef.current(transcript)
+          Promise.resolve(runVoiceTurnRef.current(transcript)).catch(() => {})
           break
         }
       }
@@ -286,8 +285,9 @@ export function VoiceConversationModal({
     onOpenChange(next)
   }
 
-  const phaseLabel =
-    phase === 'listening' ? 'Listening' : phase === 'thinking' ? 'Thinking' : 'Speaking'
+  let phaseLabel = 'Speaking'
+  if (phase === 'listening') phaseLabel = 'Listening'
+  else if (phase === 'thinking') phaseLabel = 'Thinking'
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>

@@ -4,6 +4,7 @@ import {
   createIdeAssistantMessage,
   createIdeUserMessage,
   type IdeChatMessage,
+  type IdeAttachment,
 } from '@/components/IdeChatPanel'
 import { toast } from 'sonner'
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react'
@@ -18,11 +19,15 @@ import {
 import { useCodeEditorRegister, useCodeEditorItems, useCodeEditorRunning } from '@/contexts/useCodeEditorHooks'
 import type { CodeEditorControl } from '@/contexts/CodeEditorContext'
 import { runCode } from '@/lib/code-runner'
+import { randomIdSegment } from '@/lib/secure-random'
 import { cn } from '@/lib/utils'
-import type { IdeAiPreset, IdeChatPayload, IdeReasoningMode } from '@/lib/jarvis-ide-chat-types'
-import { ideFsRead, ideFsWrite, ideGit, ideJoinPath, ideRunCommand } from '@/lib/jarvis-ide-bridge'
+import type { IdeAiPreset, IdeChatPayload, IdeReasoningMode, IdeChatMode } from '@/lib/jarvis-ide-chat-types'
+import { ideFsRead, ideFsWrite, ideGit, ideJoinPath, ideRunCommand, ideWalkFiles } from '@/lib/jarvis-ide-bridge'
 import type { JarvisIdeRunCommandResult } from '@/types/jarvis-ide'
 import { fetchAgentBrowserHealth } from '@/lib/agent-browser-mcp'
+import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
+import type { UserSettings } from '@/lib/types'
 import { JarvisExplorerBadgeStrip } from '@/components/jarvis/JarvisExplorerBadgeStrip'
 import {
   computeExplorerBadgesForFile,
@@ -251,6 +256,143 @@ function parseProblems(result: { stdout: string; stderr: string; error?: string 
   return problems
 }
 
+/* ── Workspace explorer tree (folder hierarchy from relative paths) ── */
+interface WorkspaceTreeNode {
+  segment: string
+  relPath: string
+  isFile: boolean
+  children: WorkspaceTreeNode[]
+}
+
+function buildWorkspaceTreeFromRelPaths(relFiles: readonly string[]): WorkspaceTreeNode[] {
+  type Mutable = { seg: string; rel: string; file: boolean; kids: Map<string, Mutable> }
+  const synthetic: Mutable = { seg: '', rel: '', file: false, kids: new Map() }
+
+  for (const rel of relFiles) {
+    const parts = rel.split('/').filter(Boolean)
+    if (parts.length === 0) continue
+    let cur = synthetic
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      const isLast = i === parts.length - 1
+      if (!cur.kids.has(part)) {
+        cur.kids.set(part, { seg: part, rel: isLast ? rel : '', file: isLast, kids: new Map() })
+      }
+      const node = cur.kids.get(part)!
+      if (isLast) {
+        node.file = true
+        node.rel = rel
+      } else {
+        node.file = false
+      }
+      cur = node
+    }
+  }
+
+  const sortKids = (m: Map<string, Mutable>): WorkspaceTreeNode[] => {
+    const arr = [...m.values()]
+    arr.sort((a, b) => {
+      if (a.file !== b.file) return a.file ? 1 : -1
+      return a.seg.localeCompare(b.seg, undefined, { sensitivity: 'base' })
+    })
+    return arr.map((n) => ({
+      segment: n.seg,
+      relPath: n.rel,
+      isFile: n.file,
+      children: n.file ? [] : sortKids(n.kids),
+    }))
+  }
+
+  return sortKids(synthetic.kids)
+}
+
+interface WorkspaceRelPathTreeProps {
+  nodes: WorkspaceTreeNode[]
+  depth: number
+  folderPrefix: string
+  expandedDirs: ReadonlySet<string>
+  onToggleDir: (folderKey: string) => void
+  tc: string
+  fileBadges: ReadonlyMap<string, JarvisExplorerBadgeId[]>
+  onOpenRelPath: (rel: string) => void
+  onDeleteRelPath: (rel: string) => void
+}
+
+function WorkspaceRelPathTree({
+  nodes,
+  depth,
+  folderPrefix,
+  expandedDirs,
+  onToggleDir,
+  tc,
+  fileBadges,
+  onOpenRelPath,
+  onDeleteRelPath,
+}: WorkspaceRelPathTreeProps) {
+  return (
+    <>
+      {nodes.map((node) => {
+        if (!node.isFile) {
+          const folderKey = `${folderPrefix}${node.segment}`
+          const expanded = expandedDirs.has(folderKey)
+          const rowPad = Math.min(depth, 14) * 10 + 4
+          return (
+            <div key={folderKey} className="select-none">
+              <button
+                type="button"
+                className="w-full flex items-center gap-1 py-0.5 text-[11px] rounded-sm hover:bg-white/5 text-left font-mono"
+                style={{ paddingLeft: rowPad, color: `${tc}95` }}
+                onClick={() => onToggleDir(folderKey)}
+              >
+                <span className="w-3 flex-shrink-0 text-center">{expanded ? '▼' : '▶'}</span>
+                <span className="opacity-80 flex-shrink-0">📁</span>
+                <span className="truncate">{node.segment}</span>
+              </button>
+              {expanded && node.children.length > 0 && (
+                <WorkspaceRelPathTree
+                  nodes={node.children}
+                  depth={depth + 1}
+                  folderPrefix={`${folderKey}/`}
+                  expandedDirs={expandedDirs}
+                  onToggleDir={onToggleDir}
+                  tc={tc}
+                  fileBadges={fileBadges}
+                  onOpenRelPath={onOpenRelPath}
+                  onDeleteRelPath={onDeleteRelPath}
+                />
+              )}
+            </div>
+          )
+        }
+        const rel = node.relPath
+        const ids = fileBadges.get(rel) ?? []
+        const rowPad = Math.min(depth, 14) * 10 + 4
+        return (
+          <div
+            key={rel}
+            className="group flex items-center gap-1 py-0.5 text-[11px] rounded-sm hover:bg-white/5 font-mono"
+            style={{ paddingLeft: rowPad, color: `${tc}90` }}
+            title={rel}
+          >
+            <button type="button" className="truncate min-w-0 flex-1 text-left" onClick={() => onOpenRelPath(rel)}>
+              {node.segment}
+            </button>
+            <JarvisExplorerBadgeStrip ids={ids} tc={tc} className="normal-case flex-shrink-0" />
+            <button
+              type="button"
+              className="opacity-0 group-hover:opacity-60 hover:opacity-100 text-[10px] flex-shrink-0 px-0.5"
+              title="Delete file"
+              onClick={() => onDeleteRelPath(rel)}
+            >
+              🗑
+            </button>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    MAIN IDE COMPONENT
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -282,6 +424,12 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
   const [showIdeChat, setShowIdeChat] = useState(true)
   const [ideChatMessages, setIdeChatMessages] = useState<IdeChatMessage[]>([])
   const [ideChatLoading, setIdeChatLoading] = useState(false)
+  const [ideChatMode, setIdeChatMode] = useState<IdeChatMode>('chat')
+
+  // Autopilot mode
+  const [autopilotOn, setAutopilotOn] = useState(false)
+  const [autopilotStatus, setAutopilotStatus] = useState<'idle' | 'running' | 'paused'>('idle')
+  const autopilotAbortRef = useRef<AbortController | null>(null)
 
   // Editor settings
   const [showMinimap, setShowMinimap] = useState(true)
@@ -310,6 +458,10 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
   const [terminalHistory, setTerminalHistory] = useState<Array<{ type: 'stdout' | 'stderr' | 'error' | 'info'; text: string; time: number }>>([])
   const [terminalShellBusy, setTerminalShellBusy] = useState(false)
   const [terminalInput, setTerminalInput] = useState('')
+  const [terminalSessionId, setTerminalSessionId] = useState<number | null>(null)
+  const [terminalCwd, setTerminalCwd] = useState<string | null>(null)
+  const [cmdHistory, setCmdHistory] = useState<string[]>([])
+  const [cmdHistoryIdx, setCmdHistoryIdx] = useState(-1)
   const [problems, setProblems] = useState<Problem[]>([])
   const [qualityProblems, setQualityProblems] = useState<Problem[]>([])
   const [qualityLoading, setQualityLoading] = useState(false)
@@ -335,12 +487,44 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
   const [gitPorcelainMap, setGitPorcelainMap] = useState<Map<string, GitPorcelainEntry>>(() => new Map())
   const [gitRemoteCounts, setGitRemoteCounts] = useState<{ ahead: number; behind: number } | null>(null)
   const [workspaceTreeOpen, setWorkspaceTreeOpen] = useState(true)
+  const [workspaceWalkLoading, setWorkspaceWalkLoading] = useState(false)
+  const [explorerExpandedDirs, setExplorerExpandedDirs] = useState<Set<string>>(() => new Set())
   const [extensionsPackageJson, setExtensionsPackageJson] = useState<string | null>(null)
   const [ideChatModel, setIdeChatModel] = useState('gpt-4o-mini')
   const [ideTemp, setIdeTemp] = useState(0.7)
   const [ideMaxTok, setIdeMaxTok] = useState(4096)
   const [ideReasoning, setIdeReasoning] = useState<IdeReasoningMode>('auto')
   const [debugLogLines, setDebugLogLines] = useState<string[]>([])
+  const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
+
+  const [userSettings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
+  const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
+  const doToken = userSettings?.apiKeys?.digitalOcean?.trim()
+  const useDigitalOcean = Boolean(doToken) || useEnvInference
+
+  useEffect(() => {
+    if (!useDigitalOcean) { setDoModels([]); return }
+    let cancelled = false
+    fetchDigitalOceanModels(doToken || undefined)
+      .then((list) => { 
+        if (!cancelled) {
+          setDoModels(list)
+          if (list.length === 0) {
+            console.warn('[CodeEditorModal] No DigitalOcean models available')
+          }
+        }
+      })
+    return () => { cancelled = true }
+  }, [useDigitalOcean, doToken])
+
+  const ideChatModelOptions = useMemo(() => {
+    const base = [
+      { id: 'gpt-4o', label: 'GPT-4o' },
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+    ]
+    const doItems = doModels.map((m) => ({ id: `do:${m.id}`, label: m.name }))
+    return [...base, ...doItems]
+  }, [doModels])
 
   const hasElectronFs = globalThis.window?.jarvisIde !== undefined
 
@@ -349,19 +533,105 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
   }, [workspaceRoot])
 
   useEffect(() => {
+    if (!workspaceRoot) {
+      setWorkspaceWalkLoading(false)
+      setWorkspaceRelFiles([])
+      return
+    }
+    if (!open || !hasElectronFs) {
+      setWorkspaceWalkLoading(false)
+      return
+    }
+    let cancelled = false
+    setWorkspaceWalkLoading(true)
+    ;(async () => {
+      try {
+        const rel = await ideWalkFiles(workspaceRoot)
+        if (!cancelled) setWorkspaceRelFiles(rel.slice(0, 2000))
+      } catch {
+        if (!cancelled) setWorkspaceRelFiles([])
+      } finally {
+        if (!cancelled) setWorkspaceWalkLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, workspaceRoot, hasElectronFs])
+
+  useEffect(() => {
+    const dirs = new Set<string>()
+    for (const rel of workspaceRelFiles) {
+      const parts = rel.split('/').filter(Boolean)
+      for (let i = 0; i < parts.length - 1; i++) {
+        dirs.add(parts.slice(0, i + 1).join('/'))
+      }
+    }
+    setExplorerExpandedDirs(dirs)
+  }, [workspaceRelFiles])
+
+  useEffect(() => {
     setQualityProblems([])
     if (!workspaceRoot || !hasElectronFs) {
       setWorkspacePackageJson(null)
       setWorkspaceTsconfigJson(null)
       return
     }
-    void (async () => {
+    ;(async () => {
       const pj = await ideFsRead(ideJoinPath(workspaceRoot, 'package.json'))
       setWorkspacePackageJson(pj.ok && pj.content ? pj.content : null)
       const ts = await ideFsRead(ideJoinPath(workspaceRoot, 'tsconfig.json'))
       setWorkspaceTsconfigJson(ts.ok && ts.content ? ts.content : null)
-    })()
+    })().catch(() => {})
   }, [workspaceRoot, hasElectronFs])
+
+  // Auto-create a persistent terminal session
+  const terminalSessionRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!hasElectronFs || !open) return
+    const ide = (globalThis as unknown as { jarvisIde: import('@/types/jarvis-ide').JarvisIdeApi }).jarvisIde
+    if (!ide.terminalCreate) return
+
+    let cancelled = false
+
+    const initSession = async () => {
+      const existing = await ide.terminalList()
+      if (cancelled) return
+      if (existing.length > 0 && existing[0].alive) {
+        setTerminalSessionId(existing[0].id)
+        setTerminalCwd(existing[0].cwd)
+        terminalSessionRef.current = existing[0].id
+        return
+      }
+      const s = await ide.terminalCreate({ cwd: workspaceRoot || undefined })
+      if (cancelled) return
+      setTerminalSessionId(s.id)
+      setTerminalCwd(s.cwd)
+      terminalSessionRef.current = s.id
+    }
+
+    initSession()
+
+    const offData = ide.onTerminalData((evt) => {
+      if (cancelled) return
+      const t = evt.stream === 'stderr' ? 'stderr' : 'stdout'
+      setTerminalHistory((prev) => [...prev, { type: t, text: evt.data, time: Date.now() }])
+    })
+
+    const offExit = ide.onTerminalExit((evt) => {
+      if (cancelled) return
+      setTerminalHistory((prev) => [...prev, { type: 'info', text: `[Shell exited: ${evt.exitCode ?? 'unknown'}]`, time: Date.now() }])
+      setTerminalSessionId(null)
+      terminalSessionRef.current = null
+    })
+
+    return () => {
+      cancelled = true
+      offData()
+      offExit()
+    }
+  }, [hasElectronFs, open, workspaceRoot])
 
   // Dialogs
   const [newFileDialog, setNewFileDialog] = useState(false)
@@ -441,9 +711,9 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
       setModified(false)
       const item = itemsRef.current.find((i) => i.id === activeItemId)
       if (item?.diskPath && globalThis.window?.jarvisIde) {
-        void ideFsWrite(item.diskPath, editedCode).then((r) => {
+        ideFsWrite(item.diskPath, editedCode).then((r) => {
           if (!r.ok) console.warn('Auto-save disk:', r.error)
-        })
+        }).catch(() => {})
       }
     }, 1000)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
@@ -551,6 +821,20 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
     }
   }, [workspaceRoot, hasElectronFs, workspaceRelFiles, logToTerminal])
 
+  const restartTerminalSession = useCallback(async () => {
+    if (!hasElectronFs) return
+    const ide = (globalThis as unknown as { jarvisIde: import('@/types/jarvis-ide').JarvisIdeApi }).jarvisIde
+    if (!ide.terminalCreate) return
+    if (terminalSessionRef.current != null) {
+      ide.terminalKill({ id: terminalSessionRef.current })
+    }
+    const s = await ide.terminalCreate({ cwd: workspaceRoot || undefined })
+    setTerminalSessionId(s.id)
+    setTerminalCwd(s.cwd)
+    terminalSessionRef.current = s.id
+    setTerminalHistory([{ type: 'info', text: '[New terminal session]', time: Date.now() }])
+  }, [hasElectronFs, workspaceRoot])
+
   const runTerminalLine = useCallback(
     async (command: string): Promise<JarvisIdeRunCommandResult> => {
       const cmd = command.trim()
@@ -559,6 +843,20 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
       }
       setShowTerminal(true)
       setBottomTab('terminal')
+
+      // Use persistent session if available
+      if (hasElectronFs && terminalSessionRef.current != null) {
+        const ide = (globalThis as unknown as { jarvisIde: import('@/types/jarvis-ide').JarvisIdeApi }).jarvisIde
+        setCmdHistory((prev) => {
+          const filtered = prev.filter((c) => c !== cmd)
+          return [...filtered, cmd]
+        })
+        setCmdHistoryIdx(-1)
+        ide.terminalWrite({ id: terminalSessionRef.current, data: cmd + '\n' })
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 }
+      }
+
+      // Fallback: one-shot exec
       logToTerminal('info', `$ ${cmd}`)
       if (!hasElectronFs || !workspaceRoot) {
         const msg = 'Open a folder (File → Open Folder) in the desktop app to run shell commands.'
@@ -586,9 +884,71 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
     [hasElectronFs, workspaceRoot, logToTerminal]
   )
 
+  const toggleExplorerDir = useCallback((folderKey: string) => {
+    setExplorerExpandedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(folderKey)) next.delete(folderKey)
+      else next.add(folderKey)
+      return next
+    })
+  }, [])
+
+  const openWorkspaceRelPath = useCallback(
+    async (rel: string) => {
+      if (!workspaceRoot) return
+      const fullPath = ideJoinPath(workspaceRoot, rel)
+      const r = await ideFsRead(fullPath)
+      if (r.ok && r.content != null) {
+        const ext = rel.split('.').pop()?.toLowerCase() ?? ''
+        const langMap: Record<string, string> = {
+          js: 'javascript', ts: 'typescript', tsx: 'typescriptreact', jsx: 'javascriptreact', py: 'python', md: 'markdown',
+          json: 'json', html: 'html', css: 'css', scss: 'scss', yaml: 'yaml', yml: 'yaml', sh: 'shell', rs: 'rust', go: 'go',
+          java: 'java', rb: 'ruby', php: 'php', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', xml: 'xml', sql: 'sql', toml: 'toml',
+          ini: 'ini', env: 'plaintext', txt: 'plaintext',
+        }
+        const lang = langMap[ext] ?? 'plaintext'
+        const existing = items.find((it) => it.diskPath === fullPath)
+        if (existing) {
+          setActiveItemId(existing.id)
+          return
+        }
+        const id = `ws-${Date.now()}`
+        addItem({
+          id,
+          code: r.content,
+          language: lang,
+          filename: rel.split(/[/\\]/).pop() ?? rel,
+          createdAt: Date.now(),
+          diskPath: fullPath,
+        })
+        setActiveItemId(id)
+      } else {
+        toast.error(`Could not read: ${r.error ?? 'unknown'}`)
+      }
+    },
+    [workspaceRoot, items, addItem, setActiveItemId]
+  )
+
+  const deleteWorkspaceRelPath = useCallback(
+    async (rel: string) => {
+      if (!workspaceRoot) return
+      if (!globalThis.confirm(`Delete ${rel}?`)) return
+      const fullPath = ideJoinPath(workspaceRoot, rel)
+      const { ideFsDelete } = await import('@/lib/jarvis-ide-bridge')
+      const r = await ideFsDelete(fullPath)
+      if (r.ok) {
+        setWorkspaceRelFiles((prev) => prev.filter((f) => f !== rel))
+        toast.success(`Deleted ${rel}`)
+      } else {
+        toast.error(r.error ?? 'Delete failed')
+      }
+    },
+    [workspaceRoot]
+  )
+
   // ── Register Jarvis automation control ──
   useEffect(() => {
-    const mkId = () => `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const mkId = () => `code-${Date.now()}-${randomIdSegment()}`
     const control: CodeEditorControl = {
       showCode(code, language, filename) { addItem({ id: mkId(), code, language, filename, createdAt: Date.now() }); onOpenChange(true) },
       isOpen: () => open,
@@ -632,15 +992,52 @@ export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgent
       getProblems() { return problemsRef.current },
       getTerminalOutput() { return terminalHistoryRef.current.map(e => e.text).join('\n') },
       getWorkspaceRoot() { return workspaceRootRef.current },
-      runTerminalCommand(command: string) { return runTerminalLine(command) },
+      async runTerminalCommand(command: string) {
+        const cmd = command.trim()
+        if (!cmd) return { ok: false, stdout: '', stderr: '', exitCode: null, error: 'empty' } as JarvisIdeRunCommandResult
+        setShowTerminal(true)
+        setBottomTab('terminal')
+        logToTerminal('info', `$ ${cmd}`)
+        const wr = workspaceRootRef.current
+        if (!hasElectronFs || !wr) {
+          const msg = 'Desktop app required for shell commands.'
+          logToTerminal('error', msg)
+          return { ok: false, stdout: '', stderr: '', exitCode: null, error: msg } as JarvisIdeRunCommandResult
+        }
+        try {
+          const r = await ideRunCommand(wr, cmd)
+          if (r.stdout.trim()) logToTerminal('stdout', r.stdout.trimEnd())
+          if (r.stderr.trim()) logToTerminal('stderr', r.stderr.trimEnd())
+          if (r.exitCode != null && r.exitCode !== 0) logToTerminal('error', `Exit code ${String(r.exitCode)}`)
+          if (r.error) logToTerminal('error', r.error)
+          return r
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e)
+          logToTerminal('error', err)
+          return { ok: false, stdout: '', stderr: '', exitCode: null, error: err } as JarvisIdeRunCommandResult
+        }
+      },
       createFromTemplate(n) { const t = FILE_TEMPLATES.find(t => t.name.toLowerCase() === n.toLowerCase()); if (!t) { return null; } const id = mkId(); addItem({ id, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); onOpenChange(true); return id },
       getAvailableTemplates() { return FILE_TEMPLATES.map(t => t.name) },
       goToLine(line) { editorRef.current?.setPosition({ lineNumber: line, column: 1 }); editorRef.current?.revealLineInCenter(line) },
       revealLine(line) { editorRef.current?.revealLineInCenter(line) },
       formatDocument() { editorRef.current?.getAction('editor.action.formatDocument')?.run() },
+      async runGitCommand(args: string[]) {
+        const wr = workspaceRootRef.current
+        if (!hasElectronFs || !wr) {
+          return { ok: false, stdout: '', stderr: '', error: 'Git requires the desktop app with an open workspace folder.' }
+        }
+        try {
+          const r = await ideGit(wr, args)
+          return { ok: !!r.ok, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error }
+        } catch (e) {
+          return { ok: false, stdout: '', stderr: '', error: e instanceof Error ? e.message : String(e) }
+        }
+      },
     }
     register(control)
     return () => unregister()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, register, unregister, addItem, removeItem, updateItem, onOpenChange, setActiveItemId, setRunning, setRunResult, splitFileId, diffTargetId, runTerminalLine])
 
   // Live preview
@@ -736,7 +1133,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
 
   useEffect(() => {
     if (!open) return
-    void fetchAgentBrowserHealth()
+    fetchAgentBrowserHealth()
       .then((h) => setAgentBridgeOk(Boolean(h.ok)))
       .catch(() => setAgentBridgeOk(false))
   }, [open])
@@ -754,7 +1151,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
   useEffect(() => {
     if (bottomTab !== 'git' || !workspaceRoot || !hasElectronFs) return
     setGitLoading(true)
-    void ideGit(workspaceRoot, ['status', '-sb'])
+    ideGit(workspaceRoot, ['status', '-sb'])
       .then((r) => {
         if (r.ok) { const stderrPart = r.stderr ? `\n${r.stderr}` : ''; setGitOutput(`${r.stdout || ''}${stderrPart}`.trim()) }
         else { setGitOutput(r.error || r.stderr || 'git failed') }
@@ -781,7 +1178,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
       if (lr.ok && lr.stdout != null) setGitRemoteCounts(parseGitLeftRightCount(lr.stdout))
       else setGitRemoteCounts(null)
     }
-    void refresh()
+    refresh().catch(() => {})
     const t = setInterval(refresh, 15000)
     return () => {
       cancelled = true
@@ -795,9 +1192,9 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
       return
     }
     const path = ideJoinPath(workspaceRoot, 'package.json')
-    void ideFsRead(path).then((r) => {
+    ideFsRead(path).then((r) => {
       setExtensionsPackageJson(r.ok && r.content != null ? r.content : `Could not read package.json: ${r.error ?? 'unknown'}`)
-    })
+    }).catch(() => {})
   }, [bottomTab, workspaceRoot, hasElectronFs])
 
   // Keyboard shortcuts
@@ -816,7 +1213,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
       if (mod && e.key === 'b') { e.preventDefault(); setShowExplorer(p => !p) }
       if (mod && e.key === '`') { e.preventDefault(); setShowTerminal(p => !p) }
       if (mod && e.key === 'n' && !e.shiftKey) { e.preventDefault(); setNewFileDialog(true) }
-      if (mod && e.key === 's') { e.preventDefault(); void handleSave().then(() => toast.success('Saved')) }
+      if (mod && e.key === 's') { e.preventDefault(); handleSave().then(() => toast.success('Saved')).catch(() => {}) }
       if (mod && e.shiftKey && (e.key === 'P' || e.key === 'p')) { e.preventDefault(); setCommandPaletteOpen(true); setCommandFilter('') }
       if (mod && e.key === '=') { e.preventDefault(); setFontSize(s => Math.min(s + 1, 32)) }
       if (mod && e.key === '-') { e.preventDefault(); setFontSize(s => Math.max(s - 1, 10)) }
@@ -833,9 +1230,13 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
       if (mod && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { editorRef.current?.trigger('keyboard', 'redo', null) }
       if (mod && e.key === 'w') { e.preventDefault(); if (activeItemId) handleCloseTab(activeItemId) }
       if (mod && e.key === 'd') { e.preventDefault(); if (activeItemId) handleDuplicate(activeItemId) }
+      if (e.altKey && (e.key === 'z' || e.key === 'Z') && !mod) { e.preventDefault(); setWordWrap(w => w === 'on' ? 'off' : 'on') }
+      if (e.altKey && e.shiftKey && (e.key === 'f' || e.key === 'F') && !mod) { e.preventDefault(); editorRef.current?.getAction('editor.action.formatDocument')?.run() }
+      if (e.key === 'F5') { e.preventDefault(); handleRun().catch(() => {}) }
     }
     globalThis.addEventListener('keydown', handler)
     return () => globalThis.removeEventListener('keydown', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, onOpenChange, commandPaletteOpen, showShortcuts, zenMode, tabContextMenu, openMenuId, activeItemId, editedCode, splitFileId, ideChatOnSend])
 
   const handleSave = useCallback(async () => {
@@ -851,16 +1252,18 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
   }, [activeItemId, editedCode, updateItem, items, hasElectronFs])
 
   const sendIdePayload = useCallback(
-    async (payload: IdeChatPayload) => {
-      if (!ideChatOnSend) return
+    async (payload: IdeChatPayload): Promise<string | null> => {
+      if (!ideChatOnSend) return null
       setIdeChatLoading(true)
       try {
         const { content, reasoning } = await ideChatOnSend(payload)
         setIdeChatMessages((prev) => [...prev, createIdeAssistantMessage(content, reasoning)])
+        return content
       } catch (e) {
         console.error(e)
         toast.error('IDE chat failed')
         setIdeChatMessages((prev) => [...prev, createIdeAssistantMessage('Sorry — something went wrong. Try again.')])
+        return null
       } finally {
         setIdeChatLoading(false)
       }
@@ -869,20 +1272,69 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
   )
 
   const handleIdeChatSend = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: IdeAttachment[]) => {
       if (!ideChatOnSend) return
-      setIdeChatMessages((prev) => [...prev, createIdeUserMessage(text)])
-      await sendIdePayload({
+      setIdeChatMessages((prev) => [...prev, createIdeUserMessage(text, attachments)])
+
+      const isAutopilot = ideChatMode === 'agent'
+      if (isAutopilot) {
+        setAutopilotOn(true)
+        setAutopilotStatus('running')
+        autopilotAbortRef.current = new AbortController()
+      }
+
+      let content = await sendIdePayload({
         userMessage: text,
         ideContextBlock: ideContextBlockRef.current,
         model: ideChatModel,
         temperature: ideTemp,
         max_tokens: ideMaxTok,
         reasoningMode: ideReasoning,
+        autopilot: isAutopilot,
+        mode: ideChatMode,
+        attachments,
       })
+
+      if (isAutopilot && content) {
+        let continuations = 0
+        const maxContinuations = 10
+        while (
+          continuations < maxContinuations &&
+          content?.includes('[AUTOPILOT: CONTINUING]') &&
+          !autopilotAbortRef.current?.signal.aborted
+        ) {
+          continuations++
+          setIdeChatMessages((prev) => [...prev, createIdeUserMessage(`[Agent continuation ${String(continuations)}] Continue working. Here is the updated IDE context.`)])
+          content = await sendIdePayload({
+            userMessage: `Continue your autonomous work. Pick up where you left off. Here is the updated IDE context:\n\n${ideContextBlockRef.current}`,
+            ideContextBlock: ideContextBlockRef.current,
+            model: ideChatModel,
+            temperature: ideTemp,
+            max_tokens: ideMaxTok,
+            reasoningMode: ideReasoning,
+            autopilot: true,
+            mode: 'agent',
+          })
+        }
+        setAutopilotStatus('idle')
+        autopilotAbortRef.current = null
+        if (content?.includes('[AUTOPILOT: COMPLETED]')) {
+          toast.success('Agent finished')
+        } else if (content?.includes('[AUTOPILOT: BLOCKED]')) {
+          toast.info('Agent needs your input')
+        }
+      }
     },
-    [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning]
+    [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning, ideChatMode]
   )
+
+  const stopAutopilot = useCallback(() => {
+    autopilotAbortRef.current?.abort()
+    setAutopilotStatus('idle')
+    setAutopilotOn(false)
+    setIdeChatMessages((prev) => [...prev, createIdeAssistantMessage('Agent stopped by user.')])
+    toast.info('Agent stopped')
+  }, [])
 
   const firePresetChat = useCallback(
     async (preset: IdeAiPreset, userMessage: string) => {
@@ -905,10 +1357,10 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
   /** Cursor-style Review: run static analysis first, then feed findings to AI. */
   const handleJarvisReview = useCallback(async () => {
     if (!workspaceRoot || !hasElectronFs) {
-      void firePresetChat(
+      firePresetChat(
         'composer_review',
         'Review the open files for risks, security, and improvements.'
-      )
+      ).catch(() => {})
       return
     }
     setQualityLoading(true)
@@ -953,10 +1405,10 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     } finally {
       setQualityLoading(false)
     }
-    void firePresetChat(
+    firePresetChat(
       'composer_review',
       `Review the open files and workspace for risks, security, and improvements.${qualitySummary}`
-    )
+    ).catch(() => {})
   }, [firePresetChat, workspaceRoot, hasElectronFs, workspaceRelFiles, logToTerminal])
 
   const clearIdeChat = useCallback(() => {
@@ -989,7 +1441,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     const fn = activeItem?.filename || `code.${getExt(editedLang)}`
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([editedCode], { type: 'text/plain' })); a.download = fn; a.click(); toast.success(`Downloaded ${fn}`)
   }, [editedCode, editedLang, activeItem])
-  const handleNewFile = useCallback(() => { if (!newFileName.trim()) { return; } addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: '', language: detectLang(newFileName), filename: newFileName.trim(), createdAt: Date.now() }); setNewFileName(''); setNewFileDialog(false) }, [newFileName, addItem])
+  const handleNewFile = useCallback(() => { if (!newFileName.trim()) { return; } addItem({ id: `code-${Date.now()}-${randomIdSegment()}`, code: '', language: detectLang(newFileName), filename: newFileName.trim(), createdAt: Date.now() }); setNewFileName(''); setNewFileDialog(false) }, [newFileName, addItem])
   const handleRename = useCallback(() => { if (!renameDialog || !renameValue.trim()) { return; } updateItem(renameDialog, { filename: renameValue.trim(), language: detectLang(renameValue) }); setRenameDialog(null); setRenameValue('') }, [renameDialog, renameValue, updateItem])
 
   const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {
@@ -1003,7 +1455,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
   const handleDuplicate = useCallback((id: string) => {
     const item = items.find(i => i.id === id)
     if (!item) return
-    const newId = `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const newId = `code-${Date.now()}-${randomIdSegment()}`
     const newName = item.filename ? item.filename.replace(/(\.[^.]+)$/, ' (copy)$1') : `${item.language} copy`
     addItem({ id: newId, code: item.code, language: item.language, filename: newName, createdAt: Date.now() })
   }, [items, addItem])
@@ -1144,12 +1596,14 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     setAutoSave,
     ideChatModel,
     setIdeChatModel,
+    ideChatModelOptions,
     ideTemp,
     setIdeTemp,
     ideMaxTok,
     setIdeMaxTok,
     ideReasoning,
     setIdeReasoning,
+    restartTerminalSession,
     firePresetChat,
     sendIdePayload,
     setIdeChatMessages,
@@ -1168,7 +1622,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
       {
         id: 'workspace-quality',
         label: 'Run workspace quality (ESLint, tsc, GraphQL, Sonar)',
-        action: () => void handleRunWorkspaceQuality(),
+        action: () => { handleRunWorkspaceQuality().catch(() => {}) },
         disabled: !workspaceRoot || !hasElectronFs || qualityLoading,
       },
       { id: 'copy', label: 'Copy All', action: handleCopy },
@@ -1214,6 +1668,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     ]
     const f = commandFilter.toLowerCase()
     return f ? cmds.filter(c => c.label.toLowerCase().includes(f)) : cmds
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commandFilter, items, canRun, handleRun, handleFormat, handleCopy, handleDownload, handleSave, setActiveItemId, showMinimap, wordWrap, autoSave, fontLigatures, bracketPairColorization, stickyScroll, zenMode, splitEditor, diffMode, activeItemId, splitFileId, diffTargetId, handleCloseTab, handleDuplicate, ideChatOnSend, showIdeChat])
 
   const openFileExplorerBadges = useMemo(() => {
@@ -1242,20 +1697,36 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     [gitPorcelainMap, gitRemoteCounts]
   )
 
-  const workspaceExplorerPreview = useMemo(
-    () => [...workspaceRelFiles].sort((a, b) => a.localeCompare(b)).slice(0, 96),
-    [workspaceRelFiles]
-  )
+  const workspaceTreeNodes = useMemo(() => buildWorkspaceTreeFromRelPaths(workspaceRelFiles), [workspaceRelFiles])
 
   const workspacePathBadges = useMemo(() => {
     const m = new Map<string, JarvisExplorerBadgeId[]>()
-    for (const rel of workspaceExplorerPreview) {
+    for (const rel of workspaceRelFiles) {
       m.set(rel, computeExplorerBadgesForWorkspaceRelPath(rel, gitPorcelainMap))
     }
     return m
-  }, [workspaceExplorerPreview, gitPorcelainMap])
+  }, [workspaceRelFiles, gitPorcelainMap])
 
   if (!open) return null
+
+  // Pre-compute terminal display values to avoid nested ternaries in JSX
+  const termHasSession = terminalSessionId != null
+  let termEmptyLabel: string
+  if (!hasElectronFs) termEmptyLabel = 'Terminal requires the desktop app. Run code with Ctrl+Enter.'
+  else if (termHasSession) termEmptyLabel = 'Terminal ready — type a command below.'
+  else termEmptyLabel = 'Starting terminal session…'
+
+  const termCwdLabel = terminalCwd ?? workspaceRoot ?? (hasElectronFs ? 'Starting…' : 'Shell — desktop app required')
+  const termPromptColor = termHasSession ? '#6a9955' : `${tc}50`
+  const termPromptChar = termHasSession ? '❯' : '$'
+
+  let termPlaceholder: string
+  if (termHasSession) termPlaceholder = 'Type a command…'
+  else if (hasElectronFs) termPlaceholder = 'Waiting for shell…'
+  else termPlaceholder = 'Desktop app required'
+
+  const termInputDisabled = !hasElectronFs || (!termHasSession && !workspaceRoot) || terminalShellBusy
+
   if (items.length === 0) addItem({ id: 'welcome', code: '// Welcome to Jarvis IDE\n// ========================\n//\n// Features:\n//   - Full Monaco Editor (VS Code engine)\n//   - AI Chat panel (Jarvis with full tools) — Ctrl+Shift+L\n//   - 10 themes (Ctrl+Shift+P > "theme")\n//   - Split editor, diff view\n//   - File templates (File > New from Template)\n//   - Code snippets for JS, TS, Python, HTML, CSS\n//   - Live preview for HTML/CSS/JS/Markdown\n//   - Problems panel, terminal, output\n//   - Search across files\n//   - Code outline & symbols\n//   - Settings panel with 15+ options\n//   - 40+ keyboard shortcuts\n//   - Zen mode (F11)\n//   - Auto-save\n//   - Jarvis has full autonomous control\n//\n// Press Ctrl+Shift+P for the Command Palette\n// Press F1 for Monaco\'s built-in commands\n\nconsole.log("Hello from Jarvis IDE!");\n', language: 'javascript', filename: 'welcome.js', createdAt: Date.now() })
 
   const editorOptions: monacoNs.editor.IStandaloneEditorConstructionOptions = {
@@ -1417,7 +1888,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                     </div>
                   )}
                   {!showSettings && !showSearch && (
-                    <div className="flex flex-col h-full">
+                    <div className="flex flex-col flex-1 min-h-0 h-full">
                       <div className="h-8 px-3 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold flex-shrink-0 gap-2" style={{ color: `${tc}60` }}>
                         <div className="flex items-center gap-1.5 min-w-0 flex-1">
                           <span className="flex-shrink-0">Explorer</span>
@@ -1446,7 +1917,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                             <DropdownMenuContent align="end" className="min-w-[240px]">
                               <DropdownMenuItem
                                 disabled={!workspaceRoot || !hasElectronFs || qualityLoading}
-                                onClick={() => void handleRunWorkspaceQuality()}
+                                onClick={() => { handleRunWorkspaceQuality().catch(() => {}) }}
                               >
                                 Run workspace quality (ESLint, tsc, GraphQL, Sonar)
                               </DropdownMenuItem>
@@ -1463,7 +1934,52 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                           </DropdownMenu>
                         </div>
                       </div>
-                      <div className="flex-1 overflow-y-auto px-1">
+                      {workspaceRoot ? (
+                        <div className="flex-shrink-0 flex flex-col border-b min-h-0" style={{ borderColor: bc }}>
+                          <button
+                            type="button"
+                            onClick={() => setWorkspaceTreeOpen((o) => !o)}
+                            className="w-full flex items-center gap-1 px-2 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-left flex-shrink-0"
+                            style={{ color: `${tc}50` }}
+                          >
+                            <span className="w-3 flex-shrink-0">{workspaceTreeOpen ? '▼' : '▶'}</span>
+                            <span>Workspace</span>
+                            <span style={{ color: `${tc}35` }}>({workspaceRelFiles.length})</span>
+                            <JarvisExplorerBadgeStrip ids={['tree-workspace-folder']} tc={tc} className="ml-auto normal-case" />
+                          </button>
+                          {workspaceTreeOpen && (
+                            <div className="max-h-[min(38vh,340px)] min-h-[56px] overflow-y-auto px-1 pb-1.5">
+                              {!hasElectronFs && (
+                                <p className="px-2 py-2 text-[10px] leading-snug" style={{ color: `${tc}55` }}>
+                                  A full folder tree needs the Jarvis desktop app. In the browser, only the folder name is available — use File → Open Folder in the desktop build to browse files.
+                                </p>
+                              )}
+                              {hasElectronFs && workspaceWalkLoading && (
+                                <p className="px-2 py-2 text-[10px]" style={{ color: `${tc}45` }}>Scanning workspace…</p>
+                              )}
+                              {hasElectronFs && !workspaceWalkLoading && workspaceRelFiles.length === 0 && (
+                                <p className="px-2 py-2 text-[10px] leading-snug" style={{ color: `${tc}45` }}>
+                                  No project files indexed yet. Use File → Open Folder… or reopen this workspace.
+                                </p>
+                              )}
+                              {hasElectronFs && !workspaceWalkLoading && workspaceTreeNodes.length > 0 && (
+                                <WorkspaceRelPathTree
+                                  nodes={workspaceTreeNodes}
+                                  depth={0}
+                                  folderPrefix=""
+                                  expandedDirs={explorerExpandedDirs}
+                                  onToggleDir={toggleExplorerDir}
+                                  tc={tc}
+                                  fileBadges={workspacePathBadges}
+                                  onOpenRelPath={(rel) => { void openWorkspaceRelPath(rel) }}
+                                  onDeleteRelPath={(rel) => { void deleteWorkspaceRelPath(rel) }}
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                      <div className="flex-1 min-h-0 overflow-y-auto px-1">
                         <div className="px-2 py-1 text-[10px] uppercase tracking-wider font-semibold" style={{ color: `${tc}40` }}>Open Files ({items.length})</div>
                         {sortedItems.map((item) => {
                           const bi = openFileExplorerBadges.get(item.id)
@@ -1486,32 +2002,6 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                             </button>
                           )
                         })}
-                        {workspaceRoot && workspaceExplorerPreview.length > 0 && (
-                          <div className="mt-2 border-t pt-1" style={{ borderColor: bc }}>
-                            <button
-                              type="button"
-                              onClick={() => setWorkspaceTreeOpen((o) => !o)}
-                              className="w-full flex items-center gap-1 px-2 py-1 text-[10px] uppercase tracking-wider font-semibold text-left"
-                              style={{ color: `${tc}50` }}
-                            >
-                              <span className="w-3 flex-shrink-0">{workspaceTreeOpen ? '▼' : '▶'}</span>
-                              <span>Workspace</span>
-                              <span style={{ color: `${tc}35` }}>({workspaceRelFiles.length})</span>
-                              <JarvisExplorerBadgeStrip ids={['tree-workspace-folder']} tc={tc} className="ml-auto normal-case" />
-                            </button>
-                            {workspaceTreeOpen && workspaceExplorerPreview.map((rel) => (
-                              <div
-                                key={rel}
-                                className="flex items-center gap-1 px-2 py-0.5 text-[11px] pl-4"
-                                style={{ color: `${tc}90` }}
-                                title={rel}
-                              >
-                                <span className="truncate min-w-0 flex-1 font-mono">{rel}</span>
-                                <JarvisExplorerBadgeStrip ids={workspacePathBadges.get(rel) ?? []} tc={tc} className="normal-case" />
-                              </div>
-                            ))}
-                          </div>
-                        )}
                       </div>
                       {showOutline && (
                         <div className="border-t flex-shrink-0 max-h-[40%] overflow-y-auto" style={{ borderColor: bc }}>
@@ -1603,7 +2093,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                           <TBtn
                             icon="🔎"
                             label="Quality"
-                            onClick={() => void handleRunWorkspaceQuality()}
+                            onClick={() => { handleRunWorkspaceQuality().catch(() => {}) }}
                             disabled={!workspaceRoot || !hasElectronFs || qualityLoading}
                             tc={tc}
                           />
@@ -1682,6 +2172,10 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                           </button>
                         ))}
                         <div className="flex-1" />
+                        {bottomTab === 'terminal' && terminalSessionId == null && hasElectronFs && (
+                          <button onClick={() => restartTerminalSession()}
+                            className="text-[10px] px-2 py-0.5 rounded" style={{ background: '#569cd620', color: '#569cd6' }}>↻ New</button>
+                        )}
                         <button onClick={() => { if (bottomTab === 'terminal') { setTerminalHistory([]); } if (bottomTab === 'problems') { setProblems([]); setQualityProblems([]) } }}
                           className="text-[10px] px-2 py-0.5 rounded" style={{ background: `${tc}15`, color: `${tc}50` }}>Clear</button>
                         <button onClick={() => { setShowTerminal(false); setShowProblems(false) }} style={{ color: `${tc}40` }} className="text-sm hover:opacity-80">✕</button>
@@ -1691,9 +2185,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                           <>
                             <div className="flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-5 min-h-0">
                               {terminalHistory.length === 0 && (
-                                <span style={{ color: `${tc}30` }}>
-                                  Terminal — type shell commands below (desktop app + open folder), or run code with Ctrl+Enter.
-                                </span>
+                                <span style={{ color: `${tc}30` }}>{termEmptyLabel}</span>
                               )}
                               {terminalHistory.map((e, i) => (
                                 <div
@@ -1709,31 +2201,53 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                               <div ref={terminalEndRef} />
                             </div>
                             <div className="flex-shrink-0 border-t px-2 py-1.5" style={{ borderColor: bc, background: sb }}>
-                              <div className="text-[10px] truncate mb-1 px-1" style={{ color: `${tc}45` }} title={workspaceRoot ?? undefined}>
-                                {workspaceRoot ?? 'Shell — open a workspace folder'}
+                              <div className="text-[10px] truncate mb-1 px-1" style={{ color: `${tc}45` }} title={terminalCwd ?? workspaceRoot ?? undefined}>
+                                {termCwdLabel}
                               </div>
                               <div className="flex items-center gap-2">
-                                <span style={{ color: `${tc}50` }} className="font-mono text-[12px] select-none">
-                                  $
+                                <span style={{ color: termPromptColor }} className="font-mono text-[12px] select-none">
+                                  {termPromptChar}
                                 </span>
                                 <input
                                   type="text"
                                   className="flex-1 min-w-0 bg-transparent border-0 outline-none font-mono text-[12px]"
                                   style={{ color: tc }}
-                                  placeholder={
-                                    hasElectronFs && workspaceRoot
-                                      ? 'npm run build, git status, …'
-                                      : 'Desktop app + open folder to run shell commands'
-                                  }
+                                  placeholder={termPlaceholder}
                                   value={terminalInput}
                                   onChange={(e) => setTerminalInput(e.target.value)}
-                                  disabled={!hasElectronFs || !workspaceRoot || terminalShellBusy}
+                                  disabled={termInputDisabled}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                       e.preventDefault()
                                       const line = terminalInput
                                       setTerminalInput('')
-                                      void runTerminalLine(line)
+                                      runTerminalLine(line).catch(() => {})
+                                    }
+                                    if (e.key === 'ArrowUp') {
+                                      e.preventDefault()
+                                      if (cmdHistory.length === 0) return
+                                      const nextIdx = cmdHistoryIdx < 0 ? cmdHistory.length - 1 : Math.max(0, cmdHistoryIdx - 1)
+                                      setCmdHistoryIdx(nextIdx)
+                                      setTerminalInput(cmdHistory[nextIdx] ?? '')
+                                    }
+                                    if (e.key === 'ArrowDown') {
+                                      e.preventDefault()
+                                      if (cmdHistoryIdx < 0) return
+                                      const nextIdx = cmdHistoryIdx + 1
+                                      if (nextIdx >= cmdHistory.length) {
+                                        setCmdHistoryIdx(-1)
+                                        setTerminalInput('')
+                                      } else {
+                                        setCmdHistoryIdx(nextIdx)
+                                        setTerminalInput(cmdHistory[nextIdx] ?? '')
+                                      }
+                                    }
+                                    if (e.key === 'c' && e.ctrlKey) {
+                                      e.preventDefault()
+                                      if (terminalSessionRef.current != null && hasElectronFs) {
+                                        const ide = (globalThis as unknown as { jarvisIde: import('@/types/jarvis-ide').JarvisIdeApi }).jarvisIde
+                                        ide.terminalWrite({ id: terminalSessionRef.current, data: '\x03' })
+                                      }
                                     }
                                   }}
                                 />
@@ -1764,20 +2278,111 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                             </>)}
                             {bottomTab === 'git' && (<>
                               {!workspaceRoot && <span style={{ color: `${tc}30` }}>Open a folder (File → Open Folder…) to use Git. Desktop app required for git.</span>}
-                              {workspaceRoot && gitLoading && <span style={{ color: `${tc}50` }}>Running git…</span>}
-                              {workspaceRoot && !gitLoading && <pre className="whitespace-pre-wrap text-[11px]" style={{ color: tc }}>{gitOutput || '(no output)'}</pre>}
+                              {workspaceRoot && (
+                                <div className="flex flex-col gap-2">
+                                  <div className="flex flex-wrap gap-1.5 mb-1">
+                                    {[
+                                      { label: 'Status', args: ['status', '-sb'] },
+                                      { label: 'Diff', args: ['diff', '--stat'] },
+                                      { label: 'Log', args: ['log', '--oneline', '-15'] },
+                                      { label: 'Stage All', args: ['add', '-A'] },
+                                      { label: 'Pull', args: ['pull'] },
+                                      { label: 'Push', args: ['push'] },
+                                    ].map(({ label, args }) => (
+                                      <button
+                                        key={label}
+                                        type="button"
+                                        disabled={gitLoading}
+                                        className="text-[11px] px-2 py-0.5 rounded"
+                                        style={{ background: `${tc}15`, color: `${tc}90` }}
+                                        onClick={async () => {
+                                          if (!workspaceRoot) return
+                                          setGitLoading(true)
+                                          const r = await ideGit(workspaceRoot, args)
+                                          setGitOutput(r.ok ? (r.stdout || r.stderr || '(done)').trim() : (r.error || r.stderr || 'git failed'))
+                                          setGitLoading(false)
+                                        }}
+                                      >
+                                        {label}
+                                      </button>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      disabled={gitLoading}
+                                      className="text-[11px] px-2 py-0.5 rounded"
+                                      style={{ background: `${tc}15`, color: '#6a9955' }}
+                                      onClick={async () => {
+                                        if (!workspaceRoot) return
+                                        const msg = globalThis.prompt('Commit message')
+                                        if (!msg?.trim()) return
+                                        setGitLoading(true)
+                                        const r = await ideGit(workspaceRoot, ['commit', '-m', msg.trim()])
+                                        setGitOutput(r.ok ? (r.stdout || '(committed)').trim() : (r.error || r.stderr || 'commit failed'))
+                                        setGitLoading(false)
+                                      }}
+                                    >
+                                      Commit
+                                    </button>
+                                  </div>
+                                  {gitLoading && <span style={{ color: `${tc}50` }}>Running git…</span>}
+                                  {!gitLoading && <pre className="whitespace-pre-wrap text-[11px]" style={{ color: tc }}>{gitOutput || '(no output)'}</pre>}
+                                </div>
+                              )}
                             </>)}
                             {bottomTab === 'extensions' && (<>
-                              {!workspaceRoot && <span style={{ color: `${tc}30` }}>Open a workspace folder to read package.json.</span>}
-                              {workspaceRoot && (
-                                <pre className="mt-1 max-h-full overflow-auto whitespace-pre-wrap text-[11px]" style={{ color: tc }}>
-                                  {extensionsPackageJson ?? 'Loading…'}
-                                </pre>
-                              )}
+                              {!workspaceRoot && <span style={{ color: `${tc}30` }}>Open a workspace folder to view installed packages.</span>}
+                              {workspaceRoot && !extensionsPackageJson && <span style={{ color: `${tc}50` }}>Loading package.json…</span>}
+                              {workspaceRoot && extensionsPackageJson && (() => {
+                                try {
+                                  const pkg = JSON.parse(extensionsPackageJson)
+                                  const deps: Array<[string, string]> = Object.entries(pkg.dependencies ?? {}).map(([k, v]) => [k, String(v)])
+                                  const devDeps: Array<[string, string]> = Object.entries(pkg.devDependencies ?? {}).map(([k, v]) => [k, String(v)])
+                                  return (
+                                    <div className="space-y-3">
+                                      <div>
+                                        <div className="text-[10px] uppercase tracking-wider font-semibold mb-1" style={{ color: `${tc}50` }}>
+                                          {pkg.name ?? 'Project'} {pkg.version ? `v${pkg.version}` : ''}
+                                        </div>
+                                        {pkg.description && <div className="text-[11px] mb-2" style={{ color: `${tc}60` }}>{pkg.description}</div>}
+                                      </div>
+                                      {deps.length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] uppercase tracking-wider font-semibold mb-1" style={{ color: `${tc}50` }}>
+                                            Dependencies ({deps.length})
+                                          </div>
+                                          {deps.map(([name, ver]) => (
+                                            <div key={name} className="flex items-center gap-2 py-0.5 text-[11px]">
+                                              <span style={{ color: '#4fc1ff' }}>📦</span>
+                                              <span style={{ color: tc }}>{name}</span>
+                                              <span className="ml-auto" style={{ color: `${tc}50` }}>{ver}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {devDeps.length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] uppercase tracking-wider font-semibold mb-1" style={{ color: `${tc}50` }}>
+                                            Dev Dependencies ({devDeps.length})
+                                          </div>
+                                          {devDeps.map(([name, ver]) => (
+                                            <div key={name} className="flex items-center gap-2 py-0.5 text-[11px]">
+                                              <span style={{ color: '#ce9178' }}>🔧</span>
+                                              <span style={{ color: tc }}>{name}</span>
+                                              <span className="ml-auto" style={{ color: `${tc}50` }}>{ver}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                } catch {
+                                  return <pre className="whitespace-pre-wrap text-[11px]" style={{ color: tc }}>{extensionsPackageJson}</pre>
+                                }
+                              })()}
                             </>)}
                             {bottomTab === 'run' && (<>
                               <div className="mb-2 flex flex-wrap gap-2 text-[11px]" style={{ color: `${tc}80` }}>
-                                <button type="button" className="rounded px-2 py-0.5" style={{ background: `${tc}15` }} onClick={() => { void handleRun() }} disabled={!canRun || running}>Run</button>
+                                <button type="button" className="rounded px-2 py-0.5" style={{ background: `${tc}15` }} onClick={() => { handleRun().catch(() => {}) }} disabled={!canRun || running}>Run</button>
                                 <span>{debuggingActive ? 'Debugging: on' : 'Debugging: off'}</span>
                               </div>
                               {terminalHistory.length === 0 && <span style={{ color: `${tc}30` }}>Terminal output for this run appears here.</span>}
@@ -1804,13 +2409,28 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
                   onSend={handleIdeChatSend}
                   onClear={clearIdeChat}
                   themeColors={{ tc, sb, bc }}
-                  contextFileCount={items.length}
+                  openFiles={items.map((i) => ({ id: i.id, filename: i.filename || `untitled.${getExt(i.language)}`, language: i.language }))}
+                  onGetFileContent={(fileId) => {
+                    if (activeItemId === fileId) return editedCode
+                    return items.find((i) => i.id === fileId)?.code ?? null
+                  }}
                   onReview={handleJarvisReview}
                   reviewDisabled={!workspaceRoot || !hasElectronFs}
                   qualityLoading={qualityLoading}
-                  undoKeepDisabled={false}
-                  onUndoAll={() => toast.info('Composer-style multi-file undo is not available in this IDE yet.')}
-                  onKeepAll={() => toast.info('Composer-style multi-file keep is not available in this IDE yet.')}
+                  undoKeepDisabled={true}
+                  onUndoAll={() => toast.info('Composer multi-file undo coming in a future update.')}
+                  onKeepAll={() => toast.info('Composer multi-file keep coming in a future update.')}
+                  mode={ideChatMode}
+                  onModeChange={(m) => {
+                    setIdeChatMode(m)
+                    if (m === 'agent') { setAutopilotOn(true) }
+                    else { setAutopilotOn(false); setAutopilotStatus('idle') }
+                  }}
+                  agentStatus={autopilotStatus}
+                  onStopAgent={stopAutopilot}
+                  model={ideChatModel}
+                  onModelChange={setIdeChatModel}
+                  modelOptions={ideChatModelOptions}
                 />
               </ResizablePanel>
             </>
@@ -1850,7 +2470,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
             <div className="px-4 py-3 text-xs font-semibold" style={{ color: `${tc}60` }}>New from Template ({FILE_TEMPLATES.length} templates)</div>
             <div className="max-h-[450px] overflow-y-auto">
               {FILE_TEMPLATES.map(t => (
-                <button key={t.name} onClick={() => { addItem({ id: `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); setTemplateDialog(false) }}
+                <button key={t.name} onClick={() => { addItem({ id: `code-${Date.now()}-${randomIdSegment()}`, code: t.code, language: t.language, filename: t.filename, createdAt: Date.now() }); setTemplateDialog(false) }}
                   className="w-full px-4 py-2.5 text-left hover:bg-white/10 flex items-center gap-3 border-b" style={{ borderColor: `${tc}08` }}>
                   <span className="text-lg w-7 text-center">{LI[t.language] || '📄'}</span>
                   <div><div className="text-sm font-medium" style={{ color: tc }}>{t.name}</div><div className="text-[11px]" style={{ color: `${tc}40` }}>{t.filename}</div></div>

@@ -35,7 +35,7 @@ export function getVoiceRegistry(): VoiceRegistry {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw) as VoiceRegistry
-  } catch {}
+  } catch { /* ignored */ }
   return { defaultVoiceId: null, voices: [] }
 }
 

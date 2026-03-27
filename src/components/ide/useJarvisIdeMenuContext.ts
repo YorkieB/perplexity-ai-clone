@@ -204,13 +204,13 @@ export function createJarvisIdeMenuContext(i: JarvisIdeMenuFactoryInput): Jarvis
       paste: () => ed()?.trigger('keyboard', 'editor.action.clipboardPasteAction', null),
       copyPath: () => {
         const p = i.items.find((x) => x.id === i.activeItemId)?.diskPath
-        if (p) void navigator.clipboard.writeText(p)
-        else if (i.activeItemId) void navigator.clipboard.writeText(i.items.find((x) => x.id === i.activeItemId)?.filename || '')
+        if (p) navigator.clipboard.writeText(p).catch(() => {})
+        else if (i.activeItemId) navigator.clipboard.writeText(i.items.find((x) => x.id === i.activeItemId)?.filename || '').catch(() => {})
       },
       copyRelativePath: () => {
         const it = i.items.find((x) => x.id === i.activeItemId)
         const rel = it?.filename || ''
-        if (rel) void navigator.clipboard.writeText(rel)
+        if (rel) navigator.clipboard.writeText(rel).catch(() => {})
       },
       find: () => run('actions.find'),
       replace: () => run('editor.action.startFindReplaceAction'),

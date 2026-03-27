@@ -6,7 +6,7 @@ This application supports OAuth 2.0 authentication for connecting to cloud stora
 
 1. [Overview](#overview)
 2. [Setting Up Dropbox OAuth](#dropbox-oauth)
-3. [Setting Up Google Drive OAuth](#google-drive-oauth)
+3. [Setting Up Google Drive & Calendar OAuth](#google-drive--calendar-oauth)
 4. [Setting Up OneDrive OAuth](#onedrive-oauth)
 5. [Setting Up GitHub OAuth](#github-oauth)
 6. [Using the OAuth Integration](#using-the-oauth-integration)
@@ -57,48 +57,56 @@ For each service, you'll need to create an OAuth application and obtain:
 
 ---
 
-## Google Drive OAuth
+## Google Drive & Calendar OAuth
+
+The Google connection covers both **Google Drive** and **Google Calendar** using a single OAuth token.
 
 ### Step 1: Create a Google Cloud Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select an existing one
-3. Enable the **Google Drive API**:
+3. Enable **both** required APIs:
    - Go to **APIs & Services** → **Library**
-   - Search for "Google Drive API"
-   - Click **Enable**
+   - Search for "Google Drive API" → Click **Enable**
+   - Search for "Google Calendar API" → Click **Enable**
 
 ### Step 2: Create OAuth Credentials
 
 1. Go to **APIs & Services** → **Credentials**
 2. Click **Create Credentials** → **OAuth client ID**
-3. If prompted, configure the OAuth consent screen:
+3. If prompted, configure the OAuth consent screen first:
    - User Type: **External**
    - App name: Your app name
    - User support email: Your email
    - Developer contact: Your email
-   - Add scopes: `../auth/drive.readonly`, `../auth/drive.metadata.readonly`
+   - Add **all four** scopes (Drive + Calendar):
+     - `https://www.googleapis.com/auth/drive`
+     - `https://www.googleapis.com/auth/calendar`
+   - Under **Test users**, add your Google account email
 4. For Application type, choose **Web application**
-5. Add **Authorized redirect URIs**:
+5. Add **Authorized redirect URIs** (each must match the app’s origin exactly):
    - Production: `https://your-domain.com/oauth/callback`
-   - Development: `http://localhost:5173/oauth/callback`
+   - Vite dev (`npm run dev`): `http://localhost:5173/oauth/callback` (or your dev port)
+   - **Desktop Electron app** (serves the built UI on a fixed local port): `http://127.0.0.1:53473/oauth/callback` — if you change the port, set env `JARVIS_ELECTRON_PORT` and use `http://127.0.0.1:<port>/oauth/callback`
 6. Click **Create**
 
 ### Step 3: Get Your Credentials
 
 1. Copy the **Client ID**
 2. Copy the **Client Secret**
-3. Save both in the application's Settings → OAuth Connections tab
+3. Save both in the application’s Settings → OAuth Connections tab
 
 ### Important Notes
 
 - Google may require verification for apps requesting sensitive scopes
-- During development, add test users in the OAuth consent screen
-- The refresh token is only provided on the first authorization if you include `access_type=offline`
+- During development, add your Google account as a **test user** in the OAuth consent screen
+- The refresh token is only provided on the first authorization — always reconnect (disconnect then reconnect) after changing scopes
+- **If Calendar stops working after a Drive-only connection**: Disconnect Google in Settings → OAuth and reconnect. The Calendar scope requires a fresh OAuth grant.
 
 ### API Documentation
 - [Google Drive OAuth Guide](https://developers.google.com/drive/api/guides/about-auth)
 - [Google Drive API Reference](https://developers.google.com/drive/api/reference/rest/v3)
+- [Google Calendar API Reference](https://developers.google.com/calendar/api/v3/reference)
 
 ---
 

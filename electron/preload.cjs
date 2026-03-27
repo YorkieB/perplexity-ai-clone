@@ -24,6 +24,22 @@ contextBridge.exposeInMainWorld('jarvisIde', {
   toggleFullscreen: () => ipcRenderer.invoke('jarvis-ide-toggle-fullscreen'),
   git: (opts) => ipcRenderer.invoke('jarvis-ide-git', opts),
   runCommand: (opts) => ipcRenderer.invoke('jarvis-ide-run-command', opts),
+
+  // Persistent terminal session
+  terminalCreate: (opts) => ipcRenderer.invoke('terminal-create', opts),
+  terminalWrite: (opts) => ipcRenderer.invoke('terminal-write', opts),
+  terminalKill: (opts) => ipcRenderer.invoke('terminal-kill', opts),
+  terminalList: () => ipcRenderer.invoke('terminal-list'),
+  onTerminalData: (handler) => {
+    const fn = (_e, payload) => handler(payload)
+    ipcRenderer.on('terminal-data', fn)
+    return () => ipcRenderer.removeListener('terminal-data', fn)
+  },
+  onTerminalExit: (handler) => {
+    const fn = (_e, payload) => handler(payload)
+    ipcRenderer.on('terminal-exit', fn)
+    return () => ipcRenderer.removeListener('terminal-exit', fn)
+  },
 })
 
 contextBridge.exposeInMainWorld('electronInAppBrowser', {

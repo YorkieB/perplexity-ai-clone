@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -32,6 +32,7 @@ import {
   DownloadSimple,
 } from '@phosphor-icons/react'
 import { ExternalLink, X as LucideX } from 'lucide-react'
+import { randomIdSegment } from '@/lib/secure-random'
 import { cn } from '@/lib/utils'
 import { isElectronWebviewAvailable } from '@/lib/electron-browser'
 import {
@@ -79,7 +80,7 @@ function normalizeUrl(raw: string): string {
 }
 
 function generateTabId(): string {
-  return `t_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  return `t_${Date.now()}_${randomIdSegment()}`
 }
 
 interface NavState {
@@ -130,13 +131,15 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
   const src = useMemo(() => nav.stack[nav.index] ?? 'about:blank', [nav.stack, nav.index])
 
   const [listRev, setListRev] = useState(0)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const bookmarks = useMemo(() => loadBookmarks(), [listRev])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const history = useMemo(() => loadHistory(), [listRev])
 
   const activeWebview = webviews.current.get(activeTabId)
 
   const canBack = useMemo(() => {
-    void navTick
+    if (navTick < 0) return false
     if (!useWebview) return nav.index > 0
     const w = webviews.current.get(activeTabId)
     if (!w) return false
@@ -146,10 +149,11 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
       /* Electron: guest not attached / dom-ready not fired yet */
       return false
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useWebview, activeTabId, nav.index, nav.stack.length, navTick])
 
   const canForward = useMemo(() => {
-    void navTick
+    if (navTick < 0) return false
     if (!useWebview) return nav.index < nav.stack.length - 1
     const w = webviews.current.get(activeTabId)
     if (!w) return false
@@ -570,13 +574,56 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
     onOpenChange(false)
   }
 
+  const rawBrowserUrl = useWebview ? activeTab?.url : src
   const minimizedLabel =
-    (useWebview ? activeTab?.url : src) && (useWebview ? activeTab?.url : src) !== 'about:blank'
+    rawBrowserUrl && rawBrowserUrl !== 'about:blank'
       ? (() => {
-          const s = String(useWebview ? activeTab?.url : src).replace(/^https?:\/\//i, '')
+          const s = String(rawBrowserUrl).replace(/^https?:\/\//i, '')
           return s.length > 44 ? `${s.slice(0, 44)}…` : s
         })()
       : 'Web browser'
+
+  const iframeClassName = expanded
+    ? 'h-full min-h-0 w-full flex-1 border-0 bg-white dark:bg-zinc-950'
+    : 'h-[min(520px,60vh)] w-full border-0 bg-white dark:bg-zinc-950'
+
+  let embeddedBrowserMain: ReactNode
+  if (useWebview) {
+    if (webviewShellReady) {
+      embeddedBrowserMain = (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <InAppBrowserWebviewArea
+            partition={partition}
+            tabs={tabs}
+            activeTabId={activeTabId}
+            expanded={expanded}
+            onWebviewMount={onWebviewMount}
+            onDidNavigate={onDidNavigate}
+            onPageTitle={onPageTitle}
+            onNewWindow={onNewWindow}
+            onLoadingChange={setLoading}
+          />
+        </div>
+      )
+    } else {
+      embeddedBrowserMain = (
+        <div className="text-muted-foreground flex min-h-[min(520px,60vh)] items-center justify-center text-sm">
+          Preparing browser…
+        </div>
+      )
+    }
+  } else {
+    embeddedBrowserMain = (
+      <iframe
+        key={`${src}-${reloadNonce}`}
+        title="Embedded browser"
+        src={src}
+        className={iframeClassName}
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-presentation"
+        referrerPolicy="no-referrer-when-downgrade"
+      />
+    )
+  }
 
   const runFind = (forward: boolean) => {
     if (!useWebview || !findQuery.trim()) return
@@ -1030,7 +1077,7 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
                     size="icon"
                     className="h-9 w-9 shrink-0"
                     title="Load unpacked extension"
-                    onClick={() => void loadExtension()}
+                    onClick={() => { loadExtension().catch(() => {}) }}
                   >
                     <DownloadSimple size={18} />
                   </Button>
@@ -1075,40 +1122,7 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
                   : 'overflow-hidden rounded-xl border border-border bg-background shadow-inner'
               }
             >
-              {useWebview ? (
-                webviewShellReady ? (
-                  <div className="flex min-h-0 flex-1 flex-col">
-                    <InAppBrowserWebviewArea
-                      partition={partition}
-                      tabs={tabs}
-                      activeTabId={activeTabId}
-                      expanded={expanded}
-                      onWebviewMount={onWebviewMount}
-                      onDidNavigate={onDidNavigate}
-                      onPageTitle={onPageTitle}
-                      onNewWindow={onNewWindow}
-                      onLoadingChange={setLoading}
-                    />
-                  </div>
-                ) : (
-                  <div className="text-muted-foreground flex min-h-[min(520px,60vh)] items-center justify-center text-sm">
-                    Preparing browser…
-                  </div>
-                )
-              ) : (
-                <iframe
-                  key={`${src}-${reloadNonce}`}
-                  title="Embedded browser"
-                  src={src}
-                  className={
-                    expanded
-                      ? 'h-full min-h-0 w-full flex-1 border-0 bg-white dark:bg-zinc-950'
-                      : 'h-[min(520px,60vh)] w-full border-0 bg-white dark:bg-zinc-950'
-                  }
-                  sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-presentation"
-                  referrerPolicy="no-referrer-when-downgrade"
-                />
-              )}
+              {embeddedBrowserMain}
             </div>
 
             {automating && agentSteps.length > 0 && (

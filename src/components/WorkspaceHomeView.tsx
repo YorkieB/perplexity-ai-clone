@@ -20,7 +20,7 @@ function threadPreview(thread: Thread): string {
   if (thread.messages.length === 0) return 'No messages yet'
   const last = thread.messages[thread.messages.length - 1]
   const raw = last?.content ?? ''
-  const plain = raw.replace(/[#*`_\[\]()]/g, ' ').replace(/\s+/g, ' ').trim()
+  const plain = raw.replace(/[#*`_[\]()]/g, ' ').replace(/\s+/g, ' ').trim()
   const slice = plain.slice(0, 140)
   return slice.length < plain.length ? `${slice}…` : slice || '…'
 }

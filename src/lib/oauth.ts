@@ -32,16 +32,15 @@ const OAUTH_CONFIGS: Record<string, Partial<OAuthProvider>> = {
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     scopes: [
-      'https://www.googleapis.com/auth/drive.readonly',
-      'https://www.googleapis.com/auth/drive.metadata.readonly',
-      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/calendar',
     ],
   },
   oneDrive: {
     name: 'OneDrive',
     authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-    scopes: ['Files.Read', 'Files.Read.All', 'offline_access'],
+    scopes: ['Files.ReadWrite.All', 'offline_access'],
   },
   github: {
     name: 'GitHub',
@@ -51,8 +50,15 @@ const OAUTH_CONFIGS: Record<string, Partial<OAuthProvider>> = {
   },
 }
 
+/** UserSettings / UI use `googledrive` / `onedrive`; configs use camelCase keys. */
+function oauthConfigLookupKey(provider: string): string {
+  if (provider === 'googledrive') return 'googleDrive'
+  if (provider === 'onedrive') return 'oneDrive'
+  return provider
+}
+
 export function getOAuthConfig(provider: string): OAuthProvider | null {
-  const config = OAUTH_CONFIGS[provider]
+  const config = OAUTH_CONFIGS[oauthConfigLookupKey(provider)]
   if (!config) return null
 
   const redirectUri = `${window.location.origin}/oauth/callback`
@@ -88,7 +94,7 @@ export function buildAuthUrl(provider: string, clientId: string): string | null 
     access_type: 'offline',
   })
 
-  if (provider === 'googleDrive') {
+  if (oauthConfigLookupKey(provider) === 'googleDrive') {
     params.append('prompt', 'consent')
   }
 

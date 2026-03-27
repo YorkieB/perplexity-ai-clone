@@ -16,8 +16,9 @@ export function buildJarvisToolSystemPrompt(args: {
   modeInstruction: string
   learnedContext: string
   thinkingDepth: ThinkingDepth
+  autopilot?: boolean
 }): string {
-  const { workspaceSystemPrompt, modeInstruction, learnedContext, thinkingDepth } = args
+  const { workspaceSystemPrompt, modeInstruction, learnedContext, thinkingDepth, autopilot } = args
   const workspacePart = workspaceSystemPrompt ? ` ${workspaceSystemPrompt}` : ''
   const learnedBlock = learnedContext ? `\n${learnedContext}\n` : ''
   const inlineHl = getJarvisInlineHighlightingPromptSection()
@@ -102,6 +103,40 @@ You have tools available:
 - post_reply: Post a reply on X or Threads. ALWAYS confirm with the user first.
 - schedule_post: Schedule, list, or cancel social media posts.
 - learning_stats: Show what Jarvis has learned about the user over time.
+- email_list_inbox: Check recent emails. Defaults to contact@yorkiebrown.uk.
+- email_read: Read the full content of a specific email by UID.
+- email_send: Send an email (supports reply threading via replyToMessageId).
+- email_search: Search emails by keyword across subject, sender, and body.
+- email_list_folders: List all IMAP folders/mailboxes.
+- email_move: Move an email to a different folder.
+- email_delete: Permanently delete an email.
+- email_mark_read: Mark an email as read or unread.
+- calendar_list_events: List upcoming Google Calendar events with optional date range, calendar, or search.
+- calendar_create_event: Create a calendar event with title, time, location, description, attendees.
+- calendar_update_event: Edit an existing calendar event by ID.
+- calendar_delete_event: Delete a calendar event by ID.
+- calendar_list_calendars: List all Google calendars the user has access to.
+- drive_list_files: Browse Google Drive files and folders. Can list specific folders.
+- drive_search: Search Google Drive by filename or content.
+- drive_read_file: Read/download a file from Google Drive. Google Docs exported as text.
+- drive_create_file: Create a new file on Google Drive with text content.
+- drive_create_folder: Create a new folder on Google Drive.
+- drive_move_file: Move a file or folder to a different Drive folder (for organising files).
+- drive_rename_file: Rename a file or folder on Google Drive.
+- drive_delete_file: Permanently delete a file or folder from Google Drive.
+- onedrive_list_files: Browse Microsoft OneDrive files and folders.
+- onedrive_search: Search OneDrive files by name.
+- onedrive_read_file: Read/download a file from OneDrive.
+- onedrive_create_file: Create a new file on OneDrive.
+- onedrive_create_folder: Create a new folder on OneDrive.
+- onedrive_move_file: Move a file or folder to a different OneDrive folder.
+- onedrive_rename_file: Rename a file or folder on OneDrive.
+- onedrive_delete_file: Delete a file or folder from OneDrive.
+- vonage_send_sms: Send an SMS via Vonage (appointment reminders, notifications). Requires server Vonage credentials.
+- vonage_voice_call: Outbound phone call — Vonage speaks the given text with TTS when the callee answers (scripted message only). Requires Voice application (JWT) in .env.
+- vonage_ai_voice_call: Live two-way AI phone call — audio streams to the WebSocket bridge (STT → LLM → TTS). Requires Voice app, VONAGE_PUBLIC_WS_URL (public wss:// to the bridge, e.g. ngrok), optional VONAGE_WS_SECRET, and the bridge running.
+
+EMAIL ACCOUNTS: The user has two email addresses: contact@yorkiebrown.uk (primary/default) and yorkie@yorkiebrown.uk. When no account is specified, use contact@yorkiebrown.uk. When the user says "check my emails", "any new mail?", or similar, use email_list_inbox. When they ask to reply to an email, first read it with email_read to get the Message-ID, then use email_send with replyToMessageId for proper threading. In autopilot mode, check emails proactively and summarise unread messages.
 
 When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
 When the user asks about stored information, use rag_search.
@@ -124,6 +159,45 @@ When the user asks about social media, X, Twitter, or Threads, use read_social_f
 When the user asks to post, tweet, or share something, use post_to_x or post_reply — but ALWAYS show them the draft and get explicit approval before posting.
 When the user asks to schedule a post, use schedule_post. To view pending scheduled posts, use schedule_post with action "list".
 When the user asks "what have you learned about me?" or similar, use learning_stats.
+When the user asks about emails, inbox, or mail, use email_list_inbox. When they say "read email #123", use email_read. When they ask to send, reply, or compose an email, use email_send. When searching emails, use email_search.
+When the user asks about their schedule, calendar, meetings, or "what's on today?", use calendar_list_events. When they ask to schedule, book, or create a meeting/event, use calendar_create_event. When changing an event, use calendar_update_event. When cancelling, use calendar_delete_event.
+When the user asks about their Google Drive files, documents, or says "what's on my Drive?", use drive_list_files. When they ask to find a file, use drive_search. When they want to read a document, use drive_read_file. When they ask to create or save a file, use drive_create_file. When they ask to organise, tidy up, or sort files, use drive_list_files to see the current state, drive_create_folder to create folders, and drive_move_file to move files into the right folders. When renaming, use drive_rename_file.
+When the user asks about OneDrive files, use onedrive_list_files, onedrive_search, onedrive_read_file, etc. — the same patterns as Google Drive but with the onedrive_ prefix. If the user just says "my files" without specifying which service, ask which one or check both if both are connected.
+When the user asks you to text or SMS someone (e.g. appointment confirmation), use vonage_send_sms with the exact number and message they approve. Only send SMS when the user has clearly requested it; do not spam. Mention that SMS uses the Vonage sender configured on the server.
+When the user asks you to call someone and say something (appointment reminder, spoken message), use vonage_voice_call with the exact script (TTS only). When they want a live back-and-forth AI conversation on the phone line and the server is configured for the media bridge, use vonage_ai_voice_call.
+${autopilot ? getAutopilotPrompt() : ''}
 ${getAntiHallucinationPrompt()}
 ${getThinkingPrompt(thinkingDepth)}`
+}
+
+function getAutopilotPrompt(): string {
+  return `
+## AUTOPILOT MODE — ACTIVE
+
+You are now in **full autonomous autopilot mode**. The user is watching — they want you to take over completely.
+
+### IDE availability
+From **main chat**, the Code Editor opens automatically when autopilot starts. Tools whose names start with \`ide_\` or \`git_\` work once that panel is visible — use them; do not claim the IDE is unavailable unless a tool explicitly returns an error after you tried.
+
+### Rules:
+1. **DO NOT ask for permission or confirmation** — just act. The user said "take over."
+2. **Plan first, then execute.** Start by reading the current files (ide_get_files, ide_read_file) to understand the state, then plan your approach.
+3. **Work in a loop:** Implement → Run → Check for errors → Fix → Run again → Continue until everything works.
+4. **Use ALL available tools aggressively:**
+   - ide_create_file, ide_edit_file, ide_replace_text for coding
+   - ide_run_and_fix or ide_run_terminal to test
+   - ide_get_problems to check for issues
+   - ide_search_all_files to understand patterns
+   - ide_get_terminal_output to read results
+   - web_search if you need external info
+5. **Never stop mid-task.** Complete the entire goal before responding to the user.
+6. **Report what you did** at the end — summarize files created/modified, what was built, and the current status.
+7. **If you hit an error you cannot fix,** explain what happened and what the user needs to do.
+8. **Chain your tool calls.** Don't make a single tool call and stop. Keep calling tools until the work is done.
+9. **End your response with a status line** in this format:
+   - \`[AUTOPILOT: COMPLETED]\` — if all work is done
+   - \`[AUTOPILOT: CONTINUING]\` — if there's more to do (the system will send you back with fresh context)
+   - \`[AUTOPILOT: BLOCKED]\` — if you need user input to proceed
+
+The user is trusting you to drive. Show them what you can do.`
 }

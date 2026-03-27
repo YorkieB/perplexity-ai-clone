@@ -64,6 +64,7 @@ function fileExtension(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function resolveWorkspaceFilePreview(row: WorkspaceFileRow): WorkspaceFilePreview {
   if (row.preview) return row.preview
   const ext = fileExtension(row.name)
@@ -88,6 +89,7 @@ export function resolveWorkspaceFilePreview(row: WorkspaceFileRow): WorkspaceFil
 }
 
 /** Demo rows so the modal matches the design before real persistence exists. */
+// eslint-disable-next-line react-refresh/only-export-components
 export const WORKSPACE_FILES_DEMO: WorkspaceFileRow[] = [
   {
     id: '1',
@@ -180,6 +182,19 @@ function NameIcon({ name }: { readonly name: string }) {
   return <FileIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
 }
 
+function workspacePreviewKindLabel(preview: WorkspaceFilePreview): string {
+  switch (preview.kind) {
+    case 'image':
+      return 'Image'
+    case 'markdown':
+      return 'Markdown'
+    case 'text':
+      return 'Text'
+    default:
+      return 'Unavailable'
+  }
+}
+
 function WorkspaceFilePreviewBody({ preview }: { readonly preview: WorkspaceFilePreview }) {
   const noopHover = useCallback(() => {}, [])
 
@@ -245,7 +260,7 @@ function WorkspaceFilePreviewDialog({ row, onOpenChange }: WorkspaceFilePreviewD
                 {row.name}
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                Preview · {preview.kind === 'image' ? 'Image' : preview.kind === 'markdown' ? 'Markdown' : preview.kind === 'text' ? 'Text' : 'Unavailable'}
+                Preview · {workspacePreviewKindLabel(preview)}
               </DialogDescription>
             </DialogHeader>
             <ScrollArea className="max-h-[min(72vh,760px)] px-6 py-4">
