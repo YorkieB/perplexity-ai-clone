@@ -71,9 +71,10 @@ export function getOAuthConfig(provider: string): OAuthProvider | null {
 }
 
 export function generateOAuthState(provider: string): OAuthState {
+  const { randomUUID } = globalThis.crypto
   return {
     provider,
-    nonce: crypto.randomUUID(),
+    nonce: randomUUID(),
     returnUrl: window.location.pathname,
   }
 }

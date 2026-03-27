@@ -6,6 +6,12 @@ import OpenAI from 'openai'
 
 import SessionIndex from '@/memory/sessionIndex'
 import type { RouteResult } from '@/lib/router/semanticRouter'
+import { buildScratchpadSummary, getActiveSubGoal } from '@/reasoning/cotScratchpad'
+import type { ReActDecision } from '@/reasoning/reactEngine'
+import ProblemDecomposer from '@/reasoning/problemDecomposer'
+import ReActLoopController, { type LoopResult } from '@/reasoning/reactLoopController'
+import { scratchpadStore } from '@/reasoning/scratchpadStore'
+import type { ThoughtContext } from '@/reasoning/thoughtGenerator'
 import {
   buildWorkerBrief,
   createTaskState,
@@ -130,6 +136,10 @@ export default class ManagerAgent {
   private readonly openai: OpenAI
   private currentTaskState: TaskState | null = null
   private turnHistory: ManagerTurn[] = []
+  private reactController: ReActLoopController | null = null
+  private lastReActResult: LoopResult | null = null
+  private readonly decomposer: ProblemDecomposer = new ProblemDecomposer()
+  private currentScratchpadId: string | null = null
 
   /**
    * @param sessionId - Session id (matches orchestrator / index scope)
@@ -155,6 +165,23 @@ export default class ManagerAgent {
   /** Clears the active task so the next turn starts fresh. */
   resetTask(): void {
     this.currentTaskState = null
+    this.currentScratchpadId = null
+  }
+
+  /** Scratchpad summary for the current task, or null if none. */
+  getScratchpadSummary(): string | null {
+    if (this.currentScratchpadId === null) return null
+    const pad = scratchpadStore.get(this.currentScratchpadId)
+    if (pad === null) return null
+    return buildScratchpadSummary(pad)
+  }
+
+  /**
+   * Persists the last full {@link ReActLoopController.run} result so the next
+   * {@link processTurn} can pass prior ReAct steps into {@link ThoughtContext}.
+   */
+  ingestReActLoopResult(result: LoopResult): void {
+    this.lastReActResult = result
   }
 
   /**
@@ -168,6 +195,34 @@ export default class ManagerAgent {
       turnIndex,
     })
     console.info(`${LOG} Assistant turn recorded (turn ${String(turnIndex)})`)
+
+    if (this.currentScratchpadId !== null && content.length > 50) {
+      const pad = scratchpadStore.get(this.currentScratchpadId)
+      if (pad !== null) {
+        // NOTE: This auto-completes the active sub-goal on any assistant reply
+        // longer than 50 chars. This works well for single-step tasks but
+        // can be over-eager on multi-step tasks where one Worker reply
+        // satisfies only part of the active sub-goal.
+        //
+        // Future improvement (Phase 3+): use VerifierAgent.evaluateCompletion()
+        // to confirm the sub-goal is actually satisfied before marking complete.
+        // For now, the optimistic completion is acceptable — worst case is a
+        // sub-goal is marked complete slightly early, and the next ReAct thought
+        // will detect the gap via scratchpad state.
+        const activeSubGoal = getActiveSubGoal(pad)
+        if (activeSubGoal !== null) {
+          try {
+            scratchpadStore.completeSubGoal(
+              this.currentScratchpadId,
+              activeSubGoal.id,
+              content.slice(0, 100),
+            )
+          } catch (err) {
+            console.warn(`${LOG} completeSubGoal after Worker output failed`, err)
+          }
+        }
+      }
+    }
   }
 
   /** Most recent assistant entry (walks back from end; skips trailing user). */
@@ -380,6 +435,84 @@ ${assistantContextSnippet}`
     return merged
   }
 
+  /**
+   * Single-step ReAct {@link ReActEngine.decide} before artefact merge (skipped for conversational turns).
+   */
+  private async _maybeRunReActDecide(
+    userMessage: string,
+    intentResult: RouteResult,
+    ragContent: string[],
+    state: TaskState,
+    skipReAct: boolean,
+  ): Promise<
+    | { decision: ReActDecision | null; earlyClarify?: undefined }
+    | { decision: null; earlyClarify: string }
+  > {
+    if (skipReAct) {
+      return { decision: null }
+    }
+
+    const thoughtContext: ThoughtContext = {
+      userMessage,
+      taskType: intentResult.route,
+      priorSteps: this.lastReActResult?.trace.steps ?? [],
+      ragContent,
+      taskBrief:
+        this.currentTaskState !== null ? buildWorkerBrief(this.currentTaskState) : undefined,
+      lastObservation: this.lastReActResult?.trace.steps.at(-1)?.observation.content,
+      iterationCount: this.currentTaskState?.iterationCount ?? 0,
+      scratchpadId: this.currentScratchpadId ?? undefined,
+    }
+
+    this.reactController = new ReActLoopController({
+      taskType: intentResult.route,
+      sessionId: this.sessionId,
+      model: 'gpt-4o',
+      enableUncertaintyChecks: true,
+      scratchpadId: this.currentScratchpadId ?? undefined,
+    })
+
+    const decision = await this.reactController.engine.decide(thoughtContext)
+    console.log(
+      `${LOG} ReAct decision: ${decision.action} (confidence: ${decision.thought.confidence.toFixed(2)})`,
+    )
+
+    if (decision.action === 'request_clarification' && decision.thought.confidence < 0.5) {
+      return { decision: null, earlyClarify: decision.thought.content }
+    }
+
+    return { decision }
+  }
+
+  /** Appends CoT scratchpad summary when the Worker brief should carry task understanding. */
+  private _briefWithScratchpad(baseBrief: string): string {
+    if (this.currentScratchpadId === null) {
+      return baseBrief
+    }
+    const pad = scratchpadStore.get(this.currentScratchpadId)
+    if (pad === null || (pad.subGoals.length === 0 && pad.keyInsights.length === 0)) {
+      return baseBrief
+    }
+    return `${baseBrief}\n\n<task_understanding>\n${buildScratchpadSummary(pad)}\n</task_understanding>`
+  }
+
+  /** Creates a CoT scratchpad and optionally decomposes the task into sub-goals. */
+  private async _bootstrapScratchpadForNewTask(
+    userMessage: string,
+    route: string,
+    ragContent: string[],
+  ): Promise<void> {
+    const pad = scratchpadStore.create(this.sessionId, route, userMessage)
+    this.currentScratchpadId = pad.scratchpadId
+
+    const shouldDecompose = await this.decomposer.shouldDecompose(userMessage, route)
+    if (!shouldDecompose) {
+      return
+    }
+    await this.decomposer.decompose(userMessage, route, ragContent, pad.scratchpadId)
+    console.log(`${LOG} Task decomposed into sub-goals`)
+  }
+
   private _pickPrimaryAndAdditional(artefacts: ArtefactRef[]): {
     primary: ArtefactRef | null
     additional: ArtefactRef[]
@@ -422,6 +555,27 @@ ${assistantContextSnippet}`
       this.currentTaskState === null || this._isNewTask(userMessage) || routeChanged
 
     let state: TaskState = isNewTask ? createTaskState(this.sessionId, taskType) : this.currentTaskState!
+
+    if (isNewTask) {
+      await this._bootstrapScratchpadForNewTask(userMessage, intentResult.route, ragContent)
+    }
+
+    const skipReAct = intentResult.route === 'conversational'
+    const reActOutcome = await this._maybeRunReActDecide(
+      userMessage,
+      intentResult,
+      ragContent,
+      state,
+      skipReAct,
+    )
+    if (reActOutcome.earlyClarify !== undefined) {
+      return {
+        action: 'clarify',
+        taskState: state,
+        clarificationQuestion: reActOutcome.earlyClarify,
+      }
+    }
+    const reactDecision = reActOutcome.decision
 
     const artefacts = await this._extractArtefacts(userMessage, ragContent)
     const { primary, additional } = this._pickPrimaryAndAdditional(artefacts)
@@ -466,10 +620,22 @@ ${assistantContextSnippet}`
     }
 
     if (state.primaryArtefact !== null && active.length > 0) {
+      let outState = state
+      if (!skipReAct && reactDecision !== null) {
+        outState = updateTaskState(state, {
+          reasoningThought: {
+            content: reactDecision.thought.content,
+            confidence: reactDecision.thought.confidence,
+            assumptions: reactDecision.thought.assumptions,
+            risks: reactDecision.thought.risks,
+          },
+        })
+        this.currentTaskState = outState
+      }
       return {
         action: 'brief_worker',
-        taskState: state,
-        brief: buildWorkerBrief(state),
+        taskState: outState,
+        brief: this._briefWithScratchpad(buildWorkerBrief(outState)),
       }
     }
 

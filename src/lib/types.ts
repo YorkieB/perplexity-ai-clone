@@ -76,10 +76,17 @@ export interface A2ETask {
   detail?: string
 }
 
+/** Server/chat envelope for special assistant turns (e.g. Manager–Worker clarification gate). */
+export interface ChatMessageMetadata {
+  type: 'clarification_required' | 'success' | (string & {})
+  preTaskEstimate?: unknown | null
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  metadata?: ChatMessageMetadata
   sources?: Source[]
   images?: SearchImage[]
   videos?: SearchVideo[]

@@ -61,6 +61,11 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:3000',
           changeOrigin: true,
         },
+        /** Jarvis reasoning dashboard SSE + snapshot — same backend as health unless overridden. */
+        '/api/dashboard': {
+          target: env.VITE_DASHBOARD_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:3000',
+          changeOrigin: true,
+        },
         '/ws/realtime': {
           target: 'wss://api.openai.com',
           ws: true,

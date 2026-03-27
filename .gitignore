@@ -25,6 +25,7 @@ dist-ssr
 *.sw?
 
 .env
+.env.local
 **/agent-eval-report*
 packages
 pids
@@ -33,5 +34,8 @@ pids
 
 .spark-workbench-id
 
-# Jarvis memory DB
+# Jarvis runtime data (lessons, chat sessions, SQLite db)
+data/lessons.json
+data/sessions.json
+data/jarvis.db
 data/

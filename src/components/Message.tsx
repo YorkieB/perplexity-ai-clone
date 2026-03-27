@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
-import { Sparkle, User } from '@phosphor-icons/react'
+import { Question, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -50,6 +50,32 @@ export function Message({
       <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
         {message.content}
       </p>
+    )
+  } else if (message.metadata?.type === 'clarification_required') {
+    mainContent = (
+      <div
+        className="rounded-lg border border-amber-500/45 bg-amber-500/[0.07] px-4 py-3 shadow-sm"
+        role="note"
+        aria-label="Clarification requested"
+      >
+        <div className="flex gap-3">
+          <Question
+            size={22}
+            className="shrink-0 text-amber-600 dark:text-amber-400 mt-0.5"
+            weight="bold"
+            aria-hidden
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400/90 mb-2">
+              More detail needed
+            </p>
+            <MarkdownRenderer
+              content={message.content}
+              onCitationHover={setHighlightedSource}
+            />
+          </div>
+        </div>
+      </div>
     )
   } else if (message.isModelCouncil && message.modelResponses) {
     mainContent = (

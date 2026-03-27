@@ -46,6 +46,17 @@ const TELEMETRY_EVENT_TYPES: readonly TelemetryEventType[] = [
   'prompt_assembled',
   'context_compacted',
   'search_fired',
+  'react_thought',
+  'react_observation',
+  'react_trace_complete',
+  'scratchpad_confidence_update',
+  'reflexion_critique',
+  'tot_search_complete',
+  'tot_decision',
+  'cost_warning',
+  'model_routed',
+  'confidence_scored',
+  'pre_task_confidence',
   'error',
 ] as const
 

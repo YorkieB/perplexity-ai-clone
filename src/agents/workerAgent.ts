@@ -7,6 +7,11 @@ import OpenAI from 'openai'
 import type { TaskType } from './taskState'
 import { formatToolsForOpenAI, loadToolsForIntent, type OpenAiToolSpec } from '@/lib/toolLoader'
 import { countTokens, TOKEN_LIMITS } from '@/lib/tokenCounter'
+import { modelRouter } from '@/reasoning/modelRouter'
+import type { RoutingSignals } from '@/reasoning/routingClassifier'
+import { confidenceOrchestrator } from '@/reasoning/confidenceOrchestrator'
+import { ELICITATION_INSTRUCTION } from '@/reasoning/confidenceTypes'
+import { lessonsStore } from '@/reasoning/lessonsStore'
 
 const LOG = '[WorkerAgent]'
 
@@ -43,6 +48,12 @@ export interface WorkerResult {
   iterationCount: number
   success: boolean
   error?: string
+  /** Dual-process AUQ scalar after {@link confidenceOrchestrator.evaluate} (session path). */
+  confidenceScore?: number
+  /** Discrete band aligned with {@link confidenceScore}. */
+  confidenceLevel?: string
+  /** Optional Reflexion / critic score (0–1) for composite confidence. */
+  critiqueScore?: number
 }
 
 function truncateBriefForBudget(
@@ -89,6 +100,58 @@ export default class WorkerAgent {
 
   constructor() {
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? '' })
+  }
+
+  private _isReasoningChatModel(modelId: string): boolean {
+    const m = modelId.trim()
+    return m === 'o3' || m === 'o3-mini'
+  }
+
+  /**
+   * NOTE: reasoning_effort is only added for exact model id matches:
+   * 'o3' and 'o3-mini'. Prefixed variants (e.g. 'openai/o3'),
+   * aliased ids, or future versioned ids (e.g. 'o3-2025-04') will
+   * NOT receive reasoning_effort and will use model defaults.
+   * If OpenAI releases versioned o3 ids, update the exact match
+   * list here: ['o3', 'o3-mini', 'o3-2025-XX', 'o3-mini-2025-XX']
+   */
+  private _completionParams(
+    modelToUse: string,
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    openAITools: OpenAiToolSpec[],
+    reasoningEffort?: string,
+  ): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
+    const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
+      model: modelToUse,
+      messages,
+      tools: openAITools.length > 0 ? openAITools : undefined,
+      temperature: 0.1,
+      max_tokens: 4000,
+      stream: false,
+    }
+    if (reasoningEffort !== undefined && reasoningEffort.length > 0 && this._isReasoningChatModel(modelToUse)) {
+      Object.assign(params, {
+        reasoning_effort: reasoningEffort as 'low' | 'medium' | 'high',
+      })
+    }
+    return params
+  }
+
+  private _estimateOutputLength(taskType: TaskType): RoutingSignals['estimatedOutputLength'] {
+    switch (taskType) {
+      case 'code_instruction':
+        return 'long'
+      case 'browser_task':
+        return 'medium'
+      case 'voice_task':
+        return 'short'
+      case 'image_task':
+        return 'short'
+      case 'knowledge_lookup':
+        return 'medium'
+      default:
+        return 'medium'
+    }
   }
 
   /**
@@ -143,29 +206,70 @@ You return COMPLETE implementations, never partial snippets.
    * @param brief - XML brief from {@link buildWorkerBrief} (or refinement wrapper)
    * @param taskType - Drives tool loading and task-focus block
    * @param model - OpenAI chat model id
+   * @param sessionId - When set, injects relevant {@link lessonsStore} lessons into the user brief
    * @param orchestratorBasePrompt - Optional Jarvis main system text (experiment/registry) prepended to worker rules
+   * @param complexityScore - Drives {@link modelRouter} when `sessionId` is set
+   * @param critiqueScore - Optional critic score for {@link confidenceOrchestrator} composite path
+   * @param skipConfidenceEvaluation - When true, skip post-run {@link confidenceOrchestrator.evaluate} (orchestrator runs it after Reflexion).
    */
   async execute(
     brief: string,
     taskType: TaskType,
     model: string = 'gpt-4o',
+    sessionId?: string,
     orchestratorBasePrompt?: string,
+    complexityScore?: number,
+    critiqueScore?: number,
+    skipConfidenceEvaluation?: boolean,
   ): Promise<WorkerResult> {
+    let routerResult: Awaited<ReturnType<typeof modelRouter.route>> | null = null
+    let modelToUse = model
+    let reasoningEffort: string | undefined
+
+    if (sessionId !== undefined) {
+      routerResult = await modelRouter.route({
+        sessionId,
+        taskType,
+        taskDescription: brief.slice(0, 500),
+        complexityScore: complexityScore ?? 0.5,
+        iterationNumber: 0,
+        estimatedOutputLength: this._estimateOutputLength(taskType),
+        requiresStructuredOutput: taskType === 'voice_task',
+      })
+      modelToUse = routerResult.model
+      reasoningEffort = routerResult.reasoningEffort
+    }
+
+    let enrichedBrief = brief
+    if (sessionId !== undefined) {
+      const relevantLessons = await lessonsStore.getRelevantLessons({
+        sessionId,
+        taskType,
+        currentOutput: brief.slice(0, 500),
+      })
+      if (relevantLessons.length > 0) {
+        const lessonsBlock = lessonsStore.formatForPrompt(relevantLessons)
+        enrichedBrief = `${brief}\n\n${lessonsBlock}`
+        console.log(`${LOG} Injected ${String(relevantLessons.length)} lessons into brief`)
+      }
+    }
+
     const workerSystemPrompt = this._buildWorkerSystemPrompt(taskType)
     const trimmedBase = orchestratorBasePrompt?.trim() ?? ''
+    const withElicitation = `${workerSystemPrompt}\n\n${ELICITATION_INSTRUCTION}`
     const systemContent =
-      trimmedBase.length > 0 ? `${trimmedBase}\n\n---\n\n${workerSystemPrompt}` : workerSystemPrompt
+      trimmedBase.length > 0 ? `${trimmedBase}\n\n---\n\n${withElicitation}` : withElicitation
     const tools = loadToolsForIntent(taskType)
     const openAITools = formatToolsForOpenAI(tools)
 
-    const limit = resolveContextLimit(model)
+    const limit = resolveContextLimit(modelToUse)
     const maxInputTokens = Math.floor(limit * 0.8)
 
-    let userContent = brief
-    const inputTokens = countTokens(systemContent + userContent, model)
+    let userContent = enrichedBrief
+    const inputTokens = countTokens(systemContent + userContent, modelToUse)
     if (inputTokens > maxInputTokens) {
       console.warn(`${LOG} Brief exceeds 80% of context window — truncating brief`)
-      userContent = truncateBriefForBudget(systemContent, brief, model, maxInputTokens)
+      userContent = truncateBriefForBudget(systemContent, enrichedBrief, modelToUse, maxInputTokens)
     }
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -174,15 +278,70 @@ You return COMPLETE implementations, never partial snippets.
     ]
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model,
-        messages,
-        tools: openAITools.length > 0 ? openAITools : undefined,
-        temperature: 0.1,
-        max_tokens: 4000,
-      })
+      const response = await this.openai.chat.completions.create(
+        this._completionParams(modelToUse, messages, openAITools, reasoningEffort),
+      )
 
-      return await this._completeExecuteAfterFirstResponse(model, taskType, messages, openAITools, response)
+      const wrapped = await this._completeExecuteAfterFirstResponse(
+        modelToUse,
+        taskType,
+        messages,
+        openAITools,
+        response,
+        reasoningEffort,
+      )
+
+      if (sessionId !== undefined && routerResult !== null) {
+        modelRouter.recordActualUsage(
+          sessionId,
+          routerResult.tier,
+          modelToUse,
+          wrapped.promptTokens,
+          wrapped.completionTokens,
+          taskType,
+        )
+      }
+
+      const workerResult = wrapped.result
+
+      if (
+        sessionId !== undefined &&
+        workerResult.success &&
+        workerResult.content.trim().length > 0 &&
+        skipConfidenceEvaluation !== true
+      ) {
+        const confidenceResult = await confidenceOrchestrator.evaluate(
+          workerResult.content,
+          {
+            sessionId,
+            taskType,
+            taskDescription: brief.slice(0, 300),
+            turnIndex: 0,
+            complexityScore: complexityScore ?? 0.5,
+            iterationNumber: 0,
+          },
+          critiqueScore !== undefined ? { critiqueScore } : undefined,
+        )
+
+        if (confidenceResult.uarResult?.resolvedContent !== undefined) {
+          workerResult.content = confidenceResult.uarResult.resolvedContent
+          console.log(
+            `${LOG} UAR improved output (confidence: ${confidenceResult.uarResult.originalScore.toFixed(2)} → ${confidenceResult.uarResult.resolvedScore.toFixed(2)})`,
+          )
+        }
+
+        if (confidenceResult.uncertaintyNotice !== undefined) {
+          workerResult.content += `\n\n${confidenceResult.uncertaintyNotice}`
+        }
+
+        workerResult.confidenceScore = confidenceResult.score.scalar
+        workerResult.confidenceLevel = confidenceResult.score.level
+        if (critiqueScore !== undefined) {
+          workerResult.critiqueScore = critiqueScore
+        }
+      }
+
+      return workerResult
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       return {
@@ -205,7 +364,12 @@ You return COMPLETE implementations, never partial snippets.
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     openAITools: OpenAiToolSpec[],
     response: OpenAI.Chat.Completions.ChatCompletion,
-  ): Promise<WorkerResult> {
+    reasoningEffort?: string,
+  ): Promise<{
+    result: WorkerResult
+    promptTokens: number
+    completionTokens: number
+  }> {
     let promptTok = response.usage?.prompt_tokens ?? 0
     let completionTok = response.usage?.completion_tokens ?? 0
 
@@ -222,11 +386,15 @@ You return COMPLETE implementations, never partial snippets.
           : countTokens(text, model)
 
       return {
-        content: text,
-        taskType,
-        tokensUsed,
-        iterationCount: 1,
-        success: true,
+        result: {
+          content: text,
+          taskType,
+          tokensUsed,
+          iterationCount: 1,
+          success: true,
+        },
+        promptTokens: promptTok,
+        completionTokens: completionTok,
       }
     }
 
@@ -237,6 +405,7 @@ You return COMPLETE implementations, never partial snippets.
         messages,
         openAITools,
         response,
+        reasoningEffort,
         (p, c) => {
           promptTok += p
           completionTok += c
@@ -251,20 +420,28 @@ You return COMPLETE implementations, never partial snippets.
       const loopMessage = loopErr instanceof Error ? loopErr.message : String(loopErr)
       if (lastGoodContent.length > 0) {
         return {
-          content: lastGoodContent,
-          taskType,
-          tokensUsed: promptTok + completionTok,
-          iterationCount: 1,
-          success: true,
+          result: {
+            content: lastGoodContent,
+            taskType,
+            tokensUsed: promptTok + completionTok,
+            iterationCount: 1,
+            success: true,
+          },
+          promptTokens: promptTok,
+          completionTokens: completionTok,
         }
       }
       return {
-        content: '',
-        taskType,
-        tokensUsed: promptTok + completionTok,
-        iterationCount: 1,
-        success: false,
-        error: loopMessage,
+        result: {
+          content: '',
+          taskType,
+          tokensUsed: promptTok + completionTok,
+          iterationCount: 1,
+          success: false,
+          error: loopMessage,
+        },
+        promptTokens: promptTok,
+        completionTokens: completionTok,
       }
     }
 
@@ -275,21 +452,29 @@ You return COMPLETE implementations, never partial snippets.
 
     if (content.length === 0 && loopResponse.choices[0]?.finish_reason === 'tool_calls') {
       return {
-        content: lastGoodContent,
-        taskType,
-        tokensUsed,
-        iterationCount: 1,
-        success: lastGoodContent.length > 0,
-        ...(lastGoodContent.length === 0 ? { error: 'Tool loop ended without assistant text' } : {}),
+        result: {
+          content: lastGoodContent,
+          taskType,
+          tokensUsed,
+          iterationCount: 1,
+          success: lastGoodContent.length > 0,
+          ...(lastGoodContent.length === 0 ? { error: 'Tool loop ended without assistant text' } : {}),
+        },
+        promptTokens: promptTok,
+        completionTokens: completionTok,
       }
     }
 
     return {
-      content,
-      taskType,
-      tokensUsed,
-      iterationCount: 1,
-      success: true,
+      result: {
+        content,
+        taskType,
+        tokensUsed,
+        iterationCount: 1,
+        success: true,
+      },
+      promptTokens: promptTok,
+      completionTokens: completionTok,
     }
   }
 
@@ -301,6 +486,7 @@ You return COMPLETE implementations, never partial snippets.
     seedMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     openAITools: OpenAiToolSpec[],
     initialResponse: OpenAI.Chat.Completions.ChatCompletion,
+    reasoningEffort: string | undefined,
     addTokens: (prompt: number, completion: number) => void,
     onAssistantText: (text: string) => void,
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
@@ -339,13 +525,9 @@ You return COMPLETE implementations, never partial snippets.
         })
       }
 
-      loopResponse = await this.openai.chat.completions.create({
-        model,
-        messages: loopMessages,
-        tools: openAITools.length > 0 ? openAITools : undefined,
-        temperature: 0.1,
-        max_tokens: 4000,
-      })
+      loopResponse = await this.openai.chat.completions.create(
+        this._completionParams(model, loopMessages, openAITools, reasoningEffort),
+      )
 
       const u = loopResponse.usage
       if (u !== undefined) {
@@ -447,6 +629,9 @@ You return COMPLETE implementations, never partial snippets.
     refinementInstruction: string,
     taskType: TaskType,
     model: string = 'gpt-4o',
+    sessionId?: string,
+    complexityScore?: number,
+    critiqueScore?: number,
   ): Promise<WorkerResult> {
     const refinementBrief = `<refinement_brief>
 <original_brief><![CDATA[${cdataSafe(brief)}]]></original_brief>
@@ -454,7 +639,15 @@ You return COMPLETE implementations, never partial snippets.
 <refinement_instruction><![CDATA[${cdataSafe(refinementInstruction)}]]></refinement_instruction>
 </refinement_brief>`
 
-    const result = await this.execute(refinementBrief, taskType, model)
+    const result = await this.execute(
+      refinementBrief,
+      taskType,
+      model,
+      sessionId,
+      undefined,
+      complexityScore,
+      critiqueScore,
+    )
     return {
       ...result,
       iterationCount: result.iterationCount + 1,

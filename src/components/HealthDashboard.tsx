@@ -229,6 +229,125 @@ function summarizeTurnStarted(data: Record<string, unknown>): string {
   return len !== undefined ? 'msg ' + String(len) + ' chars' : 'start'
 }
 
+function summarizeReactThought(data: Record<string, unknown>): string {
+  const t = asStr(data.type) ?? '?'
+  const c = asNum(data.confidence)
+  const conf = c !== undefined ? c.toFixed(2) : '?'
+  return 'thought ' + t + ' · ' + conf
+}
+
+function summarizeReactObservation(data: Record<string, unknown>): string {
+  const st = asStr(data.status) ?? '?'
+  const m = asBool(data.meetsExpectation)
+  let exp = '?'
+  if (m === true) exp = 'ok'
+  else if (m === false) exp = 'miss'
+  return st + ' · ' + exp
+}
+
+function summarizeReactTraceComplete(data: Record<string, unknown>): string {
+  const steps = asNum(data.steps)
+  const ok = asBool(data.success)
+  let tail = '?'
+  if (ok === true) tail = 'ok'
+  else if (ok === false) tail = 'fail'
+  return String(steps ?? '?') + ' steps · ' + tail
+}
+
+function summarizeScratchpadConfidence(data: Record<string, unknown>): string {
+  const c = asNum(data.confidence)
+  return c !== undefined ? 'conf ' + c.toFixed(2) : 'scratchpad conf'
+}
+
+function summarizeReflexionCritique(data: Record<string, unknown>): string {
+  const score = asNum(data.score)
+  const it = asNum(data.iteration)
+  const passed = asBool(data.passed) === true
+  const parts: string[] = []
+  if (score !== undefined) parts.push('score ' + score.toFixed(2))
+  if (it !== undefined) parts.push('iter ' + String(it))
+  parts.push(passed ? 'pass' : 'fail')
+  return parts.join(' · ')
+}
+
+function summarizeTotSearchComplete(data: Record<string, unknown>): string {
+  const best = asNum(data.bestScore)
+  const gen = asNum(data.nodesGenerated)
+  const pruned = asNum(data.nodesPruned)
+  const ms = asNum(data.durationMs)
+  const parts: string[] = []
+  if (best !== undefined) parts.push('best ' + best.toFixed(2))
+  if (gen !== undefined) parts.push('gen ' + String(gen))
+  if (pruned !== undefined) parts.push('pruned ' + String(pruned))
+  if (ms !== undefined) parts.push(String(ms) + 'ms')
+  return parts.join(' · ')
+}
+
+function summarizeModelRouted(data: Record<string, unknown>): string {
+  const tier = asStr(data.tier) ?? '?'
+  const model = asStr(data.model) ?? '?'
+  const ov = asBool(data.wasOverridden) === true
+  const est = asNum(data.estimatedCostUSD)
+  const parts: string[] = [tier, model]
+  if (est !== undefined) parts.push('$' + est.toFixed(5))
+  parts.push(ov ? 'override' : 'ok')
+  return parts.join(' · ')
+}
+
+function summarizeCostWarning(data: Record<string, unknown>): string {
+  const total = asNum(data.totalCostUSD)
+  const th = asNum(data.threshold)
+  const tier = asStr(data.tier) ?? '?'
+  const parts: string[] = []
+  if (total !== undefined) parts.push('$' + total.toFixed(4))
+  if (th !== undefined) parts.push('thr $' + th.toFixed(2))
+  parts.push(tier)
+  return parts.join(' · ')
+}
+
+function summarizeTotDecision(data: Record<string, unknown>): string {
+  const level = asStr(data.complexityLevel) ?? '?'
+  const score = asNum(data.complexityScore)
+  const used = asBool(data.usedTot) === true
+  const explored = asNum(data.nodesExplored)
+  const best = asNum(data.bestScore)
+  const parts: string[] = [level]
+  if (score !== undefined) parts.push(score.toFixed(2))
+  parts.push(used ? 'tot' : 'skip')
+  if (explored !== undefined) parts.push('exp ' + String(explored))
+  if (best !== undefined) parts.push('best ' + best.toFixed(2))
+  return parts.join(' · ')
+}
+
+function summarizeConfidenceScored(data: Record<string, unknown>): string {
+  const scalar = asNum(data.scalar)
+  const level = asStr(data.level) ?? '?'
+  const action = asStr(data.action) ?? '?'
+  const source = asStr(data.source) ?? '?'
+  const roll = asNum(data.rollingAverage)
+  const trend = asStr(data.trend) ?? '?'
+  const task = asStr(data.taskType) ?? '?'
+  const parts: string[] = []
+  if (scalar !== undefined) parts.push(scalar.toFixed(2))
+  parts.push(level, action, source)
+  if (roll !== undefined) parts.push('roll ' + roll.toFixed(2))
+  parts.push(trend, task)
+  return parts.join(' · ')
+}
+
+function summarizePreTaskConfidence(data: Record<string, unknown>): string {
+  const conf = asNum(data.confidence)
+  const proceed = asBool(data.shouldProceed)
+  const gaps = asNum(data.missingInfoCount)
+  const task = asStr(data.taskType) ?? '?'
+  const parts: string[] = []
+  if (conf !== undefined) parts.push(conf.toFixed(2))
+  if (proceed !== undefined) parts.push(proceed ? 'proceed' : 'block')
+  if (gaps !== undefined) parts.push(`gaps ${String(gaps)}`)
+  parts.push(task)
+  return parts.join(' · ')
+}
+
 const EVENT_SUMMARIZERS: Record<TelemetryEventType, (data: Record<string, unknown>) => string> = {
   route_classified: summarizeRouteClassified,
   retrieval_gate_decision: summarizeRetrievalGate,
@@ -240,45 +359,74 @@ const EVENT_SUMMARIZERS: Record<TelemetryEventType, (data: Record<string, unknow
   turn_completed: summarizeTurnCompleted,
   prompt_assembled: summarizePromptAssembled,
   turn_started: summarizeTurnStarted,
+  react_thought: summarizeReactThought,
+  react_observation: summarizeReactObservation,
+  react_trace_complete: summarizeReactTraceComplete,
+  scratchpad_confidence_update: summarizeScratchpadConfidence,
+  reflexion_critique: summarizeReflexionCritique,
+  tot_search_complete: summarizeTotSearchComplete,
+  tot_decision: summarizeTotDecision,
+  cost_warning: summarizeCostWarning,
+  model_routed: summarizeModelRouted,
+  confidence_scored: summarizeConfidenceScored,
+  pre_task_confidence: summarizePreTaskConfidence,
 }
 
 function summarizeEvent(type: TelemetryEventType, data: Record<string, unknown>): string {
   return EVENT_SUMMARIZERS[type](data)
 }
 
+const EVENT_ROW_STATIC_SUFFIX: Partial<Record<TelemetryEventType, string>> = {
+  route_classified: ' bg-sky-950/40 text-sky-100',
+  worker_executed: ' bg-indigo-950/40 text-indigo-100',
+  search_fired: ' bg-amber-950/40 text-amber-100',
+  cost_warning: ' bg-yellow-950/50 text-yellow-100',
+  model_routed: ' bg-lime-950/40 text-lime-100',
+  context_compacted: ' bg-orange-950/40 text-orange-100',
+  error: ' bg-red-950/60 text-red-50',
+  turn_completed: ' bg-zinc-900/80 text-zinc-300',
+}
+
+const EVENT_ROW_CYAN_GROUP = new Set<TelemetryEventType>([
+  'react_thought',
+  'react_observation',
+  'scratchpad_confidence_update',
+  'reflexion_critique',
+  'tot_search_complete',
+  'tot_decision',
+  'confidence_scored',
+  'pre_task_confidence',
+])
+
+function retrievalGateRowClasses(base: string, data: Record<string, unknown>): string {
+  const intent = asStr(data.intentRoute)
+  const web = asBool(data.shouldSearchWeb) === true
+  const mwRisk = web && intent !== undefined && MW_INTENT_ROUTES.has(intent)
+  if (mwRisk) {
+    return base + ' bg-red-950/50 text-red-100'
+  }
+  return base + ' bg-violet-950/40 text-violet-100'
+}
+
 function eventRowClasses(type: TelemetryEventType, data: Record<string, unknown>): string {
   const base = 'border-b border-zinc-800/80 px-2 py-1 text-[11px] leading-tight font-mono'
-  if (type === 'route_classified') {
-    return base + ' bg-sky-950/40 text-sky-100'
-  }
   if (type === 'retrieval_gate_decision') {
-    const intent = asStr(data.intentRoute)
-    const web = asBool(data.shouldSearchWeb) === true
-    const mwRisk = web && intent !== undefined && MW_INTENT_ROUTES.has(intent)
-    if (mwRisk) {
-      return base + ' bg-red-950/50 text-red-100'
-    }
-    return base + ' bg-violet-950/40 text-violet-100'
-  }
-  if (type === 'worker_executed') {
-    return base + ' bg-indigo-950/40 text-indigo-100'
+    return retrievalGateRowClasses(base, data)
   }
   if (type === 'worker_verified') {
     return asBool(data.passed) === true
       ? base + ' bg-emerald-950/40 text-emerald-100'
       : base + ' bg-red-950/50 text-red-100'
   }
-  if (type === 'search_fired') {
-    return base + ' bg-amber-950/40 text-amber-100'
+  const staticSuffix = EVENT_ROW_STATIC_SUFFIX[type]
+  if (staticSuffix !== undefined) {
+    return base + staticSuffix
   }
-  if (type === 'context_compacted') {
-    return base + ' bg-orange-950/40 text-orange-100'
+  if (EVENT_ROW_CYAN_GROUP.has(type)) {
+    return base + ' bg-cyan-950/40 text-cyan-100'
   }
-  if (type === 'error') {
-    return base + ' bg-red-950/60 text-red-50'
-  }
-  if (type === 'turn_completed') {
-    return base + ' bg-zinc-900/80 text-zinc-300'
+  if (type === 'react_trace_complete') {
+    return base + ' bg-teal-950/40 text-teal-100'
   }
   return base + ' bg-zinc-900/60 text-zinc-400'
 }

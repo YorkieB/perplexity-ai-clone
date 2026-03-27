@@ -68,6 +68,14 @@ export interface TaskState {
   lastWorkerOutput?: string
   iterationCount: number
 
+  /** Latest Manager ReAct reasoning snapshot for the Worker brief. */
+  reasoningThought?: {
+    content: string
+    confidence: number
+    assumptions: string[]
+    risks: string[]
+  }
+
   createdAt: string
   updatedAt: string
 }
@@ -170,6 +178,20 @@ export function buildWorkerBrief(state: TaskState): string {
       lines.push(`    ${String(idx + 1)}. ${r.description}`)
     })
     lines.push('  </requirements>')
+  }
+
+  const rt = state.reasoningThought
+  if (rt !== undefined) {
+    const reasoningBody = [
+      rt.content,
+      '',
+      `Confidence: ${String(rt.confidence)}`,
+      `Key assumptions: ${rt.assumptions.join(', ')}`,
+      `Risks to avoid: ${rt.risks.join(', ')}`,
+    ].join('\n')
+    lines.push('  <reasoning>')
+    lines.push(`  ${wrapCdata(reasoningBody)}`)
+    lines.push('  </reasoning>')
   }
 
   lines.push(`  <iteration>${String(state.iterationCount)}</iteration>`)

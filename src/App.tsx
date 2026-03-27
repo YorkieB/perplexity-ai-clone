@@ -30,6 +30,7 @@ import { VoiceMode } from '@/components/VoiceMode'
 import { WebBrowserModal } from '@/components/WebBrowserModal'
 import { AppModuleRails } from '@/components/layout/AppModuleRails'
 import { HealthDashboardPage } from '@/components/HealthDashboardRoute'
+import ReasoningDashboardPage from '@/app/dashboard/page'
 import { canAccessHealthDashboard, HEALTH_DASHBOARD_403_FLAG } from '@/lib/healthDashboardAccess'
 import { TuneInControlProvider } from '@/contexts/TuneInControlContext'
 import { BrowserControlProvider, useBrowserControl, useBrowserGuideMode } from '@/contexts/BrowserControlContext'
@@ -971,6 +972,9 @@ function App() {
   }
   if (path === '/health') {
     return <HealthDashboardPage />
+  }
+  if (path === '/dashboard') {
+    return <ReasoningDashboardPage />
   }
   return <MainApp />
 }

@@ -42,7 +42,12 @@ import LongTermIndex from '@/rag/longTermIndex'
 import RetrievalGate from '@/rag/retrievalGate'
 import type { GateResult, RetrievalGateSource } from '@/rag/retrievalGate'
 import ManagerWorkerOrchestrator from '@/agents/managerWorkerOrchestrator'
-import type { MWOrchestratorResult } from '@/agents/managerWorkerOrchestrator'
+import {
+  type MWOrchestratorResult,
+  isMwOrchestratorClarificationRequired,
+} from '@/agents/managerWorkerOrchestrator'
+import { mwResultToAssistantPayload, type AssistantChatMetadata } from '@/lib/api/mwResultToAssistantPayload'
+import type { PersistedSession } from '@/lib/persistence/sessionPersistenceAdapter'
 import type { Alert, SystemStatsSnapshot } from '@/lib/observability/alertSystem'
 
 /** Routes understood by {@link RetrievalGate}, {@link semanticRouter}, and tool loading. */
@@ -58,6 +63,11 @@ export type OrchestratorIntentRoute =
   | 'file_task'
 
 export interface OrchestratorOptions {
+  /**
+   * Stable session id for HTTP / multi-turn continuity (vector index, MW orchestrator, telemetry).
+   * When omitted, a new UUID is generated per {@link Orchestrator} instance.
+   */
+  sessionId?: string
   /**
    * Base Jarvis identity / instructions; merged by {@link assembleContext} (not sent raw to the LLM).
    */
@@ -84,6 +94,11 @@ export interface OrchestratorProcessResult {
   mwAction?: MWOrchestratorResult['action']
   /** Set when {@link ManagerWorkerOrchestrator} handled this turn. */
   verificationPassed?: boolean
+  /**
+   * Populated for Manager–Worker turns: mirrors {@link mwResultToAssistantPayload}
+   * so clients can use `metadata.type === 'clarification_required'` without re-deriving from `mwAction`.
+   */
+  metadata?: AssistantChatMetadata
 }
 
 /** Internal bundle so {@link Orchestrator.process} can run prompt telemetry once per turn. */
@@ -141,7 +156,8 @@ export default class Orchestrator {
   private readonly mwOrchestrator: ManagerWorkerOrchestrator
 
   constructor(options: OrchestratorOptions) {
-    this.sessionId = uuidv4()
+    const sid = options.sessionId?.trim() ?? ''
+    this.sessionId = sid.length > 0 ? sid : uuidv4()
     this.baseSystemPrompt = options.systemPrompt?.trim() || DEFAULT_BASE_SYSTEM_PROMPT
     this.contextAssemblyModel = options.contextAssemblyModel?.trim() || 'gpt-4o'
     this.longTermIndex = new LongTermIndex()
@@ -254,8 +270,10 @@ export default class Orchestrator {
     mwResult?: MWOrchestratorResult,
   ): void {
     let verificationScore = 1.0
-    if (mwResult !== undefined) {
+    if (mwResult !== undefined && !isMwOrchestratorClarificationRequired(mwResult)) {
       verificationScore = mwResult.workerResult !== undefined ? 1.0 : 0.0
+    } else if (mwResult !== undefined && isMwOrchestratorClarificationRequired(mwResult)) {
+      verificationScore = 0.0
     }
     promptExperiments.recordOutcome(this.sessionId, {
       misrouted: false,
@@ -265,7 +283,9 @@ export default class Orchestrator {
     const outcome = {
       toolMisrouted: false,
       contextIgnored: false,
-      neededClarification: intentRoute === 'clarification_needed',
+      neededClarification:
+        intentRoute === 'clarification_needed' ||
+        (mwResult !== undefined && isMwOrchestratorClarificationRequired(mwResult)),
     }
 
     if (promptRegistry.getActive() === null) {
@@ -464,6 +484,79 @@ export default class Orchestrator {
       this.sessionTranscriptBuffer.shift()
     }
     this.pushAssistantTurn(a)
+  }
+
+  /** Rebuild rolling transcript pairs from `conversation_history` after disk restore. */
+  private rebuildSessionTranscriptBufferFromHistory(): void {
+    this.sessionTranscriptBuffer.length = 0
+    for (let i = 0; i < this.conversation_history.length - 1; i++) {
+      const u = this.conversation_history[i]
+      const a = this.conversation_history[i + 1]
+      if (u?.role === 'user' && a?.role === 'assistant') {
+        this.sessionTranscriptBuffer.push({ role: 'user', text: u.content })
+        this.sessionTranscriptBuffer.push({ role: 'assistant', text: a.content })
+        i++
+      }
+    }
+    while (this.sessionTranscriptBuffer.length > SESSION_TRANSCRIPT_MAX_ENTRIES) {
+      this.sessionTranscriptBuffer.splice(0, 2)
+    }
+  }
+
+  /**
+   * Restore chat history after a process restart. Re-indexes turns into {@link sessionIndex}.
+   * Manager–Worker scratchpad / in-flight task state is not restored.
+   */
+  hydrateFromPersistedSession(persisted: PersistedSession): void {
+    if (persisted.sessionId !== this.sessionId) {
+      console.warn(
+        `[Orchestrator] hydrate sessionId mismatch (disk=${persisted.sessionId} instance=${this.sessionId})`,
+      )
+      return
+    }
+    const rows = persisted.contextHistory ?? []
+    if (rows.length === 0) {
+      return
+    }
+
+    this.conversation_history.length = 0
+    for (const row of rows) {
+      const role = row.role === 'assistant' ? 'assistant' : 'user'
+      const content = typeof row.content === 'string' ? row.content : ''
+      if (!content.trim()) continue
+      this.conversation_history.push({
+        role,
+        content,
+        turnIndex: this.conversation_history.length,
+      })
+      this.sessionIndex.indexTurn(content, role)
+    }
+    this.rebuildSessionTranscriptBufferFromHistory()
+    console.log(
+      `[Orchestrator] Session ${this.sessionId} hydrated from disk (history: ${String(this.conversation_history.length)} messages)`,
+    )
+  }
+
+  /**
+   * Snapshot for HTTP session file persistence. Pass prior `createdAt` from disk on updates.
+   */
+  snapshotForPersistence(preservedCreatedAt?: string | null): PersistedSession {
+    const created =
+      preservedCreatedAt !== undefined &&
+      preservedCreatedAt !== null &&
+      preservedCreatedAt.trim().length > 0
+        ? preservedCreatedAt.trim()
+        : new Date().toISOString()
+    const now = new Date().toISOString()
+    return {
+      sessionId: this.sessionId,
+      createdAt: created,
+      lastActiveAt: now,
+      contextHistory: this.conversation_history
+        .filter((t) => t.role === 'user' || t.role === 'assistant')
+        .map((t) => ({ role: t.role, content: t.content })),
+      metadata: { conversationTurns: this.conversation_history.length },
+    }
   }
 
   /**
@@ -905,7 +998,10 @@ export default class Orchestrator {
           route: outcome.intentRoute,
           responseLength: outcome.result.reply.length,
           mwoAction: outcome.mwResult?.action,
-          verificationPassed: outcome.mwResult?.verificationPassed,
+          verificationPassed:
+            outcome.mwResult !== undefined && !isMwOrchestratorClarificationRequired(outcome.mwResult)
+              ? outcome.mwResult.verificationPassed
+              : undefined,
         },
         Date.now() - turnStart,
       )
@@ -1001,19 +1097,24 @@ export default class Orchestrator {
       const mwResult = await this.mwOrchestrator.process(trimmed, intentResult, gateResult.content)
       this.sessionIndex.indexTurn(mwResult.response, 'assistant')
       this.recordSessionExchange(trimmed, mwResult.response)
+      const verifiedLog =
+        mwResult.type === 'standard' ? String(mwResult.verificationPassed) : 'clarification'
       console.info(
-        `[Orchestrator] MWO completed — action: ${mwResult.action}, verified: ${String(mwResult.verificationPassed)}, iterations: ${String(mwResult.iterationCount)}`,
+        `[Orchestrator] MWO completed — action: ${mwResult.action}, verified: ${verifiedLog}, iterations: ${String(mwResult.iterationCount)}`,
       )
+      const assistantPayload = mwResultToAssistantPayload(mwResult)
       return {
         result: {
-          reply: mwResult.response,
+          reply: assistantPayload.content,
           intentRoute,
           gateSource: gateResult.source,
           gateExplanation: gateResult.explanation,
           usedRetrievalContext: gateResult.content.length > 0,
           skippedTools: true,
           mwAction: mwResult.action,
-          verificationPassed: mwResult.verificationPassed,
+          verificationPassed:
+            mwResult.type === 'standard' ? mwResult.verificationPassed : undefined,
+          metadata: assistantPayload.metadata,
         },
         intentRoute,
         mwResult,
