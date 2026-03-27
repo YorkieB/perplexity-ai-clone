@@ -29,6 +29,7 @@ import { AgentBrowserPanel } from '@/components/AgentBrowserPanel'
 import { VoiceMode } from '@/components/VoiceMode'
 import { WebBrowserModal } from '@/components/WebBrowserModal'
 import { AppModuleRails } from '@/components/layout/AppModuleRails'
+import { KnowledgeGraphButton } from '@/components/KnowledgeGraphModal'
 import { HealthDashboardPage } from '@/components/HealthDashboardRoute'
 import ReasoningDashboardPage from '@/app/dashboard/page'
 import { canAccessHealthDashboard, HEALTH_DASHBOARD_403_FLAG } from '@/lib/healthDashboardAccess'
@@ -794,6 +795,9 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                   </Badge>
                 </>
               )}
+              <div className="ml-auto">
+                <KnowledgeGraphButton messages={activeThread.messages} />
+              </div>
             </div>
           </div>
 
