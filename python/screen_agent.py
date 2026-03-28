@@ -44,10 +44,19 @@ try:
 except ImportError:
     pyautogui = None  # type: ignore[assignment]
 
+if pyautogui is not None:
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.5
+
 try:
     import pytesseract
 except ImportError:
     pytesseract = None  # type: ignore[assignment]
+
+if pytesseract is not None:
+    _tess_cmd = os.environ.get("TESSERACT_CMD")
+    if _tess_cmd:
+        pytesseract.pytesseract.tesseract_cmd = _tess_cmd
 
 try:
     import pygetwindow as gw
