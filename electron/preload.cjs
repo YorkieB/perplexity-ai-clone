@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld('jarvisIde', {
   },
 })
 
+/** Renderer → main: voice transcript classified as a screen intent (see `registerJarvisOrchestratorIpc` in main.cjs). */
+contextBridge.exposeInMainWorld('electronAPI', {
+  emitIntent: (payload) => ipcRenderer.send('jarvis:intent', payload),
+})
+
 contextBridge.exposeInMainWorld('electronInAppBrowser', {
   /** Same string as webview `partition` attribute */
   webviewPartition: PARTITION,

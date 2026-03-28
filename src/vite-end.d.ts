@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 import type { DetailedHTMLProps, HTMLAttributes } from 'react'
 
+/** Electron preload — Jarvis intent bridge (main-process `globalEmitter`). */
+interface ElectronJarvisApi {
+  emitIntent: (payload: { intent: string; entities: Record<string, string>; rawText: string }) => void
+}
+
 /** Electron preload (`electron/preload.cjs`) — only present in desktop shell. */
 interface ElectronInAppBrowserAPI {
   readonly webviewPartition: string
@@ -17,6 +22,7 @@ interface ElectronInAppBrowserAPI {
 
 declare global {
   interface Window {
+    electronAPI?: ElectronJarvisApi
     electronInAppBrowser?: ElectronInAppBrowserAPI
   }
 

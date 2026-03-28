@@ -22,6 +22,86 @@ const PROJECT_ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs')
 
+/** Loaded via tsx from `src/orchestrator/index.ts` (main process only). */
+let jarvisOrchestratorModule = null
+
+/**
+ * Maps voice classifier output (`screen.*` + entities) to {@link ScreenAgentHandler} payload (`jarvis.screen.*` + slots).
+ * @param {unknown} payload
+ * @returns {{ intent: string, slots?: Record<string, string>, utterance?: string } | null}
+ */
+function mapVoiceIntentToResolved(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+  const rawText = typeof payload.rawText === 'string' ? payload.rawText : ''
+  const intent = payload.intent
+  const entities =
+    payload.entities && typeof payload.entities === 'object' && !Array.isArray(payload.entities)
+      ? payload.entities
+      : {}
+  const mapping = {
+    'screen.stop': 'jarvis.screen.stop',
+    'screen.watch': 'jarvis.screen.watch',
+    'screen.advise': 'jarvis.screen.advise',
+    'screen.status': 'jarvis.screen.query',
+    'screen.act': 'jarvis.screen.act',
+  }
+  const jarvisIntent = mapping[intent]
+  if (!jarvisIntent) {
+    return null
+  }
+  const slots = {}
+  if (intent === 'screen.act' && typeof entities.goal === 'string') {
+    slots.goal = entities.goal
+  }
+  if (intent === 'screen.status' && rawText.trim().length > 0) {
+    slots.question = rawText.trim()
+  }
+  return { intent: jarvisIntent, slots, utterance: rawText }
+}
+
+function registerJarvisOrchestratorIpc() {
+  ipcMain.on('jarvis:intent', (_event, payload) => {
+    if (!jarvisOrchestratorModule?.globalEmitter) {
+      console.warn('[jarvis] intent ignored — orchestrator not loaded')
+      return
+    }
+    const resolved = mapVoiceIntentToResolved(payload)
+    if (!resolved) {
+      return
+    }
+    jarvisOrchestratorModule.globalEmitter.emit('intent:resolved', resolved)
+  })
+}
+
+async function startJarvisOrchestrator() {
+  try {
+    require('tsx/cjs/api').register()
+  } catch (e) {
+    console.error('[jarvis] tsx register failed:', e instanceof Error ? e.message : e)
+    return
+  }
+  try {
+    const mod = require(path.join(PROJECT_ROOT, 'src', 'orchestrator', 'index.ts'))
+    jarvisOrchestratorModule = mod
+    await mod.bootstrapJarvisScreenAgent()
+    console.info('[jarvis] orchestrator bootstrapped')
+  } catch (e) {
+    console.error('[jarvis] bootstrap failed:', e instanceof Error ? e.message : e)
+    jarvisOrchestratorModule = null
+  }
+}
+
+function shutdownJarvisOrchestrator() {
+  try {
+    jarvisOrchestratorModule?.shutdownJarvisScreenAgent?.()
+  } catch (e) {
+    console.error('[jarvis] shutdown failed:', e instanceof Error ? e.message : e)
+  }
+  jarvisOrchestratorModule = null
+}
+
 /**
  * Stable HTTP port for the embedded server (production Electron load from dist/).
  * OAuth redirect URIs must match exactly; random ports (listen(0)) break Google Cloud redirect registration.
@@ -3554,6 +3634,8 @@ app.whenReady().then(() => {
   })
 
   loadEnvFromFile()
+  registerJarvisOrchestratorIpc()
+  void startJarvisOrchestrator()
   try {
     require('./vonage-ai-voice-bridge.cjs').startFromElectron(getEnv)
   } catch (e) {
@@ -3570,6 +3652,10 @@ app.whenReady().then(() => {
   }
 
   void createWindow()
+})
+
+app.on('before-quit', () => {
+  shutdownJarvisOrchestrator()
 })
 
 app.on('window-all-closed', () => {

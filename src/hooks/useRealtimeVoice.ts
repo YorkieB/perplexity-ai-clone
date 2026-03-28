@@ -25,6 +25,7 @@ import { parseBehavioralMarkup, stripBehavioralMarkup, hasUnclosedTag, buildPers
 import type { UserSettings } from '@/lib/types'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { getVoiceProfileMap, getDefaultVoiceProfile } from '@/lib/voice-registry'
+import { classifyScreenIntent } from '@/lib/screen-intent-classifier'
 
 export type VoicePipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -1230,7 +1231,17 @@ Assistant: ${ai || ''}`
         break
 
       case 'conversation.item.input_audio_transcription.completed':
-        if (msg.transcript) { userRef.current = (msg.transcript as string).trim(); setTranscript(userRef.current) }
+        if (msg.transcript) {
+          const transcript = (msg.transcript as string).trim()
+          userRef.current = transcript
+          setTranscript(userRef.current)
+          const classified = classifyScreenIntent(transcript)
+          if (classified) {
+            const payload = { intent: classified.intent, entities: classified.entities, rawText: transcript }
+            // Desktop: main process maps payload → globalEmitter.emit('intent:resolved', …)
+            window.electronAPI?.emitIntent(payload)
+          }
+        }
         break
 
       // ── OpenAI native audio events ──
