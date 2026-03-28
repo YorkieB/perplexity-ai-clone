@@ -1,0 +1,11 @@
+# Jarvis Screen Agent Python sidecar (pairs with src/agents/screen-agent/python-bridge.ts — WebSocket JSON)
+mss~=10.0
+Pillow~=11.0
+pyautogui~=0.9
+pytesseract~=0.3
+openai~=1.0
+python-dotenv~=1.0
+pygetwindow~=0.0.9
+websockets~=13.0
+numpy~=2.0
+pytest~=8.0
