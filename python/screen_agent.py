@@ -31,6 +31,8 @@ except ImportError:  # pragma: no cover
 
 from dotenv import load_dotenv
 
+load_dotenv()
+
 # --- deps (import errors surface at runtime with clear stderr logs) ---
 try:
     import mss
@@ -198,12 +200,28 @@ def _jpeg_b64(img: Image.Image, max_width: int = 800, quality: int = 60) -> str:
 
 
 class AdviseEngine:
-    def __init__(self, openai_client: Any, model: str = "gpt-4o-mini") -> None:
-        self.client = openai_client
+    def __init__(self, openai_client: Optional[Any] = None, model: str = "gpt-4o-mini") -> None:
         self.model = model
         self._lock = threading.Lock()
         self._last_call: float = 0.0
         self._min_interval = 8.0
+
+        if openai_client is not None:
+            self.client = openai_client
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                _log.error("OPENAI_API_KEY not set — LLM features disabled")
+                self.client = None
+            elif OpenAI is None:
+                _log.error("openai package not installed — LLM features disabled")
+                self.client = None
+            else:
+                try:
+                    self.client = OpenAI(api_key=api_key)
+                except Exception as e:  # pragma: no cover
+                    _log.warning("OpenAI client init failed: %s", e)
+                    self.client = None
 
     def analyze(
         self,
@@ -270,9 +288,25 @@ class AdviseEngine:
 class ActEngine:
     """ACT mode: vision LLM plans pyautogui steps."""
 
-    def __init__(self, openai_client: Any, model: str = "gpt-4o-mini") -> None:
-        self.client = openai_client
+    def __init__(self, openai_client: Optional[Any] = None, model: str = "gpt-4o-mini") -> None:
         self.model = model
+
+        if openai_client is not None:
+            self.client = openai_client
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                _log.error("OPENAI_API_KEY not set — LLM features disabled")
+                self.client = None
+            elif OpenAI is None:
+                _log.error("openai package not installed — LLM features disabled")
+                self.client = None
+            else:
+                try:
+                    self.client = OpenAI(api_key=api_key)
+                except Exception as e:  # pragma: no cover
+                    _log.warning("OpenAI client init failed: %s", e)
+                    self.client = None
 
     def execute_goal(
         self,
@@ -473,14 +507,8 @@ class ScreenAgentProcess:
     )
 
     def __post_init__(self) -> None:
-        self._openai: Any = None
-        if OpenAI and os.environ.get("OPENAI_API_KEY"):
-            try:
-                self._openai = OpenAI()
-            except Exception as e:  # pragma: no cover
-                _log.warning("OpenAI client init failed: %s", e)
-        object.__setattr__(self, "_advise", AdviseEngine(self._openai))
-        object.__setattr__(self, "_act", ActEngine(self._openai))
+        object.__setattr__(self, "_advise", AdviseEngine())
+        object.__setattr__(self, "_act", ActEngine())
 
     def send(self, msg: dict[str, Any]) -> None:
         line = json.dumps(msg) + "\n"
@@ -501,8 +529,8 @@ class ScreenAgentProcess:
         self.send({"type": "ready"})
 
     def startup(self) -> None:
-        """Load environment variables (used by run() and tests)."""
-        load_dotenv()
+        """Legacy hook; `.env` is loaded at module import via load_dotenv()."""
+        pass
 
     def handle_command(self, msg: dict[str, Any]) -> None:
         cmd = msg.get("command")
