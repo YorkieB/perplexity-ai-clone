@@ -73,6 +73,10 @@ export interface ScreenAgentEvents {
   'screen:change': [ScreenState]
   'screen:error': [{ state: ScreenState; errorText: string }]
   'screen:advice_ready': [{ advice: string }]
+  /** Emitted by voice/UI when the user confirms an approval prompt (e.g. says “confirm”). */
+  'user:confirmed': []
+  /** Emitted by voice/UI when the user cancels an approval prompt (e.g. says “cancel”). */
+  'user:cancelled': []
   'screen:approval_required': [
     {
       action: AgentAction

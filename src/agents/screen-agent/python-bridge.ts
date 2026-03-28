@@ -13,6 +13,10 @@ export interface PythonBridgeEvents {
   screen_change: [Record<string, unknown>]
   query_response: [{ answer: string }]
   memory_response: [{ record: unknown }]
+  goal_progress: [Record<string, unknown>]
+  goal_complete: [Record<string, unknown>]
+  goal_failed: [Record<string, unknown>]
+  approval_required: [Record<string, unknown>]
   connected: []
   disconnected: []
 }
@@ -108,6 +112,14 @@ export class PythonBridge extends EventEmitter<PythonBridgeEvents> {
           } else if (t === 'memory_response') {
             const record = 'record' in msg ? msg.record : null
             this.emit('memory_response', { record })
+          } else if (t === 'goal_progress') {
+            this.emit('goal_progress', msg)
+          } else if (t === 'goal_complete') {
+            this.emit('goal_complete', msg)
+          } else if (t === 'goal_failed') {
+            this.emit('goal_failed', msg)
+          } else if (t === 'approval_required') {
+            this.emit('approval_required', msg)
           }
         } catch (e) {
           console.error('[PythonBridge] message parse error:', e)

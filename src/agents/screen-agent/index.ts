@@ -4,7 +4,9 @@ import { BaseAgent } from '../base-agent'
 
 import { AdviceGenerator, type JarvisAdviceLlm } from './advice-generator'
 import { DEFAULT_CONFIG } from './config'
+import { GoalExecutor } from './goal-executor'
 import { PythonBridge } from './python-bridge'
+import { SafetyGate } from './safety-gate'
 import { SignificanceDetector } from './significance-detector'
 import { StateManager, type JarvisMemoryClient } from './state-manager'
 import { AgentMode, type ScreenAgentConfig, type ScreenAgentEvents, type ScreenState } from './types'
@@ -34,6 +36,8 @@ export interface ScreenAgentDeps {
   llmClient?: JarvisAdviceLlm
   adviceGenerator?: AdviceGenerator
   significanceDetector?: SignificanceDetector
+  safetyGate?: SafetyGate
+  goalExecutor?: GoalExecutor
 }
 
 /**
@@ -52,6 +56,16 @@ export class ScreenAgent extends BaseAgent {
   private prevState: ScreenState | null = null
   private readonly significanceDetector: SignificanceDetector
   private readonly adviceGenerator: AdviceGenerator
+  private readonly safetyGate: SafetyGate
+  private readonly goalExecutor: GoalExecutor
+
+  private readonly onUserConfirmed = (): void => {
+    this.goalExecutor.notifyUserApproval(true)
+  }
+
+  private readonly onUserCancelled = (): void => {
+    this.goalExecutor.notifyUserApproval(false)
+  }
 
   private readonly onBridgeConnected = (): void => {
     console.info('Screen agent connected')
@@ -116,6 +130,8 @@ export class ScreenAgent extends BaseAgent {
     this.stateManager = new StateManager(deps.memoryClient)
     this.significanceDetector = deps.significanceDetector ?? new SignificanceDetector()
     this.adviceGenerator = deps.adviceGenerator ?? new AdviceGenerator(deps.llmClient)
+    this.safetyGate = deps.safetyGate ?? new SafetyGate()
+    this.goalExecutor = deps.goalExecutor ?? new GoalExecutor(this.bridge, this.emitter, this.safetyGate)
   }
 
   emit<K extends keyof ScreenAgentEvents>(event: K, ...args: ScreenAgentEvents[K]): boolean {
@@ -151,6 +167,8 @@ export class ScreenAgent extends BaseAgent {
   }
 
   async initialize(): Promise<void> {
+    this.on('user:confirmed', this.onUserConfirmed)
+    this.on('user:cancelled', this.onUserCancelled)
     this.bridge.on('screen_change', this.handleScreenChange)
     this.bridge.on('connected', this.onBridgeConnected)
     this.bridge.on('disconnected', this.onBridgeDisconnected)
@@ -159,6 +177,36 @@ export class ScreenAgent extends BaseAgent {
   }
 
   async setMode(mode: AgentMode, goal?: string): Promise<void> {
+    if (mode === AgentMode.ACT) {
+      const g = goal?.trim() ?? ''
+      if (g.length === 0) {
+        console.warn('ACT mode requires a goal — staying in current mode')
+        return
+      }
+      const previous = this.mode
+      if (previous === AgentMode.ADVISE) {
+        console.info('Leaving ADVISE mode')
+      }
+      this.prevState = null
+      this.mode = AgentMode.ACT
+      const result = await this.goalExecutor.execute(g)
+      if (result.success) {
+        this.emit('jarvis:speak', {
+          text: `Done. ${g} completed.`,
+          priority: 'normal',
+        })
+      } else {
+        this.emit('jarvis:speak', {
+          text: `I got stuck. ${result.failureReason ?? 'Unknown error'}`,
+          priority: 'normal',
+        })
+      }
+      this.mode = AgentMode.WATCH
+      this.bridge.send({ command: 'set_mode', mode: 'WATCH' })
+      console.info('Returned to WATCH mode after goal completion')
+      return
+    }
+
     const previous = this.mode
     if (previous !== mode) {
       if (mode === AgentMode.ADVISE) {
@@ -175,6 +223,15 @@ export class ScreenAgent extends BaseAgent {
   }
 
   stop(): void {
+    this.off('user:confirmed', this.onUserConfirmed)
+    this.off('user:cancelled', this.onUserCancelled)
+    if (this.goalExecutor.isGoalExecutionActive()) {
+      this.emit('jarvis:speak', {
+        text: 'Stopping current task.',
+        priority: 'high',
+      })
+    }
+    this.goalExecutor.stop()
     this.bridge.off('screen_change', this.handleScreenChange)
     this.bridge.off('connected', this.onBridgeConnected)
     this.bridge.off('disconnected', this.onBridgeDisconnected)
