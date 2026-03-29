@@ -1,5 +1,6 @@
 import { callLlm, llmPrompt } from './llm'
-import { Source, FocusMode } from './types'
+import { Source, FocusMode, SearchTrace } from './types'
+import { dedupeSourcesByNormalizedUrl, getSourceHostname } from './source-utils'
 
 export interface TavilySearchResult {
   url: string
@@ -16,6 +17,11 @@ export interface TavilySearchResponse {
 export interface SearchError {
   error: true
   message: string
+}
+
+export interface SearchExecutionResult {
+  sources: Source[]
+  trace: SearchTrace
 }
 
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
@@ -36,11 +42,11 @@ function getFocusModeSearchModifier(focusMode: FocusMode): string {
   }
 }
 
-export async function executeWebSearch(
+async function executeWebSearchInternal(
   query: string,
   focusMode: FocusMode = 'all',
   isDeepResearch: boolean = false
-): Promise<Source[] | SearchError> {
+): Promise<SearchExecutionResult | SearchError> {
   try {
     const apiKey = import.meta.env.VITE_TAVILY_API_KEY
 
@@ -54,6 +60,14 @@ export async function executeWebSearch(
 
     const focusModifier = getFocusModeSearchModifier(focusMode)
     const enhancedQuery = query + focusModifier
+    const executedAt = Date.now()
+    if (import.meta.env.DEV) {
+      console.debug('[search] executeWebSearch params', {
+        query: enhancedQuery,
+        focusMode,
+        advanced: isDeepResearch,
+      })
+    }
 
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -79,10 +93,8 @@ export async function executeWebSearch(
 
     const data: TavilySearchResponse = await response.json()
 
-    const sources: Source[] = data.results.map((result) => {
-      const url = new URL(result.url)
-      const domain = url.hostname.replace('www.', '')
-      
+    const rawSources: Source[] = data.results.map((result) => {
+      const domain = getSourceHostname(result.url)
       return {
         url: result.url,
         title: result.title,
@@ -93,7 +105,18 @@ export async function executeWebSearch(
       }
     })
 
-    return sources
+    const sources = dedupeSourcesByNormalizedUrl(rawSources)
+
+    return {
+      sources,
+      trace: {
+        query: enhancedQuery,
+        focusMode,
+        advanced: isDeepResearch,
+        executedAt,
+        resultCount: sources.length,
+      },
+    }
   } catch (error) {
     console.error('Web search error:', error)
     return {
@@ -101,6 +124,24 @@ export async function executeWebSearch(
       message: 'Failed to perform web search. Please check your internet connection.',
     }
   }
+}
+
+export async function executeWebSearch(
+  query: string,
+  focusMode: FocusMode = 'all',
+  isDeepResearch: boolean = false
+): Promise<Source[] | SearchError> {
+  const result = await executeWebSearchInternal(query, focusMode, isDeepResearch)
+  if ('error' in result) return result
+  return result.sources
+}
+
+export async function executeWebSearchWithTrace(
+  query: string,
+  focusMode: FocusMode = 'all',
+  isDeepResearch: boolean = false
+): Promise<SearchExecutionResult | SearchError> {
+  return executeWebSearchInternal(query, focusMode, isDeepResearch)
 }
 
 export async function generateFollowUpQuestions(
@@ -123,7 +164,13 @@ Return a JSON object only, with this shape: {"questions": ["question1", "questio
     const parsed = JSON.parse(result)
 
     if (parsed.questions && Array.isArray(parsed.questions)) {
-      return parsed.questions.slice(0, 3)
+      const normalized = parsed.questions
+        .filter((question: unknown): question is string => typeof question === 'string')
+        .map((question) => question.trim())
+        .filter(Boolean)
+
+      const unique: string[] = Array.from(new Set(normalized))
+      return unique.slice(0, 3)
     }
     
     return []

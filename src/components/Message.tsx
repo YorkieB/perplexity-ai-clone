@@ -2,7 +2,6 @@ import { useState, type ReactNode } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
 import { Question, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
-import { SourceCard } from './SourceCard'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { FileAttachment } from './FileAttachment'
 import { FilePreviewModal } from './FilePreviewModal'
@@ -14,6 +13,8 @@ import { VideoRow } from './VideoCard'
 import { A2EMediaResult } from './A2EMediaResult'
 import { MessageActionToolbar } from './MessageActionToolbar'
 import { ThinkingProcessPanel, type ThinkingPhase } from '@/components/ThinkingProcessPanel'
+import { GroupedSources } from './GroupedSources'
+import { SearchSteps } from './SearchSteps'
 
 interface MessageProps {
   message: MessageType
@@ -37,6 +38,9 @@ export function Message({
     setPreviewFile(file)
     setPreviewOpen(true)
   }
+
+  const followUpQuestions = message.followUpQuestions ?? []
+  const hasFollowUpQuestions = followUpQuestions.length > 0
 
   const hasAnswerPreview = message.content.trim().length > 0
   let thinkingPhase: ThinkingPhase = 'done'
@@ -161,17 +165,15 @@ export function Message({
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Sources
             </p>
-            <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-              {message.sources.map((source, index) => (
-                <SourceCard
-                  key={index}
-                  source={source}
-                  index={index + 1}
-                  isHighlighted={highlightedSource === index + 1}
-                />
-              ))}
-            </div>
+            <GroupedSources
+              sources={message.sources}
+              highlightedSource={highlightedSource}
+            />
           </div>
+        )}
+
+        {!isUser && message.searchTrace && (
+          <SearchSteps trace={message.searchTrace} />
         )}
 
         {!isUser && message.images && message.images.length > 0 && (
@@ -205,9 +207,10 @@ export function Message({
             />
           )}
 
-        {!isUser && message.followUpQuestions && message.followUpQuestions.length > 0 && onFollowUpClick && (
+        {!isUser && onFollowUpClick && (
           <FollowUpQuestions
-            questions={message.followUpQuestions}
+            questions={followUpQuestions}
+            showEmptyState={!isGenerating && !hasFollowUpQuestions}
             onQuestionClick={onFollowUpClick}
             isLoading={isGenerating}
           />

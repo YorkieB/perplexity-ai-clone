@@ -1,9 +1,19 @@
 import { useState, useRef, useEffect, lazy, Suspense } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, WorkspaceFile, UserSettings } from '@/lib/types'
+import {
+  Thread,
+  Workspace,
+  Message as MessageType,
+  SearchTrace,
+  Source,
+  UploadedFile,
+  FocusMode,
+  WorkspaceFile,
+  UserSettings,
+} from '@/lib/types'
 import { generateId, generateThreadTitle, processFile } from '@/lib/helpers'
-import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
+import { executeWebSearchWithTrace, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { ragSearch } from '@/lib/rag'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { AppSidebar } from '@/components/AppSidebar'
@@ -49,6 +59,7 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
+import { dedupeSourcesByNormalizedUrl } from '@/lib/source-utils'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -290,6 +301,16 @@ function MainApp() {
     }
   }
 
+  const buildFollowUpQuestions = async (query: string, response: string, webSources: Source[]) => {
+    const generated = await generateFollowUpQuestions(query, response, webSources)
+    const dedupedGenerated = Array.from(new Set(generated.map((question) => question.trim()).filter(Boolean)))
+    const responseLower = response.toLowerCase()
+
+    return dedupedGenerated
+      .filter((question) => !responseLower.includes(question.toLowerCase()))
+      .slice(0, 3)
+  }
+
   const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilotFlag?: boolean) => {
     setIsGenerating(true)
     const isAutopilot = autopilotFlag === true
@@ -337,13 +358,17 @@ function MainApp() {
       }
 
       let webSources: Source[] = []
+      let searchTrace: SearchTrace | undefined
 
       if (useWebSearchForQuery) {
-        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
+        const searchResult = await executeWebSearchWithTrace(query, focusMode, useAdvancedMode)
         if ('error' in searchResult) {
           toast.error(searchResult.message)
         } else {
-          webSources = searchResult
+          webSources = dedupeSourcesByNormalizedUrl(searchResult.sources)
+          if (webSources.length > 0) {
+            searchTrace = searchResult.trace
+          }
         }
       }
 
@@ -408,12 +433,22 @@ function MainApp() {
           systemPrompt + modeInstruction,
           selectedModels
         )
+        const councilCombinedResponse = councilResult.models
+          .map((modelResult) => modelResult.content)
+          .join('\n\n')
+        const followUpQuestionsForCouncil = await buildFollowUpQuestions(
+          query,
+          councilCombinedResponse,
+          webSources
+        )
         
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
           content: 'Model Council Response',
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
+          followUpQuestions: followUpQuestionsForCouncil,
           createdAt: Date.now(),
           focusMode,
           isModelCouncil: true,
@@ -527,7 +562,7 @@ ${sourceGuidance}${autopilotHint}`
           }
         }
 
-        const followUpQuestions = await generateFollowUpQuestions(query, response, webSources)
+        const followUpQuestions = await buildFollowUpQuestions(query, response, webSources)
 
         const assistantMessage: MessageType = {
           id: generateId(),
@@ -535,6 +570,7 @@ ${sourceGuidance}${autopilotHint}`
           content: response,
           reasoning: reasoning || undefined,
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           modelUsed: chatModel,
           focusMode,

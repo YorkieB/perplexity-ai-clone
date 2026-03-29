@@ -1516,8 +1516,8 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         try {
           const results = await executeWebSearch(query, 'all', false)
           if ('error' in results) return `Search failed: ${(results as { message?: string }).message ?? 'unknown error'}`
-          if (Array.isArray(results) && results.length === 0) return 'No results found.'
-          return (results as Array<{ title: string; url: string; snippet: string }>)
+          if (results.length === 0) return 'No results found.'
+          return results
             .slice(0, 5)
             .map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`)
             .join('\n\n')

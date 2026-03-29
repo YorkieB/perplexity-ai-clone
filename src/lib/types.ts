@@ -16,6 +16,14 @@ export interface Source {
   favicon?: string
 }
 
+export interface SearchTrace {
+  query: string
+  focusMode: FocusMode
+  advanced: boolean
+  executedAt: number
+  resultCount: number
+}
+
 export interface SearchImage {
   url: string
   description?: string
@@ -88,6 +96,7 @@ export interface Message {
   content: string
   metadata?: ChatMessageMetadata
   sources?: Source[]
+  searchTrace?: SearchTrace
   images?: SearchImage[]
   videos?: SearchVideo[]
   tavilyAnswer?: string
