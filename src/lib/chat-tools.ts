@@ -2945,6 +2945,8 @@ export interface ChatWithToolsOptions {
   systemPrompt: string
   userPrompt: string
   model?: string
+  /** When false, the `web_search` tool is not exposed to the model. */
+  allowWebSearchTool?: boolean
   /** Overrides default tool-loop sampling (default 0.7). */
   temperature?: number
   /** Overrides default max completion tokens (default 4096). */
@@ -2980,6 +2982,7 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
     systemPrompt,
     userPrompt,
     model = 'gpt-4o-mini',
+    allowWebSearchTool = true,
     temperature,
     max_tokens,
     browserControl = null,
@@ -3006,6 +3009,12 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
     tools = tools.filter(t => {
       const fn = (t as { function?: { name?: string } }).function
       return fn?.name !== 'browser_action' && fn?.name !== 'browser_task'
+    })
+  }
+  if (!allowWebSearchTool) {
+    tools = tools.filter(t => {
+      const fn = (t as { function?: { name?: string } }).function
+      return fn?.name !== 'web_search'
     })
   }
 
