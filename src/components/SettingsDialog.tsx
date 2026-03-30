@@ -13,9 +13,14 @@ import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star, DownloadSimple } from '@phosphor-icons/react'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { PlaidLinkButton } from '@/components/PlaidLinkButton'
+import {
+  APP_EXPORTABLE_LOCAL_STORAGE_KEYS,
+  collectAppLocalStorageSnapshot,
+  downloadAppLocalDataExport,
+} from '@/lib/local-data-export'
 
 interface SettingsDialogProps {
   open: boolean
@@ -114,6 +119,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       oauthClientSecrets: localClientSecrets,
     }))
     toast.success('OAuth credentials saved securely')
+  }
+
+  const handleExportAllLocalData = () => {
+    const confirmed = window.confirm(
+      'Export all app-owned local data?\n\nThis export includes local chat/workspace data and any credentials you saved in local settings (such as API keys or OAuth tokens).',
+    )
+    if (!confirmed) return
+    const snapshot = collectAppLocalStorageSnapshot()
+    downloadAppLocalDataExport()
+    toast.success(`Exported ${snapshot.length} local key${snapshot.length === 1 ? '' : 's'} as JSON`)
   }
 
   const handleOAuthConnect = (provider: OAuthCloudProvider) => {
@@ -378,6 +393,38 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
           <TabsContent value="api-keys" className="flex-1 overflow-y-auto space-y-6 mt-4">
             <div className="space-y-6">
+              <Card className="p-6 space-y-4 border-dashed">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-primary/10 rounded-lg">
+                    <DownloadSimple className="text-primary" size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-lg">Privacy — export local data</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Download a JSON backup of all app-owned localStorage keys on this device. Local estimate only: this app has no server-side account export.
+                    </p>
+                  </div>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Included keys:
+                  </p>
+                  <p className="text-xs text-muted-foreground break-words">
+                    {APP_EXPORTABLE_LOCAL_STORAGE_KEYS.join(', ')}
+                  </p>
+                </div>
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  Warning: export may include secrets you already stored locally (for example API keys in <code>user-settings</code>). Keep the file private.
+                </div>
+                <div className="flex justify-end">
+                  <Button variant="outline" className="gap-2" onClick={handleExportAllLocalData}>
+                    <DownloadSimple size={16} />
+                    Export all local data (JSON)
+                  </Button>
+                </div>
+              </Card>
+
               <Card className="p-6 space-y-4">
                 <div className="flex items-start gap-3">
                   <div className="p-2 bg-primary/10 rounded-lg">

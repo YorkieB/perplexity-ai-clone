@@ -178,6 +178,10 @@ export interface UserSettings {
   /** Read-aloud / voice chat TTS backend. Default OpenAI. */
   ttsProvider?: 'openai' | 'elevenlabs'
   includeWebSearch?: boolean
+  /** Client-side model routing heuristic for chat input. */
+  autoModelEnabled?: boolean
+  /** How voice dictation inserts final transcript into the query draft. */
+  queryVoiceTranscriptMode?: 'append' | 'replace'
   oauthTokens: {
     googledrive?: OAuthToken
     onedrive?: OAuthToken

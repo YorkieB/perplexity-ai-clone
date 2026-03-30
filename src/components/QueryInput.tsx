@@ -53,6 +53,16 @@ interface QueryInputProps {
   readonly onToggleAutopilot?: () => void
   readonly onStopAutopilot?: () => void
   readonly autopilotRunning?: boolean
+  readonly autoModelEnabled?: boolean
+  readonly onAutoModelEnabledChange?: (enabled: boolean) => void
+  readonly voiceTranscriptMode?: 'append' | 'replace'
+  readonly onVoiceTranscriptModeChange?: (mode: 'append' | 'replace') => void
+  readonly usageEstimate?: {
+    chars: number
+    tokens: number
+    messageCount: number
+  }
+  readonly hasWorkspaceFiles?: boolean
 }
 
 export function QueryInput({
@@ -66,6 +76,12 @@ export function QueryInput({
   onToggleAutopilot,
   onStopAutopilot,
   autopilotRunning = false,
+  autoModelEnabled = false,
+  onAutoModelEnabledChange,
+  voiceTranscriptMode = 'append',
+  onVoiceTranscriptModeChange,
+  usageEstimate,
+  hasWorkspaceFiles = false,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -82,13 +98,46 @@ export function QueryInput({
   const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
   const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
+  const [isDictating, setIsDictating] = useState(false)
+  const [voiceUnsupportedNotice, setVoiceUnsupportedNotice] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
 
   const [settings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
   const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
   const doToken = settings?.apiKeys?.digitalOcean?.trim()
   const useDigitalOcean = Boolean(doToken) || useEnvInference
+  // Browser speech recognition generally requires HTTPS (or localhost in development).
+  const speechRecognitionSupported =
+    typeof window !== 'undefined' &&
+    Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  const modelOptions = useMemo(() => {
+    const openai = [
+      { id: 'gpt-4o', label: 'GPT-4o' },
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+    ]
+    const doItems = doModels.map((m) => ({
+      id: `do:${m.id}`,
+      label: m.name,
+    }))
+    return [...openai, ...doItems]
+  }, [doModels])
+
+  const resolveAutoModel = useMemo(() => {
+    const hasLargeModel = modelOptions.some((m) => m.id === 'gpt-4o')
+    const preferredLargeModel = hasLargeModel ? 'gpt-4o' : selectedModel
+    const normalized = query.trim()
+    const wordCount = normalized ? normalized.split(/\s+/).length : 0
+    // Light heuristic only: files and long/complex prompts use the larger model.
+    if (attachedFiles.length > 0 || hasWorkspaceFiles || normalized.length > 600 || wordCount > 120) {
+      return preferredLargeModel
+    }
+    return 'gpt-4o-mini'
+  }, [attachedFiles.length, hasWorkspaceFiles, modelOptions, query, selectedModel])
+
+  const effectiveModel = autoModelEnabled ? resolveAutoModel : selectedModel
 
   useEffect(() => {
     if (!useDigitalOcean) { setDoModels([]); return }
@@ -104,18 +153,6 @@ export function QueryInput({
       })
     return () => { cancelled = true }
   }, [useDigitalOcean, doToken])
-
-  const modelOptions = useMemo(() => {
-    const openai = [
-      { id: 'gpt-4o', label: 'GPT-4o' },
-      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-    ]
-    const doItems = doModels.map((m) => ({
-      id: `do:${m.id}`,
-      label: m.name,
-    }))
-    return [...openai, ...doItems]
-  }, [doModels])
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
@@ -141,10 +178,85 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel, autopilot)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        effectiveModel,
+        autopilot,
+      )
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
+    }
+  }
+
+  const stopDictation = () => {
+    recognitionRef.current?.stop()
+    recognitionRef.current = null
+    setIsDictating(false)
+  }
+
+  const handleDictationResult = (text: string) => {
+    const cleaned = text.trim()
+    if (!cleaned) return
+    // User-selectable UX: either append spoken text to draft or replace current draft.
+    setQuery((prev) => {
+      if (voiceTranscriptMode === 'replace') return cleaned
+      if (!prev.trim()) return cleaned
+      return `${prev.trimEnd()} ${cleaned}`
+    })
+    textareaRef.current?.focus()
+  }
+
+  const toggleDictation = () => {
+    if (!speechRecognitionSupported) {
+      setVoiceUnsupportedNotice(true)
+      return
+    }
+
+    if (isDictating) {
+      stopDictation()
+      return
+    }
+
+    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Ctor) {
+      setVoiceUnsupportedNotice(true)
+      return
+    }
+
+    const recognition = new Ctor()
+    recognition.lang = navigator.language || 'en-US'
+    recognition.interimResults = false
+    recognition.continuous = true
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (!result.isFinal) continue
+        handleDictationResult(result[0]?.transcript ?? '')
+      }
+    }
+    recognition.onerror = () => {
+      toast.error('Dictation unavailable. Check microphone permissions.')
+      setIsDictating(false)
+      recognitionRef.current = null
+    }
+    recognition.onend = () => {
+      setIsDictating(false)
+      recognitionRef.current = null
+    }
+    recognitionRef.current = recognition
+    try {
+      recognition.start()
+      setIsDictating(true)
+      setVoiceUnsupportedNotice(false)
+    } catch {
+      toast.error('Could not start dictation.')
+      setIsDictating(false)
+      recognitionRef.current = null
     }
   }
 
@@ -241,6 +353,13 @@ export function QueryInput({
       textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
     }
   }, [query])
+
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.abort()
+      recognitionRef.current = null
+    }
+  }, [])
 
   return (
     <div className="space-y-3">
@@ -439,7 +558,13 @@ export function QueryInput({
           />
 
           <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0 min-w-0 sm:ml-auto">
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <Select
+              value={selectedModel}
+              onValueChange={(model) => {
+                setSelectedModel(model)
+                if (autoModelEnabled) onAutoModelEnabledChange?.(false)
+              }}
+            >
               <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto max-w-[12rem] px-2">
                 <SelectValue />
               </SelectTrigger>
@@ -452,14 +577,21 @@ export function QueryInput({
               </SelectContent>
             </Select>
 
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 hover:bg-muted shrink-0"
-              disabled={isLoading}
-            >
-              <Desktop size={16} />
-            </Button>
+            {speechRecognitionSupported ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 hover:bg-muted shrink-0"
+                onClick={toggleDictation}
+                title={isDictating ? 'Stop voice dictation' : 'Start voice dictation'}
+                aria-label="Toggle voice dictation"
+                disabled={isLoading}
+              >
+                <Microphone size={16} weight={isDictating ? 'fill' : 'regular'} />
+              </Button>
+            ) : (
+              <span className="px-2 text-[11px] text-muted-foreground">Mic not supported</span>
+            )}
 
             <Button
               size="icon"
@@ -536,6 +668,48 @@ export function QueryInput({
           <span>Enable Advanced Analysis</span>
         </Label>
       </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="auto-model"
+            checked={autoModelEnabled}
+            onCheckedChange={(checked) => onAutoModelEnabledChange?.(checked)}
+            disabled={isLoading}
+          />
+          <Label htmlFor="auto-model" className="text-sm cursor-pointer">
+            Auto model
+          </Label>
+          <span className="text-xs text-muted-foreground">
+            {autoModelEnabled ? `Heuristic pick: ${effectiveModel}` : `Manual: ${selectedModel}`}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="voice-transcript-mode" className="text-xs text-muted-foreground">
+            Voice transcript
+          </Label>
+          <Select
+            value={voiceTranscriptMode}
+            onValueChange={(mode) => onVoiceTranscriptModeChange?.(mode as 'append' | 'replace')}
+          >
+            <SelectTrigger id="voice-transcript-mode" className="h-8 w-[9rem] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="append">Append</SelectItem>
+              <SelectItem value="replace">Replace draft</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        Usage (local estimate only): {usageEstimate?.chars.toLocaleString() ?? 0} chars · ~
+        {usageEstimate?.tokens.toLocaleString() ?? 0} tokens · {usageEstimate?.messageCount ?? 0} msgs
+      </div>
+      {voiceUnsupportedNotice && (
+        <div className="text-xs text-amber-500">
+          Voice dictation is not supported in this browser environment.
+        </div>
+      )}
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
       

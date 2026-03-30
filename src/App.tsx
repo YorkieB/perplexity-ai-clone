@@ -49,9 +49,11 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
+import { countMessageTokens } from '@/lib/tokenCounter'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
+const USAGE_ESTIMATE_WINDOW_MESSAGES = 24
 
 function toWorkspaceFile(file: UploadedFile): WorkspaceFile {
   const isImage = file.type.startsWith('image/')
@@ -125,6 +127,21 @@ function MainApp() {
   const activeWorkspace = (workspaces || []).find((w) => w.id === contextWorkspaceId)
   const globalWebSearchEnabled = userSettings?.includeWebSearch ?? DEFAULT_USER_SETTINGS.includeWebSearch
   const isWorkspaceWebSearchEnabled = activeWorkspace?.includeWebSearch ?? globalWebSearchEnabled
+  const recentUsageMessages = (activeThread?.messages ?? []).slice(-USAGE_ESTIMATE_WINDOW_MESSAGES)
+  const usageEstimate = {
+    messageCount: recentUsageMessages.length,
+    chars: recentUsageMessages.reduce((sum, message) => sum + (message.content?.length ?? 0), 0),
+    tokens: countMessageTokens(
+      recentUsageMessages.map((message) => ({
+        role: message.role,
+        content: message.content ?? '',
+      })),
+      'gpt-4o-mini',
+    ),
+  }
+
+  const autoModelEnabled = userSettings?.autoModelEnabled ?? false
+  const voiceTranscriptMode = userSettings?.queryVoiceTranscriptMode ?? 'append'
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -222,6 +239,36 @@ function MainApp() {
       includeWebSearch: undefined,
     }))
     toast.success('Workspace now inherits global web search setting')
+  }
+
+  const updateAutoModelEnabled = (enabled: boolean) => {
+    setUserSettings((current) => ({
+      ...(current ?? DEFAULT_USER_SETTINGS),
+      autoModelEnabled: enabled,
+    }))
+  }
+
+  const updateVoiceTranscriptMode = (mode: 'append' | 'replace') => {
+    setUserSettings((current) => ({
+      ...(current ?? DEFAULT_USER_SETTINGS),
+      queryVoiceTranscriptMode: mode,
+    }))
+  }
+
+  const resolveChatModel = (
+    query: string,
+    selectedModel: string | undefined,
+    files: UploadedFile[] | undefined,
+    workspaceFilesForQuery: WorkspaceFile[],
+  ): string => {
+    if (!autoModelEnabled) return selectedModel || 'gpt-4o-mini'
+    const cleaned = query.trim()
+    const wordCount = cleaned ? cleaned.split(/\s+/).length : 0
+    // Local-only heuristic: larger model for long/complex prompts or any file context.
+    if ((files?.length ?? 0) > 0 || workspaceFilesForQuery.length > 0 || cleaned.length > 600 || wordCount > 120) {
+      return 'gpt-4o'
+    }
+    return 'gpt-4o-mini'
   }
 
   const handleWorkspaceUploadClick = () => {
@@ -467,7 +514,7 @@ User query: ${query}
 
 ${sourceGuidance}${autopilotHint}`
 
-        const chatModel = selectedModel || 'gpt-4o-mini'
+        const chatModel = resolveChatModel(query, selectedModel, files, workspaceFiles)
 
         const runOnce = async (prompt: string) => {
           return runChatWithTools({
@@ -769,6 +816,12 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 onToggleAutopilot={() => setMainAutopilot((p) => !p)}
                 onStopAutopilot={stopMainAutopilot}
                 autopilotRunning={mainAutopilotRunning}
+                autoModelEnabled={autoModelEnabled}
+                onAutoModelEnabledChange={updateAutoModelEnabled}
+                voiceTranscriptMode={voiceTranscriptMode}
+                onVoiceTranscriptModeChange={updateVoiceTranscriptMode}
+                usageEstimate={usageEstimate}
+                hasWorkspaceFiles={(activeWorkspace.workspaceFiles ?? []).length > 0}
               />
             </div>
           </div>
@@ -825,6 +878,12 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 onToggleAutopilot={() => setMainAutopilot((p) => !p)}
                 onStopAutopilot={stopMainAutopilot}
                 autopilotRunning={mainAutopilotRunning}
+                autoModelEnabled={autoModelEnabled}
+                onAutoModelEnabledChange={updateAutoModelEnabled}
+                voiceTranscriptMode={voiceTranscriptMode}
+                onVoiceTranscriptModeChange={updateVoiceTranscriptMode}
+                usageEstimate={usageEstimate}
+                hasWorkspaceFiles={(activeWorkspace?.workspaceFiles ?? []).length > 0}
               />
             </div>
           </div>
@@ -852,6 +911,12 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              autoModelEnabled={autoModelEnabled}
+              onAutoModelEnabledChange={updateAutoModelEnabled}
+              voiceTranscriptMode={voiceTranscriptMode}
+              onVoiceTranscriptModeChange={updateVoiceTranscriptMode}
+              usageEstimate={usageEstimate}
+              hasWorkspaceFiles={false}
             />
           </div>
         </div>
