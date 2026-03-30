@@ -189,14 +189,14 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
       setTabs((prev) =>
         prev.map((t) => (t.id === tabId ? { ...t, url: url || t.url } : t))
       )
-      if (tabId === activeTabId) {
+      if (tabId === activeTabIdRef.current) {
         setInput(url === 'about:blank' ? '' : url)
       }
       appendHistory(url, url)
       setListRev((r) => r + 1)
       setNavTick((n) => n + 1)
     },
-    [activeTabId]
+    []
   )
 
   const onPageTitle = useCallback((tabId: string, title: string) => {
@@ -729,7 +729,7 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
         </div>
       )}
 
-      <Dialog open={open && !minimized} onOpenChange={handleDialogOpenChange}>
+      <Dialog open={open && !minimized} onOpenChange={handleDialogOpenChange} modal={!expanded}>
         <DialogContent
           className={cn(
             'flex flex-col gap-0 overflow-hidden p-0',
@@ -741,6 +741,9 @@ export function WebBrowserModal({ open, onOpenChange, onRequestOpen }: WebBrowse
                 )
               : 'max-h-[min(92vh,800px)] w-full max-w-4xl sm:max-w-4xl'
           )}
+          onInteractOutside={(e) => { e.preventDefault() }}
+          onOpenAutoFocus={(e) => { e.preventDefault() }}
+          overlayClassName={expanded ? 'hidden' : undefined}
         >
           <div className="relative shrink-0 border-b border-border px-6 pt-6 pr-[10rem] sm:pr-[11rem]">
             <Button

@@ -102,7 +102,8 @@ export const SNAPSHOT_SCRIPT = `
       lines.push(indent + '- ' + r + ' "' + lbl + '"' + extra + ' [ref=' + ref + ']');
     }
 
-    for (const child of el.children) {
+    const children = el.shadowRoot ? el.shadowRoot.children : el.children;
+    for (const child of children) {
       walk(child, depth + (role ? 1 : 0));
     }
   }

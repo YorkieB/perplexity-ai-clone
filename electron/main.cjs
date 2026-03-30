@@ -35,6 +35,8 @@ const BROWSER_PARTITION = 'persist:ai-search-browser'
 
 function setupBrowserSession() {
   const ses = session.fromPartition(BROWSER_PARTITION)
+  // Remove the Electron token from the user-agent so websites don't block/degrade the webview
+  ses.setUserAgent(ses.getUserAgent().replace(/Electron\/\S+\s?/, ''))
   ses.on('will-download', (_event, item) => {
     if (!item.getSavePath()) {
       const base = app.getPath('downloads')
@@ -45,7 +47,7 @@ function setupBrowserSession() {
         /* ignore */
       }
     }
-    item.on('updated', (_e, state) => {
+    item.on('done', (_e, state) => {
       if (state !== 'completed') return
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('browser-download-complete', {

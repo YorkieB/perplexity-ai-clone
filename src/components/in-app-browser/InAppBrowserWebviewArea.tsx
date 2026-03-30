@@ -1,6 +1,11 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 
+const DEBUG_BROWSER = typeof localStorage !== 'undefined' && localStorage.getItem('debug-browser') === '1'
+function dbg(...args: unknown[]) {
+  if (DEBUG_BROWSER) console.debug('[browser]', ...args)
+}
+
 /** Renderer-safe subset of Electron `<webview>` API */
 export type InAppWebview = HTMLElement & {
   src: string
@@ -36,9 +41,11 @@ function whenWebviewGuestReady(w: InAppWebview, onReady: () => void): () => void
   const run = () => {
     if (cancelled || finished) return
     finished = true
+    dbg('dom-ready fired, calling onReady')
     try {
       onReady()
-    } catch {
+    } catch (e) {
+      dbg('onReady threw:', e)
       /* guest not ready — ignore */
     }
   }
@@ -46,8 +53,16 @@ function whenWebviewGuestReady(w: InAppWebview, onReady: () => void): () => void
   const onDomReady = () => run()
   w.addEventListener('dom-ready', onDomReady, { once: true })
 
+  // Warn if dom-ready hasn't fired after 10 seconds
+  const domReadyTimeout = setTimeout(() => {
+    if (!finished && !cancelled) {
+      console.warn('[browser] dom-ready has not fired after 10s — webview may be stuck. src:', w.src, 'partition:', w.partition)
+    }
+  }, 10_000)
+
   return () => {
     cancelled = true
+    clearTimeout(domReadyTimeout)
     w.removeEventListener('dom-ready', onDomReady)
   }
 }
@@ -95,9 +110,20 @@ function WebviewRow({
     const w = ref.current
     if (!w) return
 
+    // Debug: monitor webview health events
+    const onCrash = () => console.error(`[webview ${tab.id}] CRASHED`)
+    const onFailLoad = (e: Event) => {
+      const detail = e as unknown as { errorCode?: number; errorDescription?: string; validatedURL?: string }
+      if (detail.errorCode === -3) return // ERR_ABORTED is harmless (navigation cancelled)
+      console.error(`[webview ${tab.id}] did-fail-load:`, detail.errorCode, detail.errorDescription, detail.validatedURL)
+    }
+    w.addEventListener('crashed', onCrash)
+    w.addEventListener('did-fail-load', onFailLoad)
+
     let removeNavListeners: (() => void) | undefined
 
     const offReady = whenWebviewGuestReady(w, () => {
+      dbg(`webview ${tab.id} guest ready, registering`)
       onWebviewMount(tab.id, w)
 
       const onNav = (ev: Event) => {
@@ -140,6 +166,8 @@ function WebviewRow({
     return () => {
       offReady()
       removeNavListeners?.()
+      w.removeEventListener('crashed', onCrash)
+      w.removeEventListener('did-fail-load', onFailLoad)
       onWebviewMount(tab.id, null)
     }
   }, [tab.id, onWebviewMount, onDidNavigate, onPageTitle, onNewWindow, onLoadingChange])
