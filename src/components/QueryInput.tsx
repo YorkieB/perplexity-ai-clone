@@ -31,7 +31,6 @@ import {
   CaretRight,
   Microphone,
   Waveform,
-  Desktop,
   Brain,
 } from '@phosphor-icons/react'
 import {
