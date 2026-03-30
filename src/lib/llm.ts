@@ -40,7 +40,8 @@ export function llmPrompt(strings: TemplateStringsArray, ...values: unknown[]): 
 export async function callLlm(
   prompt: string,
   model: string,
-  jsonMode = false
+  jsonMode = false,
+  signal?: AbortSignal
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: stripDoPrefix(model),
@@ -59,6 +60,7 @@ export async function callLlm(
   const response = await fetch('/api/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    signal,
     body: JSON.stringify(body),
   })
 

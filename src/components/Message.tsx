@@ -14,6 +14,7 @@ import { VideoRow } from './VideoCard'
 import { A2EMediaResult } from './A2EMediaResult'
 import { MessageActionToolbar } from './MessageActionToolbar'
 import { ThinkingProcessPanel, type ThinkingPhase } from '@/components/ThinkingProcessPanel'
+import { DeepResearchProgressPanel } from '@/components/DeepResearchProgressPanel'
 
 interface MessageProps {
   message: MessageType
@@ -43,6 +44,7 @@ export function Message({
   if (message.isStreaming) {
     thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
   }
+  const isDeepResearchMessage = Boolean(message.isDeepResearch)
 
   let mainContent: ReactNode
   if (isUser) {
@@ -86,6 +88,20 @@ export function Message({
         divergentPoints={[]}
         onCitationHover={setHighlightedSource}
       />
+    )
+  } else if (isDeepResearchMessage) {
+    mainContent = (
+      <>
+        {message.deepResearchMeta && (
+          <DeepResearchProgressPanel
+            meta={message.deepResearchMeta}
+          />
+        )}
+        <MarkdownRenderer
+          content={message.content}
+          onCitationHover={setHighlightedSource}
+        />
+      </>
     )
   } else {
     mainContent = (
@@ -194,6 +210,7 @@ export function Message({
 
         {!isUser &&
           !message.isModelCouncil &&
+          !isDeepResearchMessage &&
           message.content &&
           !message.isStreaming && (
             <MessageActionToolbar

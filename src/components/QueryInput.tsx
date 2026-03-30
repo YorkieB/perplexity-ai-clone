@@ -43,11 +43,25 @@ import {
 } from '@/components/ui/select'
 
 interface QueryInputProps {
-  readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilot?: boolean) => void
+  readonly onSubmit: (
+    query: string,
+    advancedMode: boolean,
+    deepResearchMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    selectedModel?: string,
+    autopilot?: boolean
+  ) => void
   readonly isLoading?: boolean
   readonly placeholder?: string
   readonly advancedMode: boolean
   readonly onAdvancedModeChange: (enabled: boolean) => void
+  readonly deepResearchMode: boolean
+  readonly onDeepResearchModeChange: (enabled: boolean) => void
+  readonly deepResearchDisabledReason?: string
+  readonly isDeepResearchRunning?: boolean
+  readonly onCancelDeepResearch?: () => void
   readonly onVoiceOpen?: () => void
   readonly autopilot?: boolean
   readonly onToggleAutopilot?: () => void
@@ -61,6 +75,11 @@ export function QueryInput({
   placeholder = 'Ask anything...',
   advancedMode,
   onAdvancedModeChange,
+  deepResearchMode,
+  onDeepResearchModeChange,
+  deepResearchDisabledReason,
+  isDeepResearchRunning = false,
+  onCancelDeepResearch,
   onVoiceOpen,
   autopilot = false,
   onToggleAutopilot,
@@ -141,9 +160,29 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel, autopilot)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        deepResearchMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        selectedModel,
+        autopilot
+      )
       setQuery('')
       setAttachedFiles([])
+      setUseModelCouncil(false)
+    }
+  }
+
+  const handleDeepResearchToggle = (next: boolean) => {
+    if (deepResearchDisabledReason && next) {
+      toast.info(deepResearchDisabledReason)
+      return
+    }
+    onDeepResearchModeChange(next)
+    if (next) {
       setUseModelCouncil(false)
     }
   }
@@ -320,13 +359,31 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => {
+                    if (deepResearchDisabledReason && !deepResearchMode) {
+                      toast.info(deepResearchDisabledReason)
+                      return
+                    }
+                    const next = !deepResearchMode
+                    handleDeepResearchToggle(next)
+                    if (next) {
+                      toast.success('Deep research enabled')
+                    }
+                  }}
                 >
                   <MagnifyingGlass size={18} className="text-muted-foreground" />
-                  <span className="flex-1 text-left">Deep research</span>
-                  <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20">
-                    New
-                  </Badge>
+                  <span className="flex-1 text-left">
+                    {deepResearchMode ? 'Deep research (On)' : 'Deep research'}
+                  </span>
+                  {deepResearchMode ? (
+                    <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-primary/10 text-primary border-primary/20">
+                      On
+                    </Badge>
+                  ) : (
+                    <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20">
+                      New
+                    </Badge>
+                  )}
                 </button>
 
                 <button
@@ -504,6 +561,15 @@ export function QueryInput({
                 ■ Stop
               </button>
             )}
+            {isDeepResearchRunning && onCancelDeepResearch && (
+              <button
+                type="button"
+                onClick={onCancelDeepResearch}
+                className="rounded-md border border-amber-500/30 px-2 py-1 text-[11px] font-bold text-amber-500 hover:bg-amber-500/10"
+              >
+                ■ Stop deep research
+              </button>
+            )}
           </div>
           <button
             type="button"
@@ -533,8 +599,28 @@ export function QueryInput({
           className="flex items-center gap-2 cursor-pointer text-sm"
         >
           <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
-          <span>Enable Advanced Analysis</span>
+          <span>Advanced analysis (single-pass deep answer)</span>
         </Label>
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="deep-research-mode"
+            checked={deepResearchMode}
+            onCheckedChange={handleDeepResearchToggle}
+            disabled={isLoading || Boolean(deepResearchDisabledReason && !deepResearchMode)}
+          />
+          <Label
+            htmlFor="deep-research-mode"
+            className="flex items-center gap-2 cursor-pointer text-sm"
+          >
+            <MagnifyingGlass size={16} className="text-accent" />
+            <span>Deep research (plan → multi-search → synthesize)</span>
+          </Label>
+        </div>
+        <p className="text-xs text-muted-foreground pl-8">
+          {deepResearchDisabledReason || 'Runs 3-5 focused web searches with progress tracking before final synthesis.'}
+        </p>
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />

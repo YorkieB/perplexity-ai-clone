@@ -18,6 +18,10 @@ export interface SearchError {
   message: string
 }
 
+export const DEEP_RESEARCH_MIN_SUB_QUERIES = 3
+export const DEEP_RESEARCH_MAX_SUB_QUERIES = 5
+export const DEEP_RESEARCH_MAX_SNIPPETS_FOR_SYNTHESIS = 40
+
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
   switch (focusMode) {
     case 'academic':
@@ -39,7 +43,8 @@ function getFocusModeSearchModifier(focusMode: FocusMode): string {
 export async function executeWebSearch(
   query: string,
   focusMode: FocusMode = 'all',
-  isDeepResearch: boolean = false
+  isDeepResearch: boolean = false,
+  signal?: AbortSignal
 ): Promise<Source[] | SearchError> {
   try {
     const apiKey = import.meta.env.VITE_TAVILY_API_KEY
@@ -60,6 +65,7 @@ export async function executeWebSearch(
       headers: {
         'Content-Type': 'application/json',
       },
+      signal,
       body: JSON.stringify({
         api_key: apiKey,
         query: enhancedQuery,
@@ -95,12 +101,157 @@ export async function executeWebSearch(
 
     return sources
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
     console.error('Web search error:', error)
     return {
       error: true,
       message: 'Failed to perform web search. Please check your internet connection.',
     }
   }
+}
+
+function stripListPrefix(value: string): string {
+  return value.replace(/^[-*\d.)\s]+/, '').trim()
+}
+
+function dedupeQueries(queries: string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const query of queries) {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    unique.push(query.trim())
+  }
+  return unique
+}
+
+function parseSubQueries(raw: string): string[] {
+  let candidateQueries: string[] = []
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+
+    if (Array.isArray(parsed)) {
+      candidateQueries = parsed.filter((item): item is string => typeof item === 'string')
+    } else if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>
+      if (Array.isArray(obj.subQueries)) {
+        candidateQueries = obj.subQueries.filter((item): item is string => typeof item === 'string')
+      } else if (Array.isArray(obj.queries)) {
+        candidateQueries = obj.queries.filter((item): item is string => typeof item === 'string')
+      }
+    }
+  } catch {
+    candidateQueries = raw
+      .split('\n')
+      .map((line) => stripListPrefix(line))
+      .filter(Boolean)
+  }
+
+  return dedupeQueries(candidateQueries.map((q) => stripListPrefix(q)).filter(Boolean))
+}
+
+function fallbackSubQueries(userQuery: string): string[] {
+  return [
+    userQuery,
+    `${userQuery} latest data and evidence`,
+    `${userQuery} counterarguments and caveats`,
+  ]
+}
+
+export async function planDeepResearchSubQueries(params: {
+  query: string
+  focusMode: FocusMode
+  workspaceContext?: string
+  model?: string
+  signal?: AbortSignal
+}): Promise<string[]> {
+  const { query, focusMode, workspaceContext = '', model = 'gpt-4o-mini', signal } = params
+  const prompt = llmPrompt`You are planning a deep research run.
+
+Create exactly ${DEEP_RESEARCH_MIN_SUB_QUERIES} to ${DEEP_RESEARCH_MAX_SUB_QUERIES} focused web-search sub-queries for the user goal.
+
+Rules:
+- Cover breadth first, then depth (definitions, current evidence, and caveats/trade-offs where relevant).
+- Keep each sub-query short and directly searchable.
+- Respect the selected focus mode.
+- Avoid duplicate intent.
+
+User goal: ${query}
+Focus mode: ${focusMode}
+Workspace context: ${workspaceContext || '[none]'}
+
+Return only valid JSON:
+{
+  "subQueries": ["...", "...", "..."]
+}`
+
+  const raw = await callLlm(prompt, model, true, signal)
+  const parsed = parseSubQueries(raw)
+  const withFallback = dedupeQueries([...parsed, ...fallbackSubQueries(query)])
+  return withFallback.slice(0, DEEP_RESEARCH_MAX_SUB_QUERIES)
+}
+
+export interface DeepResearchSearchBundle {
+  subQuery: string
+  sources: Source[]
+}
+
+export async function synthesizeDeepResearchAnswer(params: {
+  query: string
+  focusMode: FocusMode
+  subQueries: string[]
+  bundles: DeepResearchSearchBundle[]
+  workspaceContext?: string
+  fileContext?: string
+  model?: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const {
+    query,
+    focusMode,
+    subQueries,
+    bundles,
+    workspaceContext = '',
+    fileContext = '',
+    model = 'gpt-4o-mini',
+    signal,
+  } = params
+
+  const flattened = bundles
+    .flatMap((bundle) =>
+      bundle.sources.map((source) => ({
+        subQuery: bundle.subQuery,
+        title: source.title,
+        url: source.url,
+        snippet: source.snippet,
+        confidence: source.confidence ?? null,
+      }))
+    )
+    .slice(0, DEEP_RESEARCH_MAX_SNIPPETS_FOR_SYNTHESIS)
+
+  const prompt = llmPrompt`You are a rigorous research assistant. Synthesize the research packet into a final answer.
+
+User goal: ${query}
+Focus mode: ${focusMode}
+Planned sub-queries: ${subQueries}
+Workspace context: ${workspaceContext || '[none]'}
+File context: ${fileContext || '[none]'}
+
+Research packet (JSON): ${flattened}
+
+Output requirements:
+- Start with a direct answer in 2-4 sentences.
+- Then provide key findings grounded in the packet.
+- Use markdown tables when comparing options, sources, or claims.
+- Include uncertainties or conflicting evidence explicitly.
+- Add a short "Sources consulted" section listing the most important URLs.
+`
+
+  return callLlm(prompt, model, false, signal)
 }
 
 export async function generateFollowUpQuestions(
