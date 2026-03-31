@@ -34,9 +34,15 @@ export function getDefaultVoiceSettings(): VoiceSettings {
 export function getVoiceRegistry(): VoiceRegistry {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as VoiceRegistry
-  } catch { /* ignored */ }
-  return { defaultVoiceId: null, voices: [] }
+    if (!raw) return { voices: [], defaultVoiceId: null }
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.voices)) {
+      return { voices: [], defaultVoiceId: null }
+    }
+    return parsed as VoiceRegistry
+  } catch {
+    return { voices: [], defaultVoiceId: null }
+  }
 }
 
 export function saveVoiceRegistry(registry: VoiceRegistry): void {

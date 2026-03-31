@@ -13,6 +13,7 @@ import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { cn } from '@/lib/utils'
 import { setRendererVoiceModeOpen } from '@/lib/voice-mode-ui'
+import './VoiceMode.css'
 
 interface VoiceModeProps {
   readonly open: boolean
@@ -256,40 +257,6 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
       <p className="absolute bottom-8 text-white/30 text-xs select-none">
         {bottomHint(pipeline.state)}
       </p>
-
-      <style>{`
-        .voice-mode-backdrop {
-          background: radial-gradient(ellipse at center, #0d0d1a 0%, #000008 100%);
-        }
-
-        /* ── Orb animations ── */
-        @keyframes orb-idle-pulse {
-          0%, 100% { transform: scale(1); opacity: 0.7; }
-          50%       { transform: scale(1.04); opacity: 1; }
-        }
-        @keyframes orb-listen-ripple {
-          0%   { transform: scale(1); opacity: 0.9; }
-          50%  { transform: scale(1.12); opacity: 0.6; }
-          100% { transform: scale(1); opacity: 0.9; }
-        }
-        @keyframes orb-think-spin {
-          from { transform: rotate(0deg); }
-          to   { transform: rotate(360deg); }
-        }
-        @keyframes orb-speak-wave {
-          0%, 100% { transform: scaleY(1); }
-          25%      { transform: scaleY(1.18); }
-          75%      { transform: scaleY(0.85); }
-        }
-        @keyframes ripple-out {
-          0%   { transform: scale(1);   opacity: 0.5; }
-          100% { transform: scale(2.2); opacity: 0; }
-        }
-        @keyframes fade-in-up {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
       </div>
     </FocusTrap>
   )
@@ -352,7 +319,7 @@ function ThinkingRing() {
       style={{
         borderTopColor: 'rgba(255,255,255,0.9)',
         borderRightColor: 'rgba(255,255,255,0.3)',
-        animation: 'orb-think-spin 1s linear infinite',
+        animation: 'orb-think-pulse 1s linear infinite',
       }}
     />
   )
@@ -377,7 +344,7 @@ function WaveformBars() {
           className="w-1 rounded-full bg-white"
           style={{
             height: 20,
-            animation: `orb-speak-wave ${0.5 + i * 0.07}s ease-in-out infinite`,
+            animation: `orb-speak-bar-wave ${0.5 + i * 0.07}s ease-in-out infinite`,
             animationDelay: `${i * 0.08}s`,
             transformOrigin: 'center',
             transform: `scaleY(${bar.scale})`,
@@ -396,7 +363,7 @@ function IdleDot() {
   return (
     <div
       className="w-5 h-5 rounded-full bg-white/60"
-      style={{ animation: 'orb-idle-pulse 3s ease-in-out infinite' }}
+      style={{ animation: 'orb-idle 3s ease-in-out infinite' }}
     />
   )
 }
@@ -457,7 +424,7 @@ function orbAnimation(state: VoicePipelineState): string {
   switch (state) {
     case 'listening': return 'orb-listen-ripple 1.4s ease-in-out infinite'
     case 'thinking':  return 'none'
-    case 'speaking':  return 'orb-listen-ripple 0.8s ease-in-out infinite'
-    default:          return 'orb-idle-pulse 3s ease-in-out infinite'
+    case 'speaking':  return 'orb-speak-wave 1.2s ease-in-out infinite'
+    default:          return 'orb-idle 3s ease-in-out infinite'
   }
 }

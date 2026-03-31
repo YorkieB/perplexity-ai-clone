@@ -1,0 +1,89 @@
+.voice-mode-backdrop {
+  background: radial-gradient(ellipse at center, #0d0d1a 0%, #000008 100%);
+}
+
+/* ── Orb animations ── */
+@keyframes orb-idle {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+@keyframes orb-listen-ripple {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+}
+
+@keyframes orb-think-pulse {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Vertical bars inside the orb while speaking — scaleY only */
+@keyframes orb-speak-bar-wave {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  25% {
+    transform: scaleY(1.18);
+  }
+  75% {
+    transform: scaleY(0.85);
+  }
+}
+
+/* Main orb while AI is speaking — slow, steady breathing (1.2s) vs. faster listen ripple (1.4s) */
+@keyframes orb-speak-wave {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+}
+
+@keyframes ripple-out {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes voice-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

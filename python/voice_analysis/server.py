@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .analyzer import analyze_audio
 from .state_interpreter import interpret_vocal_state
@@ -54,12 +55,12 @@ async def analyze(request: Request):
 
     try:
         metrics = analyze_audio(pcm_bytes)
-    except Exception as exc:
-        logger.exception("Analysis failed")
-        return {
-            "error": str(exc),
-            "vocalState": "Unable to analyse voice",
-        }
+    except Exception:
+        logger.exception("Voice analysis failed")
+        return JSONResponse(
+            {"error": "Analysis failed", "vocalState": "Unable to analyse voice"},
+            status_code=500,
+        )
 
     vocal_state = interpret_vocal_state(metrics)
     metrics["vocalState"] = vocal_state

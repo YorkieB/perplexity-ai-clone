@@ -1033,7 +1033,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
 
       const fromClient = getBearerFromReqHeader(req)
       const key =
-        (fromClient ? fromClient : '') || (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+        (fromClient ? fromClient : '') || (env.OPENAI_API_KEY || '').trim()
       if (!key) {
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -1049,7 +1049,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         return
       }
 
-      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+      const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
       try {
         const upstream = await fetch(`${base}/audio/speech`, {
           method: 'POST',
