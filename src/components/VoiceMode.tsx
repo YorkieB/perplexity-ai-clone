@@ -65,7 +65,6 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
   }, [pipeline.bargeIn])
 
   useEffect(() => {
-    setRendererVoiceModeOpen(open)
     const ipc = typeof window !== 'undefined' ? window.electronAPI?.setVoiceModeActive : undefined
     if (typeof ipc === 'function') {
       void ipc(open).catch(() => {})
@@ -73,6 +72,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     if (open) {
       void pipeline.open()
       try {
+        setRendererVoiceModeOpen(true)
         window.setRendererVoiceModeOpen?.(true)
         void window.electronAPI?.setVoiceModeActive?.(true)?.catch(() => {})
       } catch {
@@ -81,6 +81,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     } else {
       pipeline.close()
       try {
+        setRendererVoiceModeOpen(false)
         window.setRendererVoiceModeOpen?.(false)
         void window.electronAPI?.setVoiceModeActive?.(false)?.catch(() => {})
       } catch {

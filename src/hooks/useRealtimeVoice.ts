@@ -1564,56 +1564,66 @@ Assistant: ${ai || ''}`
     elBusyRef.current = true
     let hadError = false
 
-    while (elQueueRef.current.length > 0 && isOpenRef.current) {
-      const chunk = elQueueRef.current.shift()!
-      // When reading a book, strip any "would you like to continue?" the LLM adds
-      if (autoReadRef.current.pending && !chunk.isSfx) {
-        chunk.text = stripContinuationQuestions(chunk.text)
-        if (!chunk.text) continue
-      }
-      elAbortRef.current = new AbortController()
-      if (!browserTaskElNarrationSuppressSpeakingRef.current) {
-        setS('speaking')
-      }
+    try {
+      for (;;) {
+        while (elQueueRef.current.length > 0 && isOpenRef.current) {
+          const chunk = elQueueRef.current.shift()!
+          // When reading a book, strip any "would you like to continue?" the LLM adds
+          if (autoReadRef.current.pending && !chunk.isSfx) {
+            chunk.text = stripContinuationQuestions(chunk.text)
+            if (!chunk.text) continue
+          }
+          elAbortRef.current = new AbortController()
+          if (!browserTaskElNarrationSuppressSpeakingRef.current) {
+            setS('speaking')
+          }
 
-      const fetchPromise = chunk.isSfx
-        ? playSfx(chunk.text, elAbortRef.current.signal).catch((e: Error) => {
-            if (e.name === 'AbortError') return
-            console.warn('[SFX] playback failed:', e)
-          })
-        : speakEL(
-            chunk.text,
-            elAbortRef.current.signal,
-            chunk.voiceId,
-            chunk.voiceSettings,
-          ).catch((e: Error) => {
-            if (e.name === 'AbortError') return
-            if (!hadError) { setErrorMessage(e.message); hadError = true }
-            console.error('[ElevenLabs]', e)
-          })
+          const fetchPromise = chunk.isSfx
+            ? playSfx(chunk.text, elAbortRef.current.signal).catch((e: Error) => {
+                if (e.name === 'AbortError') return
+                console.warn('[SFX] playback failed:', e)
+              })
+            : speakEL(
+                chunk.text,
+                elAbortRef.current.signal,
+                chunk.voiceId,
+                chunk.voiceSettings,
+              ).catch((e: Error) => {
+                if (e.name === 'AbortError') return
+                if (!hadError) { setErrorMessage(e.message); hadError = true }
+                console.error('[ElevenLabs]', e)
+              })
 
-      if (elQueueRef.current.length > 0) {
-        const headroom = Math.max(0, (nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000)
-        if (headroom > 600) {
-          await fetchPromise
-        } else {
-          await Promise.race([fetchPromise, new Promise(r => setTimeout(r, 200))])
+          if (elQueueRef.current.length > 0) {
+            const headroom = Math.max(0, (nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000)
+            if (headroom > 600) {
+              await fetchPromise
+            } else {
+              await Promise.race([fetchPromise, new Promise(r => setTimeout(r, 200))])
+            }
+          } else {
+            await fetchPromise
+          }
         }
-      } else {
-        await fetchPromise
-      }
-    }
 
-    if (elQueueRef.current.length > 0 && isOpenRef.current) {
+        if (!isOpenRef.current) break
+
+        // Inner drain finished with an empty queue (or we would still be in the inner `while`).
+        // Other handlers may have run in the microtask gap and pushed more chunks — keep draining without releasing elBusyRef.
+        if (elQueueRef.current.length > 0) continue
+
+        if (elDoneRef.current && elQueueRef.current.length === 0 && isOpenRef.current) {
+          elDoneRef.current = false
+          await finishTurn()
+        }
+
+        if (elQueueRef.current.length > 0) continue
+
+        break
+      }
+    } finally {
       elBusyRef.current = false
-      processElQueueRef.current()
-      return
     }
-    if (elDoneRef.current && elQueueRef.current.length === 0 && isOpenRef.current) {
-      elDoneRef.current = false
-      await finishTurn()
-    }
-    elBusyRef.current = false
   }, [speakEL, playSfx, setS, finishTurn])
   processElQueueRef.current = () => { void processElQueue().catch(() => {}) }
 
@@ -2538,7 +2548,7 @@ Assistant: ${ai || ''}`
                   if (!t) return
                   // ElevenLabs voice: use the same queue + playCtx as the assistant — do not use playTts
                   // (would double-play with speakEL on a second AudioContext).
-                  if (isEL) {
+                  if (isElRef.current) {
                     elQueueRef.current.push({ text: t })
                     processElQueueRef.current()
                   } else {
