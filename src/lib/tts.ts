@@ -45,6 +45,9 @@ export async function synthesizeSpeechChunk(
 
   const arrayBuffer = await response.arrayBuffer()
   const ctx = getAudioContext()
+  if (ctx.state === 'suspended') {
+    await ctx.resume()
+  }
   return ctx.decodeAudioData(arrayBuffer)
 }
 

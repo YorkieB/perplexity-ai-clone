@@ -3,7 +3,6 @@
  *
  * Routes:
  * - `POST /api/llm` — chat completions (existing).
- * - `POST /api/tts` — text-to-speech via OpenAI audio/speech (voice pipeline output).
  * - `POST /api/realtime/session` — mints a short-lived Realtime client secret via
  *   `POST https://api.openai.com/v1/realtime/client_secrets` using `OPENAI_API_KEY`.
  *   The browser must **not** receive the long-lived API key; it only gets the returned
@@ -130,12 +129,39 @@ function readBody(req: Connect.IncomingMessage): Promise<string> {
   })
 }
 
+/** Upper bound for buffered proxy bodies (Whisper uploads, multipart image edits, voice PCM). */
+const MAX_BODY_BYTES = 32 * 1024 * 1024
+
+function isRequestBodyTooLargeError(e: unknown): boolean {
+  return e instanceof Error && e.message.startsWith('Request body exceeds maximum size')
+}
+
 function readBodyRaw(req: Connect.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
+    let total = 0
+    let settled = false
+    req.on('data', (c: Buffer) => {
+      if (settled) return
+      total += c.length
+      if (total > MAX_BODY_BYTES) {
+        settled = true
+        req.destroy()
+        reject(new Error(`Request body exceeds maximum size (${MAX_BODY_BYTES} bytes)`))
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks))
+    })
+    req.on('error', (err) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    })
   })
 }
 
@@ -483,63 +509,15 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
         res.end(text)
       } catch (e) {
+        if (isRequestBodyTooLargeError(e)) {
+          res.statusCode = 413
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+          return
+        }
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Wake word proxy error' } }))
-      }
-      return
-    }
-
-    // ── Text-to-Speech (OpenAI audio/speech) ──
-    if (path === '/api/tts' && req.method === 'POST') {
-      const env = getEnv()
-      const { key, base } = getOpenAiConfig(env)
-      if (!key) {
-        res.statusCode = 500
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY for TTS.' } }))
-        return
-      }
-      try {
-        const body = await readBody(req)
-        const upstream = await fetch(`${base}/audio/speech`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-          },
-          body,
-        })
-        if (!upstream.ok) {
-          const errText = await upstream.text().catch(() => upstream.statusText)
-          res.statusCode = upstream.status
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: `TTS upstream error: ${upstream.status} ${errText}` } }))
-          return
-        }
-        res.statusCode = 200
-        const ct = upstream.headers.get('content-type')
-        if (ct) res.setHeader('Content-Type', ct)
-        const cl = upstream.headers.get('content-length')
-        if (cl) res.setHeader('Content-Length', cl)
-        if (upstream.body) {
-          const reader = upstream.body.getReader()
-          const pump = async () => {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) { res.end(); return }
-              res.write(value)
-            }
-          }
-          await pump()
-        } else {
-          const buf = Buffer.from(await upstream.arrayBuffer())
-          res.end(buf)
-        }
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'TTS proxy error' } }))
       }
       return
     }
@@ -586,6 +564,12 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
         res.end(text)
       } catch (e) {
+        if (isRequestBodyTooLargeError(e)) {
+          res.statusCode = 413
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+          return
+        }
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Image edit proxy error' } }))
@@ -1126,7 +1110,13 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.statusCode = upstream.status
         res.setHeader('Content-Type', 'application/json')
         res.end(text)
-      } catch {
+      } catch (e) {
+        if (isRequestBodyTooLargeError(e)) {
+          res.statusCode = 413
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+          return
+        }
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: 'Voice analysis service unavailable', vocalState: 'Unable to analyse voice' }))

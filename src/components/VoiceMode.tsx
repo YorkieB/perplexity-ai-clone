@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useRef } from 'react'
 import { FocusTrap } from 'focus-trap-react'
 import { XIcon, HandWavingIcon, VideoCameraIcon, MicrophoneIcon, MicrophoneSlashIcon } from '@phosphor-icons/react'
 import { useRealtimeVoice, VoicePipelineState } from '@/hooks/useRealtimeVoice'
@@ -56,6 +56,9 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     userSettings: settings,
   })
 
+  const pipelineRef = useRef(pipeline)
+  pipelineRef.current = pipeline
+
   const handleBargeIn = useCallback(() => {
     pipeline.bargeIn()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,14 +87,21 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
         /* Host/renderer hooks must not block pipeline teardown */
       }
     }
-    return () => {
-      setRendererVoiceModeOpen(false)
-      if (typeof ipc === 'function') {
-        void ipc(false).catch(() => {})
-      }
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pipeline.open/close are stable; effect tracks `open` only
   }, [open])
+
+  useEffect(() => {
+    return () => {
+      pipelineRef.current.close()
+      setRendererVoiceModeOpen(false)
+      try {
+        window.setRendererVoiceModeOpen?.(false)
+        void window.electronAPI?.setVoiceModeActive?.(false)?.catch(() => {})
+      } catch {
+        /* unmount teardown */
+      }
+    }
+  }, [])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

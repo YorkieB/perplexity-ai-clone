@@ -10,10 +10,18 @@
 const http = require('node:http')
 const path = require('node:path')
 const fs = require('node:fs')
-const { randomBytes } = require('node:crypto')
+const { randomBytes, timingSafeEqual } = require('node:crypto')
 const { WebSocketServer } = require('ws')
 
 const WS_PATH = '/voice/ws'
+
+/** Compare two UTF-8 strings in constant time; returns false if lengths differ. */
+function timingSafeEqualUtf8(a, b) {
+  const bufA = Buffer.from(String(a), 'utf8')
+  const bufB = Buffer.from(String(b), 'utf8')
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
+}
 
 /** Strip optional surrounding quotes from .env values (same convention as `electron/main.cjs` loadEnvFromFile). */
 function stripEnvValueQuotes(raw) {
@@ -191,7 +199,7 @@ function createBridge(getEnv) {
     }
     const { env } = getKeyBase()
     const secret = (env.VONAGE_WS_SECRET || '').trim()
-    if (secret && u.searchParams.get('token') !== secret) {
+    if (secret && !timingSafeEqualUtf8(u.searchParams.get('token') ?? '', secret)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
       return

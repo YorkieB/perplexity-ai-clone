@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { VisionContext } from './useVision'
 import type { TuneInControl } from '@/contexts/TuneInControlContext'
 import type { BrowserControl } from '@/contexts/BrowserControlContext'
@@ -391,12 +391,21 @@ function formatJarvisPythonScreenContextForInstructions(ctx: {
   updatedAt: number
   bridgeConnected: boolean
 }): string {
+  const activeApp = sanitizeIpcInstructionText(ipcStringField(ctx.activeApp), IPC_INSTRUCTION_MAX_SHORT)
+  const windowTitle = sanitizeIpcInstructionText(ipcStringField(ctx.windowTitle), IPC_INSTRUCTION_MAX_SHORT)
+  const summary = sanitizeIpcInstructionText(ipcStringField(ctx.summary), IPC_INSTRUCTION_MAX_SUMMARY)
+  const w = ctx.resolution?.width != null ? Math.max(0, Math.floor(Number(ctx.resolution.width))) : 0
+  const h = ctx.resolution?.height != null ? Math.max(0, Math.floor(Number(ctx.resolution.height))) : 0
+  const resolutionLine =
+    w > 0 && h > 0
+      ? `Resolution: ${sanitizeIpcInstructionText(`${w}×${h}`, 48)}`
+      : null
   const lines = [
     `Python sidecar WebSocket: ${ctx.bridgeConnected ? 'connected' : 'disconnected'}`,
-    ctx.windowTitle ? `Window title: ${ctx.windowTitle}` : null,
-    ctx.activeApp ? `Foreground app: ${ctx.activeApp}` : null,
-    ctx.resolution?.width ? `Resolution: ${ctx.resolution.width}×${ctx.resolution.height}` : null,
-    ctx.summary.trim() ? `Visible / change hint: ${ctx.summary.trim()}` : null,
+    windowTitle.trim() ? `Window title: ${windowTitle}` : null,
+    activeApp.trim() ? `Foreground app: ${activeApp}` : null,
+    resolutionLine,
+    summary.trim() ? `Visible / change hint: ${summary}` : null,
   ].filter((x): x is string => Boolean(x))
   return lines.join('\n')
 }
@@ -948,16 +957,18 @@ function formatVisionForSession(v: VisionContext): string {
 const SCREEN_GROUNDING_INTENT_RE =
   /\b(what('?s|\s+is)\s+(on\s+)?(my\s+)?(screen|monitor|desktop)|what\s+do\s+you\s+see|what\s+can\s+you\s+see|can\s+you\s+see\s+(what\s+)?(on\s+)?(my\s+)?(screen|it|this|that)|do\s+you\s+see\s+(what\s+)?(i\s*'?\s*m\s+)?(showing|displaying)|look\s+at\s+(my\s+)?(screen|desktop|this|that)|show(ing|ed)?\s+(you\s+)?(this|that|my\s+screen|it)|read\s+(what|this|that)\s+(on\s+)?(my\s+)?(screen)?|describe\s+(my\s+)?(screen|desktop|window)|see\s+(my\s+)?(screen|desktop)|anything\s+on\s+my\s+screen|\bnotepad\b|browser\s+window|on\s+my\s+desktop|i\s+show(ed|ing)\s+you)/i
 
-let screenGroundingInFlight = false
-let lastScreenGroundingAt = 0
 const SCREEN_GROUNDING_COOLDOWN_MS = 3500
 
-async function runScreenGroundingPrefetch(ws: WebSocket | null) {
-  if (!ws || ws.readyState !== WebSocket.OPEN || screenGroundingInFlight) return
+async function runScreenGroundingPrefetch(
+  ws: WebSocket | null,
+  inFlightRef: MutableRefObject<boolean>,
+  lastAtRef: MutableRefObject<number>,
+) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || inFlightRef.current) return
   const now = Date.now()
-  if (now - lastScreenGroundingAt < SCREEN_GROUNDING_COOLDOWN_MS) return
-  lastScreenGroundingAt = now
-  screenGroundingInFlight = true
+  if (now - lastAtRef.current < SCREEN_GROUNDING_COOLDOWN_MS) return
+  lastAtRef.current = now
+  inFlightRef.current = true
   try {
     try {
       ws.send(JSON.stringify({ type: 'response.cancel' }))
@@ -1019,7 +1030,7 @@ async function runScreenGroundingPrefetch(ws: WebSocket | null) {
   } catch (e) {
     console.warn('[voice] screen grounding prefetch failed:', e)
   } finally {
-    screenGroundingInFlight = false
+    inFlightRef.current = false
   }
 }
 
@@ -1075,6 +1086,8 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const procRef = useRef<ScriptProcessorNode | null>(null) // NOSONAR -- AudioWorklet requires separate module file; ScriptProcessor is adequate here
   const playCtxRef = useRef<AudioContext | null>(null)
   const isOpenRef = useRef(false)
+  /** Bumped on each new WebSocket handoff and on `close()` so async desktop tool jobs do not send `function_call_output` after reconnect or teardown. */
+  const voiceToolSessionTokenRef = useRef<object>({})
   /** True while `open()` is connecting (after sync guard, until WS handoff or abort). Prevents concurrent opens during long awaits (e.g. in `ws.onopen`). */
   const isConnectingRef = useRef(false)
   const visionContextRef = useRef<VisionContext | undefined>(undefined)
@@ -1083,6 +1096,8 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   /** Last injected desktop focus-context signature (JSON) to avoid duplicate system lines. */
   const prevDesktopScreenContextSigRef = useRef<string>('')
   const lastDesktopScreenInjectAtRef = useRef(0)
+  const screenGroundingInFlightRef = useRef(false)
+  const lastScreenGroundingAtRef = useRef(0)
   const stateRef = useRef<VoicePipelineState>('idle')
   const bargeInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoReadRef = useRef<{ pending: boolean }>({ pending: false })
@@ -1349,6 +1364,7 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
     while (true) {
       if (signal.aborted) break
       const { done, value } = await reader.read()
+      if (signal.aborted) break
       if (done) break
       const c = new Uint8Array(lo.length + value.length)
       c.set(lo)
@@ -1504,7 +1520,7 @@ Assistant: ${ai || ''}`
   }, [setS, runVoiceToolJob])
   triggerAutoReadRef.current = triggerAutoRead
 
-  const finishTurn = useCallback(() => {
+  const finishTurn = useCallback((): Promise<void> => {
     if (userRef.current && aiAccRef.current) {
       const cleanAi = stripBehavioralMarkup(aiAccRef.current)
       onResRef.current?.(userRef.current, cleanAi)
@@ -1527,14 +1543,20 @@ Assistant: ${ai || ''}`
     }
     userRef.current = ''
     const rem = Math.max(0, Math.trunc((nextTRef.current - (playCtxRef.current?.currentTime || 0)) * 1000))
-    setTimeout(() => {
-      if (!isOpenRef.current) return
-      aiAccRef.current = ''
-      directTTSRef.current = false
-      if (triggerAutoReadRef.current()) return
-      setS('listening')
-      setInterimTranscript('')
-    }, rem + 80)
+    return new Promise<void>(resolve => {
+      setTimeout(() => {
+        try {
+          if (!isOpenRef.current) return
+          aiAccRef.current = ''
+          directTTSRef.current = false
+          if (triggerAutoReadRef.current()) return
+          setS('listening')
+          setInterimTranscript('')
+        } finally {
+          resolve()
+        }
+      }, rem + 80)
+    })
   }, [setS, saveTurnToMemory])
 
   const processElQueue = useCallback(async () => {
@@ -1589,7 +1611,7 @@ Assistant: ${ai || ''}`
     }
     if (elDoneRef.current && elQueueRef.current.length === 0 && isOpenRef.current) {
       elDoneRef.current = false
-      finishTurn()
+      await finishTurn()
     }
     elBusyRef.current = false
   }, [speakEL, playSfx, setS, finishTurn])
@@ -1763,7 +1785,7 @@ Assistant: ${ai || ''}`
               window.electronAPI?.emitIntent(payload)
             }
             if (SCREEN_GROUNDING_INTENT_RE.test(t)) {
-              void runScreenGroundingPrefetch(wsRef.current)
+              void runScreenGroundingPrefetch(wsRef.current, screenGroundingInFlightRef, lastScreenGroundingAtRef)
             }
           }
         } catch (e) {
@@ -3307,9 +3329,12 @@ Assistant: ${ai || ''}`
             break
           }
           setS('thinking')
-          void (async () => {
+          const sessionToken = voiceToolSessionTokenRef.current
+          runVoiceToolJob(async () => {
             try {
               const output = await runDesktopAutomationTool(fnName, args)
+              if (sessionToken !== voiceToolSessionTokenRef.current) return
+              if (!isOpenRef.current) return
               const ws = wsRef.current
               if (ws?.readyState === WebSocket.OPEN) {
                 ws.send(
@@ -3321,6 +3346,8 @@ Assistant: ${ai || ''}`
                 ws.send(JSON.stringify({ type: 'response.create' }))
               }
             } catch (e) {
+              if (sessionToken !== voiceToolSessionTokenRef.current) return
+              if (!isOpenRef.current) return
               const err = e instanceof Error ? e.message : String(e)
               const ws = wsRef.current
               if (ws?.readyState === WebSocket.OPEN) {
@@ -3337,7 +3364,7 @@ Assistant: ${ai || ''}`
                 ws.send(JSON.stringify({ type: 'response.create' }))
               }
             }
-          })()
+          })
 
         } else if (fnName?.startsWith('email_') || fnName === 'vonage_send_sms' || fnName === 'vonage_voice_call' || fnName === 'vonage_ai_voice_call') {
           if (!callId) break
@@ -4502,6 +4529,7 @@ Assistant: ${ai || ''}`
         setS('idle')
       }
 
+      voiceToolSessionTokenRef.current = {}
       wsRef.current = ws
       wsHandedOff = true
     } catch (err) {
@@ -4518,6 +4546,7 @@ Assistant: ${ai || ''}`
     const cId = convIdRef.current
     isConnectingRef.current = false
     isOpenRef.current = false
+    voiceToolSessionTokenRef.current = {}
     prevVisionRef.current = ''
     prevDesktopScreenContextSigRef.current = ''
     lastDesktopScreenInjectAtRef.current = 0
