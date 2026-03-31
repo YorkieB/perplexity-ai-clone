@@ -39,6 +39,17 @@ export async function vonageVoiceCall(
 }
 
 /**
+ * Read recent inbound SMS messages from the event store (server-side).
+ */
+export async function vonageReadInboundSms(limit?: number): Promise<Array<{ from: string; text: string; receivedAt: string }>> {
+  const params = new URLSearchParams()
+  if (limit) params.set('limit', String(limit))
+  const res = await fetch(`/api/vonage/inbound-sms?${params.toString()}`)
+  const data = await res.json().catch(() => ({})) as { messages?: Array<{ from: string; text: string; receivedAt: string }> }
+  return data.messages || []
+}
+
+/**
  * Live two-way AI phone call: Vonage streams audio to your WebSocket bridge (STT → LLM → TTS).
  * Requires Voice app credentials, bridge running, and VONAGE_PUBLIC_WS_URL (e.g. ngrok → local bridge).
  */

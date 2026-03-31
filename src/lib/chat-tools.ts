@@ -1447,6 +1447,20 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'vonage_read_sms',
+      description:
+        'Read recent inbound SMS messages received via Vonage. Returns the latest messages with sender number, text content, and timestamp. Use when the user asks about received texts or incoming messages.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max messages to return (default 20)' },
+        },
+      },
+    },
+  },
 ]
 
 // ── Tool executor ───────────────────────────────────────────────────────────
@@ -2942,6 +2956,18 @@ function createToolExecutor(deps: ToolExecutorDeps) {
           return await vonageAiVoiceCall(to.trim())
         } catch (e) {
           return `AI voice call failed: ${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+
+      case 'vonage_read_sms': {
+        const limit = typeof args.limit === 'number' ? args.limit : 20
+        try {
+          const { vonageReadInboundSms } = await import('@/lib/vonage-api')
+          const messages = await vonageReadInboundSms(limit)
+          if (messages.length === 0) return 'No inbound SMS messages found.'
+          return messages.map(m => `From ${m.from} (${m.receivedAt}): ${m.text}`).join('\n')
+        } catch (e) {
+          return `Failed to read SMS: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 

@@ -102,6 +102,7 @@
         "imapflow": "^1.2.18",
         "input-otp": "^1.4.2",
         "jspdf": "^4.2.1",
+        "libphonenumber-js": "^1.12.41",
         "lucide-react": "^0.484.0",
         "mailparser": "^3.9.6",
         "marked": "^15.0.7",

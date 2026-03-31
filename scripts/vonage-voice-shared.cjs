@@ -1,3 +1,6 @@
+'use strict'
+const { parsePhoneNumberFromString } = require('libphonenumber-js')
+
 /**
  * Shared Vonage SMS/Voice: E.164-ish digits for Nexmo/Vonage APIs.
  *
@@ -52,4 +55,29 @@ function buildVonageAiVoiceWebSocketUri(env) {
   return u.toString()
 }
 
-module.exports = { normalizeVonagePhoneDigits, loadVonagePrivateKeyPem, buildVonageAiVoiceWebSocketUri }
+/**
+ * Production E.164 validation via libphonenumber-js.
+ * Returns Vonage-format digits (no +) or throws with a human-readable message.
+ * Falls back to the regex normalizer if libphonenumber-js cannot parse.
+ * @param {string} raw
+ * @param {string} [defaultCountry='GB']
+ * @returns {string} E.164 digits without +
+ */
+function validateAndNormalizePhone(raw, defaultCountry) {
+  const input = String(raw || '').trim()
+  if (!input) throw new Error('Phone number is required.')
+  try {
+    const pn = parsePhoneNumberFromString(input, defaultCountry || 'GB')
+    if (pn && pn.isValid()) {
+      return pn.format('E.164').replace(/^\+/, '')
+    }
+  } catch { /* fall through to regex */ }
+  // Fallback: regex normalizer (existing behavior)
+  const digits = normalizeVonagePhoneDigits(input)
+  if (digits.length < 7 || digits.length > 15) {
+    throw new Error(`Invalid phone number: "${input}". Use international format (e.g. +447700900123).`)
+  }
+  return digits
+}
+
+module.exports = { normalizeVonagePhoneDigits, loadVonagePrivateKeyPem, buildVonageAiVoiceWebSocketUri, validateAndNormalizePhone }

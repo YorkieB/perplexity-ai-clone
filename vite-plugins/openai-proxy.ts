@@ -99,6 +99,7 @@ const vonageWebhookVerify = requireVonage(join(_pluginDir, '..', 'scripts', 'von
     maxSkewSec?: number
   }) => { ok: true; payload: Record<string, unknown> } | { ok: false; reason: string }
 }
+const vonageEventStore = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-event-store.cjs')) as { persistEvent: (event: Record<string, unknown>, opts?: { type?: string }) => void; readRecentEvents: (opts?: { type?: string; limit?: number; date?: string }) => Array<Record<string, unknown>> }
 
 const elevenLabsSharedVoices = requireVonage(join(_pluginDir, '..', 'scripts', 'elevenlabs-shared-voices-query.cjs')) as {
   buildAllowedElevenLabsSharedVoicesQuery: (rawQuery: string) => string
@@ -2070,6 +2071,10 @@ function attachProxy(
           return
         }
         if (path === '/api/vonage/webhook/event') {
+          try {
+            const payload = rawBody.length > 0 ? JSON.parse(rawBody.toString()) : {}
+            vonageEventStore.persistEvent(payload, { type: 'voice-event' })
+          } catch { /* ignore parse errors — still return 204 */ }
           res.statusCode = 204
           res.end()
           return
@@ -2098,6 +2103,67 @@ function attachProxy(
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         res.end(JSON.stringify(ncco))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
+      return
+    }
+
+    // ── Vonage inbound SMS webhook ──
+    if (
+      (path === '/api/vonage/webhook/inbound-sms' && (req.method === 'GET' || req.method === 'POST'))
+    ) {
+      try {
+        const env = getEnv()
+        let rawBody = Buffer.alloc(0)
+        let smsPayload: Record<string, unknown> = {}
+        if (req.method === 'POST') {
+          rawBody = await readBodyRaw(req)
+          try { smsPayload = JSON.parse(rawBody.toString()) } catch { /* try form-encoded below */ }
+          if (!smsPayload.msisdn && rawBody.length > 0) {
+            // Classic SMS webhooks may be form-encoded
+            const params = new URLSearchParams(rawBody.toString())
+            smsPayload = Object.fromEntries(params.entries())
+          }
+        } else {
+          // GET — params in query string
+          const u = new URL(req.url || '', 'http://localhost')
+          smsPayload = Object.fromEntries(u.searchParams.entries())
+        }
+        // Persist the inbound SMS
+        vonageEventStore.persistEvent(smsPayload, { type: 'inbound-sms' })
+        console.log('[vonage] Inbound SMS received:', {
+          from: smsPayload.msisdn || smsPayload.from || 'unknown',
+          text: typeof smsPayload.text === 'string' ? smsPayload.text.slice(0, 100) : '',
+          messageId: smsPayload.messageId || smsPayload['message-id'] || null,
+        })
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ ok: true }))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
+      return
+    }
+
+    // ── Vonage inbound SMS read ──
+    if (path === '/api/vonage/inbound-sms' && req.method === 'GET') {
+      try {
+        const limit = parseInt(new URL(req.url || '', 'http://localhost').searchParams.get('limit') || '20', 10)
+        const events = vonageEventStore.readRecentEvents({ type: 'inbound-sms', limit })
+        const messages = events.map((e: Record<string, unknown>) => ({
+          from: e.msisdn || e.from || 'unknown',
+          text: typeof e.text === 'string' ? e.text : '',
+          receivedAt: e._receivedAt || '',
+          messageId: e.messageId || e['message-id'] || null,
+        }))
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ ok: true, messages }))
       } catch (e) {
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')

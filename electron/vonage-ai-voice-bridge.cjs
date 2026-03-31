@@ -320,13 +320,13 @@ function streamingLlmEnabled(env) {
   return raw !== '0' && raw !== 'false' && raw !== 'off'
 }
 
-async function ttsPcm(text, apiKey, base, signal) {
+async function ttsPcm(text, apiKey, base, signal, voice) {
   const res = await fetch(`${base}/audio/speech`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'gpt-4o-mini-tts',
-      voice: 'alloy',
+      voice: voice || 'alloy',
       input: text.slice(0, 4000),
       response_format: 'pcm',
     }),
@@ -669,7 +669,7 @@ function streamElevenLabsPcmToVonageFromAsyncGenerator(vonageWs, sentenceGen, en
  * @param {import('ws')} ws
  * @param {AsyncIterable<string>} sentenceGen
  */
-async function streamOpenAiTtsPcmToVonageFromAsyncGenerator(ws, sentenceGen, apiKey, base, ac, shouldAbort) {
+async function streamOpenAiTtsPcmToVonageFromAsyncGenerator(ws, sentenceGen, apiKey, base, ac, shouldAbort, voice) {
   for await (const sentence of sentenceGen) {
     if (shouldAbort() || ac.signal.aborted) {
       const err = new Error('Aborted')
@@ -678,7 +678,7 @@ async function streamOpenAiTtsPcmToVonageFromAsyncGenerator(ws, sentenceGen, api
     }
     const safe = String(sentence || '').trim()
     if (!safe) continue
-    const pcm24 = await ttsPcm(safe, apiKey, base, ac.signal)
+    const pcm24 = await ttsPcm(safe, apiKey, base, ac.signal, voice)
     if (shouldAbort() || ac.signal.aborted) {
       const err = new Error('Aborted')
       err.name = 'AbortError'
@@ -730,8 +730,28 @@ function createBridge(getEnv) {
     return { key, base, env }
   }
 
-  const systemPrompt =
-    'You are Jarvis on a phone call. Reply in short, natural spoken sentences (one or two sentences). No markdown, no lists.'
+  function buildSystemPrompt(env) {
+    const custom = (env.VONAGE_AI_SYSTEM_PROMPT || '').trim()
+    if (custom) return custom
+
+    const userName = (env.VONAGE_AI_USER_NAME || env.JARVIS_USER_NAME || '').trim()
+    const userGreeting = userName ? ` Your user's name is ${userName}.` : ''
+
+    return `You are Jarvis, an advanced AI assistant on a live phone call.${userGreeting}
+
+Core rules for phone conversations:
+- Speak in short, natural sentences (1-3 sentences per turn). No one wants a lecture on a phone call.
+- Never use markdown, bullet points, numbered lists, code blocks, or any visual formatting — the caller hears everything spoken aloud.
+- Spell out abbreviations and symbols: say "percent" not "%", "dollars" not "$", "at" not "@".
+- If you don't know something, say so briefly and offer to look into it.
+- Be warm but efficient. Phone time is valuable.
+- You can send SMS (vonage_send_sms) and read received texts (vonage_read_sms) if the caller asks.
+- You have access to the same capabilities as your text chat mode — search, email, calendar, code, files — but keep answers conversational and concise for voice.
+- If the caller asks you to do something complex, confirm the key details before acting.
+- Never say you cannot make calls or send texts — you are already on the phone doing exactly that.
+
+Voice style: conversational, confident, helpful. Mirror the caller's energy — if they're casual, be casual; if they're formal, be professional.`
+  }
 
   function maxTurns() {
     const raw = String(getEnv().VONAGE_AI_MAX_TURNS || '30').trim()
@@ -795,7 +815,7 @@ function createBridge(getEnv) {
           const batchReply = await chatReply(messages, key, base, ac.signal)
           fullText = batchReply.trim()
           llmDoneAt = Date.now()
-          const pcm24 = await ttsPcm(batchReply, key, base, ac.signal)
+          const pcm24 = await ttsPcm(batchReply, key, base, ac.signal, getEnv().VONAGE_AI_OPENAI_VOICE || 'alloy')
           if (ac.signal.aborted) {
             const err = new Error('Aborted')
             err.name = 'AbortError'
@@ -810,7 +830,7 @@ function createBridge(getEnv) {
       } else {
         await streamOpenAiTtsPcmToVonageFromAsyncGenerator(ws, sentenceGen(), key, base, ac, () =>
           ac.signal.aborted || session.state !== 'responding',
-        )
+        getEnv().VONAGE_AI_OPENAI_VOICE || 'alloy')
         ttsKind = 'openai'
       }
     } catch (e) {
@@ -841,7 +861,7 @@ function createBridge(getEnv) {
     }
 
     session.history.push({ role: 'user', content: userText })
-    const messages = [{ role: 'system', content: systemPrompt }, ...session.history]
+    const messages = [{ role: 'system', content: buildSystemPrompt(getEnv()) }, ...session.history]
 
     let reply = cachedReply(userText)
     let usedCache = false
@@ -950,7 +970,7 @@ function createBridge(getEnv) {
             '[vonage-ai-voice] ElevenLabs TTS failed, OpenAI fallback:',
             e instanceof Error ? e.message : e,
           )
-          const pcm24 = await ttsPcm(reply, key, base, ac.signal)
+          const pcm24 = await ttsPcm(reply, key, base, ac.signal, getEnv().VONAGE_AI_OPENAI_VOICE || 'alloy')
           if (ac.signal.aborted) {
             session.state = 'listening'
             return
@@ -962,7 +982,7 @@ function createBridge(getEnv) {
           ttsKind = 'openai'
         }
       } else {
-        const pcm24 = await ttsPcm(reply, key, base, ac.signal)
+        const pcm24 = await ttsPcm(reply, key, base, ac.signal, getEnv().VONAGE_AI_OPENAI_VOICE || 'alloy')
         if (ac.signal.aborted) {
           session.state = 'listening'
           return

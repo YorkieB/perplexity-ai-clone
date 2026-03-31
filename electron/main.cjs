@@ -3778,6 +3778,7 @@ async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP 
 const { tokenGenerate } = require('@vonage/jwt')
 const vonageShared = require(path.join(__dirname, '..', 'scripts', 'vonage-voice-shared.cjs'))
 const vonageWebhookVerify = require(path.join(__dirname, '..', 'scripts', 'vonage-webhook-verify.cjs'))
+const vonageEventStore = require(path.join(__dirname, '..', 'scripts', 'vonage-event-store.cjs'))
 
 async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-call validation + NCCO branch
   const env = getEnv()
@@ -3980,8 +3981,51 @@ async function handleVonageWebhookEvent(req, res) {
     res.end(JSON.stringify(gate.body))
     return
   }
+  try {
+    const payload = rawBody.length > 0 ? JSON.parse(rawBody.toString()) : {}
+    vonageEventStore.persistEvent(payload, { type: 'voice-event' })
+  } catch { /* ignore */ }
   res.statusCode = 204
   res.end()
+}
+
+async function handleVonageInboundSms(req, res) {
+  let rawBody = Buffer.alloc(0)
+  let smsPayload = {}
+  if (req.method === 'POST') {
+    rawBody = await readBodyRaw(req)
+    try { smsPayload = JSON.parse(rawBody.toString()) } catch { /* form-encoded */ }
+    if (!smsPayload.msisdn && rawBody.length > 0) {
+      const params = new URLSearchParams(rawBody.toString())
+      smsPayload = Object.fromEntries(params.entries())
+    }
+  } else {
+    const u = new URL(req.url || '', 'http://localhost')
+    smsPayload = Object.fromEntries(u.searchParams.entries())
+  }
+  vonageEventStore.persistEvent(smsPayload, { type: 'inbound-sms' })
+  console.log('[vonage] Inbound SMS received:', {
+    from: smsPayload.msisdn || smsPayload.from || 'unknown',
+    text: typeof smsPayload.text === 'string' ? smsPayload.text.slice(0, 100) : '',
+    messageId: smsPayload.messageId || smsPayload['message-id'] || null,
+  })
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json')
+  res.end(JSON.stringify({ ok: true }))
+}
+
+async function handleVonageReadInboundSms(req, res) {
+  const limit = parseInt(new URL(req.url || '', 'http://localhost').searchParams.get('limit') || '20', 10)
+  const events = vonageEventStore.readRecentEvents({ type: 'inbound-sms', limit })
+  const messages = events.map(e => ({
+    from: e.msisdn || e.from || 'unknown',
+    text: typeof e.text === 'string' ? e.text : '',
+    receivedAt: e._receivedAt || '',
+    messageId: e.messageId || e['message-id'] || null,
+  }))
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json')
+  res.end(JSON.stringify({ ok: true, messages }))
 }
 
 /** @type {{ text: string; at: number } | null} */
@@ -4484,6 +4528,9 @@ const exactRoutes = [
   { method: 'GET', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
   { method: 'POST', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
   { method: 'POST', path: '/api/vonage/webhook/event', handler: handleVonageWebhookEvent },
+  { method: 'GET', path: '/api/vonage/webhook/inbound-sms', handler: handleVonageInboundSms },
+  { method: 'POST', path: '/api/vonage/webhook/inbound-sms', handler: handleVonageInboundSms },
+  { method: 'GET', path: '/api/vonage/inbound-sms', handler: handleVonageReadInboundSms },
   { method: 'POST', path: '/api/x/tweet', handler: handleXTweet },
   { method: 'POST', path: '/api/plaid/link-token', handler: handlePlaidLinkToken },
   { method: 'POST', path: '/api/plaid/exchange', handler: handlePlaidExchange },
