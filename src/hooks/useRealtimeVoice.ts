@@ -26,6 +26,10 @@ import type { UserSettings } from '@/lib/types'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { getVoiceProfileMap, getDefaultVoiceProfile } from '@/lib/voice-registry'
 import { classifyScreenIntent } from '@/lib/screen-intent-classifier'
+import { getJarvisVoiceDesktopOsHintSection } from '@/lib/jarvis-desktop-os-capabilities'
+import { DESKTOP_AUTOMATION_TOOLS } from '@/lib/chat-tools-desktop-automation-tools'
+import { runDesktopAutomationTool, desktopAutomationChatSpecToRealtime } from '@/lib/desktop-automation-tool-runner'
+import { playTts, getEffectiveTtsVoice, stopAllAudio, stopBrowserTTS } from '@/lib/tts'
 
 export type VoicePipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -205,9 +209,40 @@ interface MemoryPayload {
   summaries: { summary: string; topics: string }[]
 }
 
+/**
+ * Detects Jarvis Electron preload (`window.electronAPI`) for Realtime voice instructions.
+ * Prefer `emitIntent` as a function (IPC contract); fall back to `jarvisDesktopShell` from preload.
+ */
+function hasJarvisDesktopScreenAgentForVoice(): boolean {
+  if (typeof globalThis === 'undefined') return false
+  const api = (globalThis as unknown as { electronAPI?: { emitIntent?: unknown; jarvisDesktopShell?: boolean } })
+    .electronAPI
+  if (api === undefined || api === null || typeof api !== 'object') return false
+  if (typeof api.emitIntent === 'function') return true
+  return api.jarvisDesktopShell === true
+}
+
+/** Preload exposes `window.jarvisNative` — OS automation available in desktop shell (text chat tools). */
+function hasJarvisNativeBridgeForVoice(): boolean {
+  if (typeof globalThis === 'undefined') return false
+  return Boolean((globalThis as unknown as { jarvisNative?: unknown }).jarvisNative)
+}
+
+/*
+ * Electron + useRealtimeVoice: `window.electronAPI.emitIntent` is defined in the renderer
+ * before the Realtime WebSocket opens when `electron/preload.cjs` runs (same BrowserWindow as
+ * VoiceMode). `hasDesktopScreenAgent` for buildInstructions() uses:
+ *   hasJarvisDesktopScreenAgentForVoice()
+ * i.e. typeof electronAPI.emitIntent === 'function' OR jarvisDesktopShell === true.
+ */
+
 interface BuildInstructionsOpts {
   mem: MemoryPayload | null
   hasVision?: boolean
+  /** Electron desktop: Jarvis Screen Agent (desktop capture) is available — separate from webcam. */
+  hasDesktopScreenAgent?: boolean
+  /** Text block from main-process `getJarvisLatestScreenContext` (injected at session start). */
+  desktopScreenSnapshot?: string
   hasTuneIn?: boolean
   hasRag?: boolean
   hasBrowser?: boolean
@@ -218,10 +253,48 @@ interface BuildInstructionsOpts {
   hasVoiceAnalysis?: boolean
   learnedContext?: string
   hasGoogleServices?: boolean
+  /** Electron preload `jarvisNative` — user has desktop OS automation in text chat. */
+  hasJarvisNativeBridge?: boolean
+  /** True when native_* tools are actually registered (bridge + Settings native control on). */
+  voiceNativeOsToolsInSession?: boolean
+}
+
+/** Formats IPC payload for Realtime instructions / system injections (desktop observation). */
+function formatJarvisScreenContextForInstructions(ctx: {
+  activeApp: string | null
+  windowTitle: string | null
+  summary: string
+  resolution: { width: number; height: number }
+  updatedAt: number
+  bridgeConnected: boolean
+}): string {
+  const lines = [
+    `Python sidecar WebSocket: ${ctx.bridgeConnected ? 'connected' : 'disconnected'}`,
+    ctx.windowTitle ? `Window title: ${ctx.windowTitle}` : null,
+    ctx.activeApp ? `Foreground app: ${ctx.activeApp}` : null,
+    ctx.resolution?.width ? `Resolution: ${ctx.resolution.width}×${ctx.resolution.height}` : null,
+    ctx.summary.trim() ? `Visible / change hint: ${ctx.summary.trim()}` : null,
+  ].filter((x): x is string => Boolean(x))
+  return lines.join('\n')
 }
 
 function buildInstructions(opts: BuildInstructionsOpts): string {
-  const { mem, hasVision = false, hasTuneIn = false, hasRag = false, hasBrowser = false, browserGuideMode = false, hasMedia = false, voiceNames = [], isElevenLabs = false, hasGoogleServices = false } = opts
+  const {
+    mem,
+    hasVision = false,
+    hasDesktopScreenAgent = false,
+    desktopScreenSnapshot = '',
+    hasTuneIn = false,
+    hasRag = false,
+    hasBrowser = false,
+    browserGuideMode = false,
+    hasMedia = false,
+    voiceNames = [],
+    isElevenLabs = false,
+    hasGoogleServices = false,
+    hasJarvisNativeBridge = false,
+    voiceNativeOsToolsInSession = false,
+  } = opts
   let base = `You are Jarvis, a personal AI assistant. Always respond in English. Keep responses concise and conversational — aim for 2-4 sentences unless detail is truly needed. Speak in plain natural language. No markdown, no bullet points.
 
 CRITICAL SYSTEM FACT — YOU HAVE PERSISTENT MEMORY:
@@ -236,9 +309,20 @@ You are STRICTLY FORBIDDEN from fabricating information:
 5. NEVER fabricate capabilities. If you cannot do something, say so honestly.
 6. For financial data, ONLY cite numbers from actual tool outputs — never guess balances or transactions.
 7. If asked about current events or facts you're unsure of, offer to search: "Want me to look that up?"
+8. DESKTOP SCREEN EXCEPTION: If this session includes the tool \`native_screen_capture\` (see below), it is FALSE to say you cannot see the user's monitor — call that tool instead of refusing. Honesty means using the tool when the user asks what is on screen, not claiming inability.
 === END HALLUCINATION PREVENTION ===
 
 `
+
+  if (voiceNativeOsToolsInSession) {
+    base += `
+=== DESKTOP MONITOR — MANDATORY (native_screen_capture is in your tool list) ===
+- When the user asks what is on their screen, desktop, or monitor, or to describe what they are looking at on the PC, you MUST call \`native_screen_capture\` first unless "LATEST DESKTOP SCREEN SNAPSHOT" elsewhere in these instructions already answers their question with current detail.
+- The physical webcam (room camera) is separate. Do not answer "what's on my screen" from webcam rules — use \`native_screen_capture\` or the desktop snapshot.
+- NEVER say you are "unable to see or describe the contents of your screen", "I can't see your screen", "I don't have access to your display", or that you can only help if they describe it — those lines are wrong here. If capture fails, say the capture failed and mention permissions or Settings → Desktop; do not claim you inherently cannot see the monitor.
+=== END DESKTOP MONITOR ===
+`
+  }
 
   if (hasVision) {
     base += `
@@ -260,7 +344,30 @@ EMOTION AWARENESS:
   } else {
     base += `
 
-VISION STATUS: Your camera system is not currently connected. If the user asks you to see something or describe what you see, let them know your camera is offline right now. Do NOT make up or hallucinate visual descriptions. Be honest that you cannot see at this moment.`
+CAMERA / WEBCAM STATUS: Your live room camera is not connected right now. If the user asks what you see through your camera or to describe the room or their face, say the webcam is offline and do not invent a scene. This refers ONLY to the physical webcam — not to desktop screen observation (see below when applicable).`
+  }
+
+  if (hasDesktopScreenAgent) {
+    base += `
+
+CRITICAL SYSTEM FACT — DESKTOP SCREEN OBSERVATION (Jarvis Screen Agent):
+This desktop build includes a Jarvis Screen Agent that observes the user's display (separate from any webcam). The app can route voice requests into these modes — you should behave as if you are helping with them when the user asks:
+- Watch / monitor the desktop (e.g. "watch my screen", "keep an eye on my screen")
+- Proactive advice while they work (e.g. "advise me", "coach me on this screen")
+- Answer questions about what's on screen (e.g. "what's on my screen", "what mode are you in")
+- Automate a task on the PC when they ask you to do something for them on the computer
+- Stop screen observation ("stop watching", "screen off")
+
+When the user asks you to watch their screen, monitor their screen, keep an eye on the display, or similar, you MUST NOT refuse by saying you cannot watch their screen, that you have no screen access, or that you are "unable to watch" — that pipeline exists here. Respond affirmatively (e.g. "I'm watching your screen now" or "I've got your screen"). If they only meant the room camera, the webcam may still be offline as stated above — do not conflate the two.`
+  }
+
+  if (desktopScreenSnapshot.trim()) {
+    base += `
+
+LATEST DESKTOP SCREEN SNAPSHOT (Jarvis Screen Agent — use as ground truth for the user's monitor; you may receive updated [DESKTOP SCREEN UPDATE] system lines during the call):
+${desktopScreenSnapshot.trim()}
+
+Answer "what's on my screen" from this snapshot. If the sidecar shows disconnected or the snapshot is empty of content, say observation may still be starting or Python capture is unavailable — do not invent specific window contents.`
   }
 
   base += `
@@ -555,6 +662,14 @@ Never explicitly mention that you are analysing their voice unless the user asks
 === END VOCAL AWARENESS ===`
   }
 
+  if (voiceNativeOsToolsInSession) {
+    base += getJarvisVoiceDesktopOsHintSection()
+  } else if (hasJarvisNativeBridge) {
+    base += `
+
+NATIVE OS TOOLS: \`jarvisNative\` is available but native OS tools are not in this voice session (Settings → Desktop: turn on "Allow native OS control in chat"). If the user asks what is on their monitor, say they need to enable that setting for screen capture — do not claim the app can never see the screen.`
+  }
+
   if (!mem) return base
 
   const parts = [base]
@@ -767,6 +882,63 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
     }
   }, [voiceRegistry])
 
+  const lastDesktopScreenInjectRef = useRef(0)
+  const DESKTOP_SCREEN_INJECT_MIN_MS = 25_000
+
+  useEffect(() => {
+    const api = (
+      globalThis as unknown as {
+        electronAPI?: {
+          onJarvisScreenContextUpdate?: (fn: (p: Record<string, unknown>) => void) => () => void
+        }
+      }
+    ).electronAPI
+    const sub = api?.onJarvisScreenContextUpdate
+    if (typeof sub !== 'function') {
+      return undefined
+    }
+    const off = sub((raw) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      const now = Date.now()
+      if (now - lastDesktopScreenInjectRef.current < DESKTOP_SCREEN_INJECT_MIN_MS) return
+      lastDesktopScreenInjectRef.current = now
+      const payload = {
+        activeApp: typeof raw.activeApp === 'string' ? raw.activeApp : null,
+        windowTitle: typeof raw.windowTitle === 'string' ? raw.windowTitle : null,
+        summary: typeof raw.summary === 'string' ? raw.summary : '',
+        resolution:
+          raw.resolution && typeof raw.resolution === 'object'
+            ? {
+                width: Number((raw.resolution as { width?: unknown }).width) || 0,
+                height: Number((raw.resolution as { height?: unknown }).height) || 0,
+              }
+            : { width: 0, height: 0 },
+        updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
+        bridgeConnected: true,
+      }
+      const text = formatJarvisScreenContextForInstructions(payload)
+      if (!text.trim()) return
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'system',
+              content: [{ type: 'input_text', text: `[DESKTOP SCREEN UPDATE]\n${text}` }],
+            },
+          }),
+        )
+      } catch {
+        /* ignore */
+      }
+    })
+    return () => {
+      off?.()
+    }
+  }, [])
+
   // Memory refs
   const convIdRef = useRef<string | null>(null)
   const memoryRef = useRef<MemoryPayload | null>(null)
@@ -807,6 +979,9 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
     elQueueRef.current = []
     elBusyRef.current = false
     elBufRef.current = ''
+    // Stop OpenAI /api/tts playback (separate AudioContext) and browser speechSynthesis fallback
+    stopAllAudio()
+    stopBrowserTTS()
   }, [])
 
   // ── ElevenLabs streaming TTS ───────────────────────────────────────────────
@@ -1788,13 +1963,30 @@ Assistant: ${ai || ''}`
 
           void (async () => {
             try {
+              const vgm =
+                userSettingsRef.current?.voiceGuidanceMode ??
+                (browserGuideModeRef.current ? 'guide' : 'copilot')
               const result = await runBrowserAgent(args.goal!, bc, {
                 maxSteps: 25,
                 model: 'gpt-4o-mini',
-                guideMode: browserGuideModeRef.current ?? false,
+                guideMode: vgm === 'guide',
+                voiceGuidanceMode: vgm,
+                onSpeakNarration: (text) => {
+                  if (vgm === 'off') return
+                  const t = text.trim()
+                  if (!t) return
+                  // ElevenLabs voice: use the same queue + playCtx as the assistant — do not use playTts
+                  // (would double-play with speakEL on a second AudioContext).
+                  if (isEL) {
+                    elQueueRef.current.push({ text: t })
+                    processElQueueRef.current()
+                  } else {
+                    playTts(t, { voice: getEffectiveTtsVoice() }).done.catch(() => {})
+                  }
+                },
                 onStep: (step) => {
                   onBrowserStepRef.current?.({ action: step.action, result: step.result, timestamp: step.timestamp })
-                  if (step.narration && browserGuideModeRef.current) {
+                  if (step.narration && vgm === 'guide') {
                     const ws = wsRef.current
                     if (ws?.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({
@@ -2528,6 +2720,55 @@ Assistant: ${ai || ''}`
             }
           })()
 
+        } else if (fnName?.startsWith('native_') || fnName?.startsWith('powershell_')) {
+          if (!callId) break
+          let args: Record<string, unknown> = {}
+          try {
+            args = JSON.parse(msg.arguments as string)
+          } catch {
+            /* ignored */
+          }
+          if (userSettingsRef.current?.nativeControlEnabled === false) {
+            sendVoiceToolOutputWithCancel(
+              wsRef.current,
+              callId,
+              'Native OS control is turned off in Settings → Desktop. Turn on "Allow native OS control in chat" to use screen capture, mouse, keyboard, and PowerShell from voice.',
+            )
+            break
+          }
+          setS('thinking')
+          void (async () => {
+            try {
+              const output = await runDesktopAutomationTool(fnName, args)
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'conversation.item.create',
+                    item: { type: 'function_call_output', call_id: callId, output },
+                  }),
+                )
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const err = e instanceof Error ? e.message : String(e)
+              const ws = wsRef.current
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'conversation.item.create',
+                    item: {
+                      type: 'function_call_output',
+                      call_id: callId,
+                      output: `Desktop automation error: ${err}`,
+                    },
+                  }),
+                )
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })()
+
         } else if (fnName?.startsWith('email_') || fnName === 'vonage_send_sms' || fnName === 'vonage_voice_call' || fnName === 'vonage_ai_voice_call') {
           if (!callId) break
           let args: Record<string, unknown> = {}
@@ -2650,13 +2891,50 @@ Assistant: ${ai || ''}`
         const registeredVoiceNames = Array.from(voiceMapRef.current.values()).map(v => v.name)
         const learnedCtx = await getLearnedContext().catch(() => '')
         const hasGoogleServices = Boolean(userSettings?.oauthTokens?.googledrive && userSettings?.connectedServices?.googledrive)
+        const hasDesktopScreenAgent = hasJarvisDesktopScreenAgentForVoice()
+        const hasJarvisNativeBridge = hasJarvisNativeBridgeForVoice()
+        const voiceNativeOsToolsInSession =
+          hasJarvisNativeBridge && userSettingsRef.current?.nativeControlEnabled !== false
+        if (import.meta.env.DEV) {
+          console.info('[Jarvis voice] hasDesktopScreenAgent (screen prompt):', hasDesktopScreenAgent, {
+            emitIntentType: typeof (globalThis as unknown as { electronAPI?: { emitIntent?: unknown } })
+              .electronAPI?.emitIntent,
+            jarvisDesktopShell: (globalThis as unknown as { electronAPI?: { jarvisDesktopShell?: boolean } })
+              .electronAPI?.jarvisDesktopShell,
+          })
+        }
+        let desktopScreenSnapshot = ''
+        if (hasDesktopScreenAgent) {
+          const getCtx = (globalThis as unknown as { electronAPI?: { getJarvisScreenContext?: () => Promise<unknown> } })
+            .electronAPI?.getJarvisScreenContext
+          if (typeof getCtx === 'function') {
+            try {
+              const ctx = (await getCtx()) as Parameters<typeof formatJarvisScreenContextForInstructions>[0] | null
+              if (ctx) {
+                desktopScreenSnapshot = formatJarvisScreenContextForInstructions(ctx)
+              }
+            } catch {
+              /* IPC optional */
+            }
+          }
+        }
         const instructions = buildInstructions({
-          mem: memory, hasVision: visionAvailable, hasTuneIn, hasRag, hasBrowser,
-          browserGuideMode: browserGuideModeRef.current ?? false, hasMedia,
-          voiceNames: registeredVoiceNames, isElevenLabs: isEL,
+          mem: memory,
+          hasVision: visionAvailable,
+          hasDesktopScreenAgent,
+          desktopScreenSnapshot,
+          hasTuneIn,
+          hasRag,
+          hasBrowser,
+          browserGuideMode: browserGuideModeRef.current ?? false,
+          hasMedia,
+          voiceNames: registeredVoiceNames,
+          isElevenLabs: isEL,
           hasVoiceAnalysis: vaEnabledRef.current,
           learnedContext: learnedCtx,
           hasGoogleServices,
+          hasJarvisNativeBridge,
+          voiceNativeOsToolsInSession,
         })
 
         const tools: Record<string, unknown>[] = [
@@ -3461,6 +3739,12 @@ Assistant: ${ai || ''}`
             },
           },
         )
+
+        if (voiceNativeOsToolsInSession) {
+          for (const spec of DESKTOP_AUTOMATION_TOOLS) {
+            tools.push(desktopAutomationChatSpecToRealtime(spec as Record<string, unknown>))
+          }
+        }
 
         const session: Record<string, unknown> = {
           modalities: isEL ? ['text'] : ['text', 'audio'],

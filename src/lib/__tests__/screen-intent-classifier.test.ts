@@ -36,6 +36,13 @@ describe('classifyScreenIntent', () => {
     expect(classifyScreenIntent('what mode are you in')).toEqual({ intent: 'screen.status', entities: {} })
   })
 
+  it('maps natural desktop visibility questions → screen.status', () => {
+    expect(classifyScreenIntent("what's on my screen")).toEqual({ intent: 'screen.status', entities: {} })
+    expect(classifyScreenIntent('what do you see')).toEqual({ intent: 'screen.status', entities: {} })
+    expect(classifyScreenIntent('can you see my screen')).toEqual({ intent: 'screen.status', entities: {} })
+    expect(classifyScreenIntent('tell me what is on my screen')).toEqual({ intent: 'screen.status', entities: {} })
+  })
+
   it('returns null for unrelated transcript', () => {
     expect(classifyScreenIntent('tell me the weather')).toBeNull()
   })

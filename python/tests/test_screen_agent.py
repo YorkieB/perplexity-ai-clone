@@ -67,6 +67,22 @@ class TestAdviseEngine:
         img = Image.new("RGB", (8, 8), color=(1, 2, 3))
         assert eng.analyze(img, "c", "w") is None
 
+    def test_answer_question_calls_vision(self) -> None:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="  I see a button.  "))]
+        )
+        eng = sa.AdviseEngine(mock_client)
+        img = Image.new("RGB", (8, 8), color=(1, 2, 3))
+        out = eng.answer_question(img, "What do you see?", "My Window")
+        assert out == "I see a button."
+        assert mock_client.chat.completions.create.call_count == 1
+
+    def test_answer_question_empty_question_none(self) -> None:
+        eng = sa.AdviseEngine(MagicMock())
+        img = Image.new("RGB", (4, 4), color=(0, 0, 0))
+        assert eng.answer_question(img, "   ", "w") is None
+
 
 class TestActEngine:
     def test_goal_complete_when_complete(self) -> None:

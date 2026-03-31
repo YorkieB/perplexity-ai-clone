@@ -42,6 +42,8 @@ export class GoalExecutor {
     private readonly bridge: PythonBridge,
     private readonly emitter: EventEmitter<ScreenAgentEvents>,
     private readonly safety: SafetyGate,
+    /** Optional orchestrator bus (e.g. globalEmitter) for BehaviourLogger. */
+    private readonly globalBehaviourBus?: EventEmitter,
   ) {}
 
   /** Voice / UI: user said confirm or cancel while an approval is pending. */
@@ -75,21 +77,40 @@ export class GoalExecutor {
     this.currentGoal = goal
     this.stepsCompleted = 0
 
+    // Do not read the full goal aloud — it often mirrors the user's phrase and sounds like a second voice echoing them (Realtime already responds).
     this.emitter.emit('jarvis:speak', {
-      text: `On it. Starting: ${goal}`,
+      text: 'On it — taking care of that on your computer now.',
       priority: 'normal',
     })
+
+    this.globalBehaviourBus?.emit('goal:started', { goal })
 
     this.bridge.send({ command: 'set_mode', mode: 'ACT', goal })
 
     return await new Promise<GoalResult>((resolve) => {
       this.goalResolve = resolve
 
+      const publishGoalEnd = (r: GoalResult): void => {
+        const bus = this.globalBehaviourBus
+        if (bus === undefined) {
+          return
+        }
+        if (r.success) {
+          bus.emit('goal:completed', { stepsCompleted: r.stepsCompleted })
+        } else {
+          bus.emit('goal:failed', {
+            reason: r.failureReason ?? 'unknown',
+            stepsCompleted: r.stepsCompleted,
+          })
+        }
+      }
+
       const finish = (r: GoalResult): void => {
         const res = this.goalResolve
         if (res === null) {
           return
         }
+        publishGoalEnd(r)
         this.goalResolve = null
         this.clearGoalTimeout()
         this.detachGoalListeners()
@@ -176,6 +197,10 @@ export class GoalExecutor {
     this.detachGoalListeners()
     this.isRunning = false
     this.currentGoal = null
+    this.globalBehaviourBus?.emit('goal:failed', {
+      reason: 'Stopped by user',
+      stepsCompleted: steps,
+    })
     resolve({
       success: false,
       goal: g,

@@ -12,6 +12,8 @@ export interface BrowserControl {
   snapshot: () => Promise<string>
   click: (ref: string) => Promise<{ ok: boolean }>
   type: (ref: string, text: string) => Promise<{ ok: boolean }>
+  /** Guide mode: draw a viewport overlay around a snapshot ref; pass `null` to clear. Webview/Electron only. */
+  highlightRef?: (ref: string | null, label?: string) => Promise<void>
   extractText: () => Promise<string>
   scroll: (direction: 'up' | 'down') => Promise<{ ok: boolean }>
   goBack: () => Promise<{ ok: boolean }>

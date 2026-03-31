@@ -2,9 +2,20 @@ import EventEmitter from 'eventemitter3'
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
 
+import {
+  EVT_BEHAVIOUR_ACCEPT,
+  EVT_BEHAVIOUR_SUGGESTION,
+  type BehaviourSuggestionEvent,
+} from '@/agents/behaviour/proactive-engine'
 import { AgentMode } from '@/agents/screen-agent/types'
+import { BROWSER_ACT_GOAL_CONTINUE, BROWSER_ACT_GOAL_OPEN_URL } from '@/browser/screen-browser-act'
 
-import { ScreenAgentHandler } from '../screen-agent-handler'
+import {
+  BEHAVIOUR_ACT_GOAL_BROWSER,
+  BEHAVIOUR_ACT_GOAL_DEFAULT,
+  intentResolvedFromBehaviourSuggestion,
+  ScreenAgentHandler,
+} from '../screen-agent-handler'
 
 describe('ScreenAgentHandler', () => {
   let globalEmitter: EventEmitter
@@ -30,7 +41,9 @@ describe('ScreenAgentHandler', () => {
     jest.restoreAllMocks()
   })
 
-  function makeHandler(): ScreenAgentHandler {
+  function makeHandler(opts?: {
+    delegateBrowserAct?: (p: { goal: string; slots: Record<string, string | undefined> }) => void
+  }): ScreenAgentHandler {
     const screenAgent = {
       setMode,
       queryScreen,
@@ -39,7 +52,9 @@ describe('ScreenAgentHandler', () => {
       off,
       emit,
     }
-    return new ScreenAgentHandler(screenAgent as never, globalEmitter)
+    return new ScreenAgentHandler(screenAgent as never, globalEmitter, {
+      delegateBrowserAct: opts?.delegateBrowserAct,
+    })
   }
 
   it('routes jarvis.screen.watch → setMode(WATCH)', async () => {
@@ -69,6 +84,40 @@ describe('ScreenAgentHandler', () => {
     })
     await Promise.resolve()
     expect(setMode).toHaveBeenCalledWith(AgentMode.ACT, 'open notepad')
+    h.destroy()
+  })
+
+  it('delegates browser continue ACT to renderer and skips setMode', async () => {
+    const delegate = jest.fn()
+    const h = makeHandler({ delegateBrowserAct: delegate })
+    h.init()
+    globalEmitter.emit('intent:resolved', {
+      intent: 'jarvis.screen.act',
+      slots: { goal: BROWSER_ACT_GOAL_CONTINUE },
+    })
+    await Promise.resolve()
+    expect(delegate).toHaveBeenCalledWith({
+      goal: BROWSER_ACT_GOAL_CONTINUE,
+      slots: { goal: BROWSER_ACT_GOAL_CONTINUE },
+    })
+    expect(setMode).not.toHaveBeenCalled()
+    h.destroy()
+  })
+
+  it('delegates open-url browser ACT to renderer and skips setMode', async () => {
+    const delegate = jest.fn()
+    const h = makeHandler({ delegateBrowserAct: delegate })
+    h.init()
+    globalEmitter.emit('intent:resolved', {
+      intent: 'jarvis.screen.act',
+      slots: { goal: `${BROWSER_ACT_GOAL_OPEN_URL} https://example.com`, url: 'https://example.com' },
+    })
+    await Promise.resolve()
+    expect(delegate).toHaveBeenCalledWith({
+      goal: `${BROWSER_ACT_GOAL_OPEN_URL} https://example.com`,
+      slots: { goal: `${BROWSER_ACT_GOAL_OPEN_URL} https://example.com`, url: 'https://example.com' },
+    })
+    expect(setMode).not.toHaveBeenCalled()
     h.destroy()
   })
 
@@ -130,6 +179,8 @@ describe('ScreenAgentHandler', () => {
     h.destroy()
     expect(globalEmitter.listenerCount('intent:resolved')).toBe(0)
     expect(globalEmitter.listenerCount('jarvis:user:confirmed')).toBe(0)
+    expect(globalEmitter.listenerCount(EVT_BEHAVIOUR_SUGGESTION)).toBe(0)
+    expect(globalEmitter.listenerCount(EVT_BEHAVIOUR_ACCEPT)).toBe(0)
   })
 
   it('unknown intent does not call setMode', async () => {
@@ -149,5 +200,75 @@ describe('ScreenAgentHandler', () => {
     expect(setMode).not.toHaveBeenCalled()
     expect(console.warn).toHaveBeenCalled()
     h.destroy()
+  })
+
+  function suggestionBase(
+    suggestedIntent: string,
+    activeApp: string | null = null,
+  ): BehaviourSuggestionEvent {
+    return {
+      type: 'behaviour:suggestion',
+      sessionId: 'sess',
+      suggestedIntent,
+      confidence: 0.82,
+      reasons: ['Often follows last intent (x)'],
+      context: {
+        recentIntents: ['jarvis.screen.watch'],
+        activeApp,
+        timeOfDay: 'morning',
+        dayOfWeek: 1,
+      },
+      createdAt: Date.now(),
+    }
+  }
+
+  it('intentResolvedFromBehaviourSuggestion maps act + browser app to browser goal', () => {
+    const p = intentResolvedFromBehaviourSuggestion(
+      suggestionBase('jarvis.screen.act', 'Google Chrome'),
+    )
+    expect(p).toEqual({
+      intent: 'jarvis.screen.act',
+      slots: { goal: BEHAVIOUR_ACT_GOAL_BROWSER },
+      utterance: BEHAVIOUR_ACT_GOAL_BROWSER,
+    })
+  })
+
+  it('intentResolvedFromBehaviourSuggestion maps act + non-browser to default goal', () => {
+    const p = intentResolvedFromBehaviourSuggestion(suggestionBase('jarvis.screen.act', 'Code'))
+    expect(p).toEqual({
+      intent: 'jarvis.screen.act',
+      slots: { goal: BEHAVIOUR_ACT_GOAL_DEFAULT },
+      utterance: BEHAVIOUR_ACT_GOAL_DEFAULT,
+    })
+  })
+
+  it('jarvis:behaviour:suggestion emits jarvis:speak with spoken summary', () => {
+    const h = makeHandler()
+    h.init()
+    const spy = jest.spyOn(globalEmitter, 'emit')
+    globalEmitter.emit(EVT_BEHAVIOUR_SUGGESTION, suggestionBase('jarvis.screen.watch'))
+    const speakCalls = spy.mock.calls.filter((c) => c[0] === 'jarvis:speak')
+    expect(speakCalls.length).toBe(1)
+    const payload = speakCalls[0]![1] as { text: string }
+    expect(payload.text).toContain('Suggestion:')
+    expect(payload.text).toContain('watch')
+    h.destroy()
+    spy.mockRestore()
+  })
+
+  it('jarvis:behaviour:accept emits intent:resolved and routes like NLU', async () => {
+    const h = makeHandler()
+    h.init()
+    const resolvedSpy = jest.spyOn(globalEmitter, 'emit')
+    globalEmitter.emit(EVT_BEHAVIOUR_SUGGESTION, suggestionBase('jarvis.screen.advise'))
+    resolvedSpy.mockClear()
+    globalEmitter.emit(EVT_BEHAVIOUR_ACCEPT)
+    const intentCalls = resolvedSpy.mock.calls.filter((c) => c[0] === 'intent:resolved')
+    expect(intentCalls.length).toBe(1)
+    expect(intentCalls[0]![1]).toEqual({ intent: 'jarvis.screen.advise' })
+    await Promise.resolve()
+    expect(setMode).toHaveBeenCalledWith(AgentMode.ADVISE)
+    h.destroy()
+    resolvedSpy.mockRestore()
   })
 })

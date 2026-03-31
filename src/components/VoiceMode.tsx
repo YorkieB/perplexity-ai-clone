@@ -11,6 +11,7 @@ import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { cn } from '@/lib/utils'
+import { setRendererVoiceModeOpen } from '@/lib/voice-mode-ui'
 
 interface VoiceModeProps {
   readonly open: boolean
@@ -59,10 +60,21 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
   }, [pipeline.bargeIn])
 
   useEffect(() => {
+    setRendererVoiceModeOpen(open)
+    const ipc = typeof window !== 'undefined' ? window.electronAPI?.setVoiceModeActive : undefined
+    if (typeof ipc === 'function') {
+      void ipc(open).catch(() => {})
+    }
     if (open) {
       pipeline.open()
     } else {
       pipeline.close()
+    }
+    return () => {
+      setRendererVoiceModeOpen(false)
+      if (typeof ipc === 'function') {
+        void ipc(false).catch(() => {})
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])

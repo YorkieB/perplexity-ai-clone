@@ -42,6 +42,42 @@ import {
 import { analyzeMissingLogic, type MissingLogicDetectionId } from '@/lib/jarvis-missing-logic-detector'
 import { runJarvisWorkspaceQuality } from '@/lib/jarvis-workspace-quality'
 import { buildCodeEditorJarvisMenus } from '@/components/ide/jarvisIdeCodeEditorMenuFactory'
+import type { InspectorAiRequest, InspectorChatTicket } from '@/browser/types-layout'
+import { ToastHost } from '@/ui/toast/ToastHost'
+import { showIdeToast } from '@/ui/toast/toast-helpers'
+
+function buildInspectorChatPrompt(request: InspectorAiRequest): string {
+  const { kind, node, source } = request
+  let header = 'DOM Inspector request: suggest layout/CSS improvements for this element.'
+  if (kind === 'explain-node') {
+    header = 'DOM Inspector request: explain this element and how it fits into the layout.'
+  } else if (kind === 'fix-attributes') {
+    header = 'DOM Inspector request: suggest improvements to this element’s attributes and structure.'
+  }
+
+  const sourceLine = source
+    ? `Source location: workspace=${source.workspaceId}, file=${source.filePath}, markerId=${source.markerId}.`
+    : 'Source location: unknown (no data-j-source on this node).'
+
+  const elementSummary = [
+    `Tag: <${node.tagName.toLowerCase()}>`,
+    node.id ? `id: ${node.id}` : null,
+    node.classes?.length ? `classes: ${node.classes.join(' ')}` : null,
+    node.attributes ? `attributes (JSON): ${JSON.stringify(node.attributes)}` : null,
+    node.inlineStyle ? `inline style: ${node.inlineStyle}` : null,
+    node.boundingRect ? `boundingRect: ${JSON.stringify(node.boundingRect)}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  return `${header}\n\n${sourceLine}\n\nElement details:\n${elementSummary}\n\nPlease respond as an assistant helping improve this element in the codebase.`
+}
+
+function inspectorAiKindToPreset(kind: InspectorAiRequest['kind']): IdeAiPreset {
+  if (kind === 'explain-node') return 'inspector_explain_node'
+  if (kind === 'fix-attributes') return 'inspector_fix_attributes'
+  return 'inspector_fix_layout'
+}
 
 interface CodeEditorModalProps {
   readonly open: boolean
@@ -49,6 +85,9 @@ interface CodeEditorModalProps {
   /** Full Jarvis chat with tools; receives live IDE context (active file + source). */
   readonly ideChatOnSend?: (payload: IdeChatPayload) => Promise<{ content: string; reasoning?: string }>
   readonly onOpenAgentBrowser?: () => void
+  /** When set (with monotonically increasing `nonce`), opens AI chat and sends an inspector-aware turn. */
+  readonly inspectorChatTicket?: InspectorChatTicket | null
+  readonly onInspectorChatConsumed?: () => void
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -397,7 +436,14 @@ function WorkspaceRelPathTree({
    MAIN IDE COMPONENT
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export function CodeEditorModal({ open, onOpenChange, ideChatOnSend, onOpenAgentBrowser }: CodeEditorModalProps) {
+export function CodeEditorModal({
+  open,
+  onOpenChange,
+  ideChatOnSend,
+  onOpenAgentBrowser,
+  inspectorChatTicket,
+  onInspectorChatConsumed,
+}: CodeEditorModalProps) {
   const { register, unregister } = useCodeEditorRegister()
   const { items, addItem, removeItem, updateItem, activeItemId, setActiveItemId } = useCodeEditorItems()
   const { running, setRunning, runResult, setRunResult } = useCodeEditorRunning()
@@ -1354,6 +1400,52 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
     [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning]
   )
 
+  const fireInspectorChat = useCallback(
+    async (request: InspectorAiRequest) => {
+      if (!ideChatOnSend) return
+      const prompt = buildInspectorChatPrompt(request)
+      const preset = inspectorAiKindToPreset(request.kind)
+      setShowIdeChat(true)
+      setIdeChatMessages((prev) => [...prev, createIdeUserMessage(prompt)])
+      try {
+        await sendIdePayload({
+          userMessage: prompt,
+          ideContextBlock: ideContextBlockRef.current,
+          preset,
+          model: ideChatModel,
+          temperature: ideTemp,
+          max_tokens: ideMaxTok,
+          reasoningMode: ideReasoning,
+          mode: ideChatMode,
+        })
+        let inspectorSentMsg = 'Sent inspector request to Jarvis: suggest layout changes.'
+        if (request.kind === 'explain-node') {
+          inspectorSentMsg = 'Sent inspector request to Jarvis: explain this node.'
+        } else if (request.kind === 'fix-attributes') {
+          inspectorSentMsg =
+            'Sent inspector request to Jarvis: fix attributes on the selected element.'
+        }
+        showIdeToast(inspectorSentMsg, 'success')
+      } catch {
+        showIdeToast('Failed to send inspector request to Jarvis.', 'error')
+      }
+    },
+    [ideChatOnSend, sendIdePayload, ideChatModel, ideTemp, ideMaxTok, ideReasoning, ideChatMode]
+  )
+
+  const inspectorChatHandledNonceRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!open || !inspectorChatTicket || !ideChatOnSend) return
+    if (inspectorChatHandledNonceRef.current === inspectorChatTicket.nonce) return
+    inspectorChatHandledNonceRef.current = inspectorChatTicket.nonce
+    const { request } = inspectorChatTicket
+    fireInspectorChat(request)
+      .catch(() => {})
+      .finally(() => {
+        onInspectorChatConsumed?.()
+      })
+  }, [open, inspectorChatTicket, ideChatOnSend, fireInspectorChat, onInspectorChatConsumed])
+
   /** Cursor-style Review: run static analysis first, then feed findings to AI. */
   const handleJarvisReview = useCallback(async () => {
     if (!workspaceRoot || !hasElectronFs) {
@@ -1776,6 +1868,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col select-none" style={{ background: bgColor, color: tc }}>
+      <ToastHost scope="ide" />
       {/* ═══ TITLE BAR ═══ */}
       {!zenMode && (
         <div className="h-9 flex items-center px-2 gap-1 text-xs flex-shrink-0 border-b" style={{ background: tl, borderColor: bc }}>

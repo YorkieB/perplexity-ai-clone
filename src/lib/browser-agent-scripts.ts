@@ -118,6 +118,23 @@ export const SNAPSHOT_SCRIPT = `
 })()
 `
 
+/** Guest viewport rect for a snapshot ref — combine with host `<webview>.getBoundingClientRect()` for overlay coords. */
+export function refRectScript(ref: string): string {
+  const safe = /^e\d+$/.test(ref) ? ref : ''
+  if (!safe) {
+    return `(function(){ return { ok: false, error: 'invalid ref' }; })()`
+  }
+  return `
+(function() {
+  const el = window.__jarvisRefs && window.__jarvisRefs.get('${safe}');
+  if (!el) return { ok: false, error: 'ref not found' };
+  el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  const r = el.getBoundingClientRect();
+  return { ok: true, x: r.left, y: r.top, width: r.width, height: r.height };
+})()
+`
+}
+
 export function clickScript(ref: string): string {
   return `
 (function() {

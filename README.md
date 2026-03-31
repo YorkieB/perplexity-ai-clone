@@ -7,6 +7,14 @@ A production-ready, highly responsive AI-powered search engine built with React,
 - **[Telescope analysis (Perplexity reference + this repo coverage)](docs/PERPLEXITY-TELESCOPE-ANALYSIS.md)** — full layer-by-layer product breakdown and gap matrix.
 - **[Voice layer](docs/VOICE-LAYER.md)** — `VoiceSession` types/events, `NullVoiceSession` stub, optional `Message` voice fields; **OpenAI Realtime** (`OpenAIRealtimeVoiceSession`, `POST /api/realtime/session` proxy, WebRTC). UI wiring is still upcoming.
 
+### Behaviour / proactive suggestions
+
+Quick typecheck plus Jest suites for behaviour logging, prediction, `ProactiveEngine`, and `ScreenAgentHandler` (suggestion → `jarvis:speak` → accept → `intent:resolved`, including browser ACT goal mapping):
+
+```bash
+npm run test:behaviour:e2e
+```
+
 ## 🚀 Features
 
 - **Real-Time Web Search**: Integration with Tavily Search API for current, verifiable web data

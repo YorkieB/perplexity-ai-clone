@@ -1,9 +1,78 @@
 /// <reference types="vite/client" />
 import type { DetailedHTMLProps, HTMLAttributes } from 'react'
 
+/** Main → renderer: delegated in-app browser ACT (see `screen-browser-act.ts`). */
+interface JarvisBrowserActIpcPayload {
+  goal: string
+  slots: Record<string, string | undefined>
+}
+
+/** Main → renderer: desktop screen agent snapshot (see `getJarvisLatestScreenContext`). */
+interface JarvisScreenContextPayload {
+  activeApp: string | null
+  windowTitle: string | null
+  summary: string
+  resolution: { width: number; height: number }
+  updatedAt: number
+  bridgeConnected: boolean
+}
+
 /** Electron preload — Jarvis intent bridge (main-process `globalEmitter`). */
 interface ElectronJarvisApi {
+  /** Present when `electron/preload.cjs` ran; same window as `emitIntent`. */
+  jarvisDesktopShell?: true
   emitIntent: (payload: { intent: string; entities: Record<string, string>; rawText: string }) => void
+  acceptBehaviourSuggestion: () => void
+  onJarvisBrowserAct?: (handler: (payload: JarvisBrowserActIpcPayload) => void) => () => void
+  getJarvisScreenContext?: () => Promise<JarvisScreenContextPayload | null>
+  /** Suppress main-process `jarvis:speak` TTS while Voice Mode is open (when JARVIS_VOICEAGENT_TTS=1). */
+  setVoiceModeActive?: (active: boolean) => Promise<void>
+  onJarvisScreenContextUpdate?: (handler: (payload: JarvisScreenContextPayload) => void) => () => void
+}
+
+/** Payloads broadcast after guest `sendToHost` → main → renderer (see `jarvis-browser-inspector-guest-event`). */
+interface JarvisInspectorHoverSelectPayload {
+  tabId: string
+  nodeId: string
+  domPath: number[]
+  boundingRect?: { x: number; y: number; width: number; height: number }
+}
+
+/** Desktop OS automation (`electron/preload.cjs` → `jarvis-desktop-automation.cjs`). */
+interface JarvisNativeAPI {
+  mouseMove: (pos: { x: number; y: number }) => Promise<{ ok: boolean; error?: string }>
+  mouseClick: (opts: {
+    x?: number
+    y?: number
+    button?: string
+    doubleClick?: boolean
+  }) => Promise<{ ok: boolean; error?: string }>
+  mouseScroll: (opts: { amount?: number; direction?: string }) => Promise<{ ok: boolean; error?: string }>
+  mouseDrag: (opts: {
+    startX: number
+    startY: number
+    endX: number
+    endY: number
+  }) => Promise<{ ok: boolean; error?: string }>
+  keyboardType: (opts: { text: string }) => Promise<{ ok: boolean; error?: string }>
+  keyboardPress: (opts: { keys: string[] }) => Promise<{ ok: boolean; error?: string }>
+  keyboardHotkey: (opts: { combo: string }) => Promise<{ ok: boolean; error?: string }>
+  screenSize: () => Promise<{ width: number; height: number }>
+  screenCapture: (opts?: {
+    region?: { left?: number; top?: number; width?: number; height?: number; x?: number; y?: number }
+  }) => Promise<{ ok: boolean; data?: string; width?: number; height?: number; error?: string }>
+  clipboardRead: () => Promise<{ ok: boolean; text?: string; error?: string }>
+  clipboardWrite: (opts: { text: string }) => Promise<{ ok: boolean; error?: string }>
+  windowList: () => Promise<Array<{ title: string; x: number; y: number; width: number; height: number }>>
+  windowFocus: (opts: { title: string }) => Promise<{ ok: boolean; title?: string; error?: string }>
+  activeWindow: () => Promise<{ title: string; x: number; y: number; width: number; height: number }>
+  powershellExec: (opts: { command: string; cwd?: string }) => Promise<{
+    ok: boolean
+    stdout?: string
+    stderr?: string
+    error?: string
+  }>
+  getScreenSources: () => Promise<Array<{ id: string; name: string; thumbnail: string; appIcon: string | null }>>
 }
 
 /** Electron preload (`electron/preload.cjs`) — only present in desktop shell. */
@@ -17,13 +86,51 @@ interface ElectronInAppBrowserAPI {
     error?: string
   }>
   pickExtensionFolder: () => Promise<string | null>
-  onDownloadComplete: (handler: (payload: { filename: string; path: string }) => void) => () => void
+  applyJarvisBrowserSettings: (payload: {
+    privacy: { sendDoNotTrack: boolean; blockThirdPartyCookies: boolean }
+    sitePermissions: Record<string, Record<string, 'allow' | 'block' | 'ask'>>
+  }) => Promise<{ ok: boolean }>
+  showItemInFolder: (fullPath: string) => Promise<boolean>
+  getWebviewGuestPreloadPath: () => Promise<string>
+  inspectorAfterGuestDomReady: (tabId: string, webContentsId: number) => Promise<unknown>
+  inspectorUnregisterTab: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+  inspectorReinjectGuest: (webContentsId: number) => Promise<{ ok: boolean; error?: string }>
+  inspectorForwardGuestEvent: (data: { tabId: string; kind: string; payload: unknown }) => void
+  jarvisBrowserInspector: {
+    captureSnapshot: (tabId: string) => Promise<{ ok: boolean; data?: unknown; error?: string }>
+    enableInspectMode: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+    disableInspectMode: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+    highlightNode: (tabId: string, nodeId: string) => Promise<{ ok: boolean; error?: string }>
+    clearPageHighlight: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+    applyLayoutEdit: (
+      tabId: string,
+      action: { kind: string; sourceNodeId: string; targetNodeId: string }
+    ) => Promise<{ ok: boolean; error?: string; data?: unknown }>
+    applyAttributeEdit: (
+      tabId: string,
+      edit: { kind: string; nodeId: string; name?: string; value?: string }
+    ) => Promise<{ ok: boolean; error?: string; data?: unknown }>
+    onHover: (handler: (payload: JarvisInspectorHoverSelectPayload) => void) => () => void
+    onSelect: (handler: (payload: JarvisInspectorHoverSelectPayload) => void) => () => void
+  }
+  onIframeNavigated: (handler: (url: string) => void) => () => void
+  onDownloadComplete: (handler: (payload: { id?: string; filename: string; path: string }) => void) => () => void
+  onDownloadProgress: (handler: (payload: {
+    id: string
+    url: string
+    fileName: string
+    status: string
+    bytesReceived: number
+    totalBytes?: number
+    path: string
+  }) => void) => () => void
 }
 
 declare global {
   interface Window {
     electronAPI?: ElectronJarvisApi
     electronInAppBrowser?: ElectronInAppBrowserAPI
+    jarvisNative?: JarvisNativeAPI
   }
 
   namespace JSX {
@@ -35,6 +142,7 @@ declare global {
           allowpopups?: boolean | string
           httpreferrer?: string
           useragent?: string
+          webpreferences?: string
         },
         HTMLElement
       >
@@ -99,6 +207,12 @@ interface ImportMetaEnv {
   readonly VITE_NOWTV_BOOKMARKS?: string
   /** Override “Open NOW” URL (default https://www.nowtv.com). */
   readonly VITE_NOWTV_HOME_URL?: string
+  /** Jarvis in-app browser: omnibox search template; use `{query}` placeholder (e.g. `https://example.com/search?q={query}`). */
+  readonly VITE_JARVIS_BROWSER_SEARCH_TEMPLATE?: string
+  /** Display name for the default search engine in Settings. */
+  readonly VITE_JARVIS_BROWSER_SEARCH_NAME?: string
+  /** Home / “Home” button URL (default: current app origin). */
+  readonly VITE_JARVIS_BROWSER_HOMEPAGE?: string
 }
 
 export {}

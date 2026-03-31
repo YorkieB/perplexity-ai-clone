@@ -3,6 +3,7 @@
  *
  * Routes:
  * - `POST /api/llm` — chat completions (existing).
+ * - `POST /api/tts` — text-to-speech via OpenAI audio/speech (voice pipeline output).
  * - `POST /api/realtime/session` — mints a short-lived Realtime client secret via
  *   `POST https://api.openai.com/v1/realtime/client_secrets` using `OPENAI_API_KEY`.
  *   The browser must **not** receive the long-lived API key; it only gets the returned
@@ -271,6 +272,60 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Wake word proxy error' } }))
+      }
+      return
+    }
+
+    // ── Text-to-Speech (OpenAI audio/speech) ──
+    if (path === '/api/tts' && req.method === 'POST') {
+      const env = getEnv()
+      const { key, base } = getOpenAiConfig(env)
+      if (!key) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY for TTS.' } }))
+        return
+      }
+      try {
+        const body = await readBody(req)
+        const upstream = await fetch(`${base}/audio/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body,
+        })
+        if (!upstream.ok) {
+          const errText = await upstream.text().catch(() => upstream.statusText)
+          res.statusCode = upstream.status
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: `TTS upstream error: ${upstream.status} ${errText}` } }))
+          return
+        }
+        res.statusCode = 200
+        const ct = upstream.headers.get('content-type')
+        if (ct) res.setHeader('Content-Type', ct)
+        const cl = upstream.headers.get('content-length')
+        if (cl) res.setHeader('Content-Length', cl)
+        if (upstream.body) {
+          const reader = upstream.body.getReader()
+          const pump = async () => {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) { res.end(); return }
+              res.write(value)
+            }
+          }
+          await pump()
+        } else {
+          const buf = Buffer.from(await upstream.arrayBuffer())
+          res.end(buf)
+        }
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'TTS proxy error' } }))
       }
       return
     }

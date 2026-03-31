@@ -15,10 +15,12 @@
         "test:voice-boundary": "jest src/agents/screen-agent/__tests__/voice-boundary --verbose",
         "test:regression": "jest src/agents/screen-agent/__tests__/regression --verbose",
         "test:all-screen": "jest src/agents/screen-agent --verbose --coverage",
+        "test:behaviour:e2e": "tsc --noEmit && jest src/agents/behaviour src/orchestrator/__tests__/screen-agent-handler.test.ts src/orchestrator/__tests__/screen-agent-handler.behaviour-e2e.test.ts --verbose",
         "verify": "npm run lint && npm run build && npm audit",
         "optimize": "vite optimize",
         "preview": "vite preview",
-        "desktop": "npm run build && electron ."
+        "desktop": "npm run build && electron .",
+        "desktop:dev": "node scripts/electron-dev.mjs"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1016.0",
@@ -126,7 +128,8 @@
         "victory-vendor": "^37.3.6",
         "web-tree-sitter": "^0.26.7",
         "ws": "^8.20.0",
-        "zod": "^4.3.6"
+        "zod": "^3.23.8",
+        "zustand": "^5.0.12"
     },
     "devDependencies": {
         "@eslint/js": "^9.39.0",
@@ -156,6 +159,7 @@
         "vite": "^7.2.6"
     },
     "optionalDependencies": {
+        "robotjs": "^0.7.0",
         "tree-sitter": "^0.21.1",
         "tree-sitter-javascript": "^0.23.1",
         "tree-sitter-python": "^0.21.0",

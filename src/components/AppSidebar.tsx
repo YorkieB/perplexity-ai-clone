@@ -52,6 +52,10 @@ interface AppSidebarProps {
   wakeWordSupported?: boolean
   wakeWordListening?: boolean
   onWakeWordToggle?: (enabled: boolean) => void
+  /** When true, Jarvis Reasoning Dashboard is shown in the main column. */
+  reasoningDashboardActive?: boolean
+  /** Open the reasoning dashboard in the main app area (same “tab” as chat). */
+  onOpenReasoningDashboard?: () => void
 }
 
 function SidebarThreadRow({
@@ -407,6 +411,8 @@ export function AppSidebar({
   wakeWordSupported: _wakeWordSupported,
   wakeWordListening,
   onWakeWordToggle,
+  reasoningDashboardActive = false,
+  onOpenReasoningDashboard,
 }: AppSidebarProps) {
   const [storedThreads] = useLocalStorage<Thread[]>('threads', [])
   const [storedWorkspaces] = useLocalStorage<Workspace[]>('workspaces', [])
@@ -486,15 +492,17 @@ export function AppSidebar({
 
       <div className="space-y-1 border-t border-border p-3">
         <Button
-          variant="ghost"
+          type="button"
+          variant={reasoningDashboardActive ? 'secondary' : 'ghost'}
           size={isCollapsed ? 'icon' : 'sm'}
-          asChild
           className={cn('gap-2', isCollapsed ? 'h-10 w-10' : 'w-full justify-start')}
+          title="Jarvis Reasoning Dashboard"
+          onClick={() => {
+            onOpenReasoningDashboard?.()
+          }}
         >
-          <a href="/dashboard" title="Jarvis Reasoning Dashboard">
-            <ChartLine size={20} />
-            {!isCollapsed && <span className="text-sm">Reasoning</span>}
-          </a>
+          <ChartLine size={20} />
+          {!isCollapsed && <span className="text-sm">Reasoning</span>}
         </Button>
         <Button
           variant="ghost"

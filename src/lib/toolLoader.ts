@@ -40,6 +40,50 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
     description:
       'Control a browser to navigate pages, fill forms, extract data, and perform web actions.',
   },
+  native_mouse_click: {
+    name: 'native_mouse_click',
+    description: 'Click at screen coordinates on Windows (desktop app).',
+  },
+  native_keyboard_type: {
+    name: 'native_keyboard_type',
+    description: 'Type text via the native OS keyboard.',
+  },
+  native_keyboard_hotkey: {
+    name: 'native_keyboard_hotkey',
+    description: 'Press a keyboard shortcut combination.',
+  },
+  native_window_focus: {
+    name: 'native_window_focus',
+    description: 'Focus a window by title.',
+  },
+  native_window_list: {
+    name: 'native_window_list',
+    description: 'List open windows on the desktop.',
+  },
+  native_screen_capture: {
+    name: 'native_screen_capture',
+    description: 'Capture a screenshot of the display.',
+  },
+  native_clipboard_read: {
+    name: 'native_clipboard_read',
+    description: 'Read the system clipboard.',
+  },
+  native_clipboard_write: {
+    name: 'native_clipboard_write',
+    description: 'Write text to the system clipboard.',
+  },
+  powershell_execute: {
+    name: 'powershell_execute',
+    description: 'Execute a PowerShell command and return output.',
+  },
+  powershell_session_create: {
+    name: 'powershell_session_create',
+    description: 'Create a persistent PowerShell terminal session.',
+  },
+  powershell_session_write: {
+    name: 'powershell_session_write',
+    description: 'Send input to a persistent PowerShell session.',
+  },
   image_generation: {
     name: 'image_generation',
     description: 'Generate images from text prompts using AI image generation models.',
@@ -64,6 +108,24 @@ export const TOOLS_BY_INTENT: Record<string, string[]> = {
   voice_task: ['voice_synthesis'],
   file_task: ['file_system'],
   browser_task: ['browser_automation'],
+  desktop_automation: [
+    'native_mouse_click',
+    'native_keyboard_type',
+    'native_keyboard_hotkey',
+    'native_window_focus',
+    'native_window_list',
+    'native_screen_capture',
+    'native_clipboard_read',
+    'native_clipboard_write',
+    'browser_automation',
+  ],
+  powershell_task: [
+    'powershell_execute',
+    'powershell_session_create',
+    'powershell_session_write',
+    'file_system',
+  ],
+  automation_mode_switch: [],
   default: ['web_search'],
 }
 

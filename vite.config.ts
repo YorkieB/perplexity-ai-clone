@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react-swc'
 import { defineConfig, loadEnv, PluginOption } from 'vite'
 import { resolve } from 'path'
 import { openaiProxyPlugin } from './vite-plugins/openai-proxy'
+import { browserProxyPlugin } from './vite-plugins/browser-proxy'
 
 const projectRoot = process.env.PROJECT_ROOT || import.meta.dirname
 
@@ -11,7 +12,8 @@ export default defineConfig(({ mode }) => {
   const openaiKey = env.OPENAI_API_KEY || ''
 
   return {
-    plugins: [react(), tailwindcss(), openaiProxyPlugin() as PluginOption],
+    // Dev `data-j-source` on JSX: see `src/browser/types-layout.ts`, `DevSourceMarker`, and a future Vite/Babel plugin.
+    plugins: [react(), tailwindcss(), openaiProxyPlugin() as PluginOption, browserProxyPlugin() as PluginOption],
     build: {
       chunkSizeWarningLimit: 1000,
       rollupOptions: {

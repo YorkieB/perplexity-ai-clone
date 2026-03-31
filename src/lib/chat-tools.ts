@@ -33,6 +33,9 @@ import { schedulePost, listScheduledPostsSummary, cancelScheduledPost } from './
 import { validateResponse } from './hallucination-guard'
 import { splitThinkingFromModelContent } from './thinking-tags'
 import { trackToolOutcome, analyzeExchangeAsync, getLearningStats } from './learning-engine'
+import { DESKTOP_AUTOMATION_TOOLS } from './chat-tools-desktop-automation-tools'
+import { runDesktopAutomationTool } from './desktop-automation-tool-runner'
+import { playTts, getEffectiveTtsVoice } from './tts'
 
 // ── Tool definitions ────────────────────────────────────────────────────────
 
@@ -86,6 +89,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
       },
     },
   },
+  ...(DESKTOP_AUTOMATION_TOOLS as Record<string, unknown>[]),
   {
     type: 'function',
     function: {
@@ -1590,10 +1594,16 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         if (!goal) return 'Missing goal.'
         onStatus?.(`Starting autonomous browser task: "${goal}"`)
         try {
+          const vgm = deps.userSettings?.voiceGuidanceMode ?? (guideMode ? 'guide' : 'copilot')
           const result = await runBrowserAgent(goal, browserControl, {
             maxSteps: 25,
             model: 'gpt-4o-mini',
-            guideMode,
+            guideMode: vgm === 'guide',
+            voiceGuidanceMode: vgm,
+            onSpeakNarration: (text) => {
+              if (vgm === 'off') return
+              playTts(text, { voice: getEffectiveTtsVoice() }).done.catch(() => {})
+            },
             onStep: (step) => { onStatus?.(`[Step ${step.action}] ${step.result.slice(0, 100)}`) },
           })
           let output = result.summary
@@ -2933,6 +2943,19 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         }
       }
 
+      case 'native_mouse_click':
+      case 'native_keyboard_type':
+      case 'native_keyboard_hotkey':
+      case 'native_window_focus':
+      case 'native_window_list':
+      case 'native_screen_capture':
+      case 'native_clipboard_read':
+      case 'native_clipboard_write':
+      case 'powershell_execute':
+      case 'powershell_session_create':
+      case 'powershell_session_write':
+        return runDesktopAutomationTool(name, args, onStatus)
+
       default:
         return `Unknown tool: ${name}`
     }
@@ -3001,11 +3024,22 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
   } = options
 
   const hasBrowser = Boolean(browserControl)
+  const hasNative =
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { jarvisNative?: unknown }).jarvisNative)
+  const nativeControlEnabled = options.userSettings?.nativeControlEnabled !== false
+  const nativeToolsAllowed = hasNative && nativeControlEnabled
   let tools = CHAT_TOOLS
   if (!hasBrowser) {
-    tools = tools.filter(t => {
+    tools = tools.filter((t) => {
       const fn = (t as { function?: { name?: string } }).function
       return fn?.name !== 'browser_action' && fn?.name !== 'browser_task'
+    })
+  }
+  if (!nativeToolsAllowed) {
+    tools = tools.filter((t) => {
+      const n = (t as { function?: { name?: string } }).function?.name ?? ''
+      return !n.startsWith('native_') && !n.startsWith('powershell_')
     })
   }
 

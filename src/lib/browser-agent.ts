@@ -31,9 +31,48 @@ export interface AgentRunOptions {
   maxSteps?: number
   model?: string
   guideMode?: boolean
+  /** When set, controls spoken output: guide = narrate model “thinking”; copilot = short per-action lines; off = silent. */
+  voiceGuidanceMode?: 'copilot' | 'guide' | 'off'
   onStep?: (step: AgentStep) => void
   onThinking?: (thought: string) => void
+  /** Fire-and-forget TTS hook (e.g. playTts). Copilot: one short line per action; guide: one line per model turn. */
+  onSpeakNarration?: (text: string) => void
   signal?: AbortSignal
+}
+
+function copilotNarration(action: string, args: Record<string, unknown>): string {
+  switch (action) {
+    case 'browser_navigate':
+      return `Opening ${String((args.url as string) ?? 'page').slice(0, 80)}`
+    case 'browser_snapshot':
+      return 'Taking a look at the page'
+    case 'browser_click':
+      return `Clicking element ${String((args.ref as string) ?? '')}`
+    case 'browser_type':
+      return 'Typing into the form'
+    case 'browser_scroll':
+      return `Scrolling ${args.direction === 'up' ? 'up' : 'down'}`
+    case 'browser_extract_text':
+      return 'Reading the page text'
+    case 'browser_go_back':
+      return 'Going back'
+    case 'browser_new_tab':
+      return (args.url as string) ? 'Opening a new tab' : 'Opening a new tab'
+    case 'browser_switch_tab':
+      return 'Switching tabs'
+    case 'browser_close_tab':
+      return 'Closing a tab'
+    case 'browser_list_tabs':
+      return 'Listing open tabs'
+    case 'save_to_knowledge_base':
+      return 'Saving a note to your knowledge base'
+    case 'search_knowledge_base':
+      return 'Searching your knowledge base'
+    case 'task_complete':
+      return 'Wrapping up'
+    default:
+      return 'Continuing'
+  }
 }
 
 // ── Tool definitions for the inner loop ─────────────────────────────────────
@@ -367,6 +406,8 @@ export async function runBrowserAgent(
   const maxSteps = options?.maxSteps ?? 25
   const model = options?.model ?? 'gpt-4o-mini'
   const guideMode = options?.guideMode ?? false
+  const voiceMode = options?.voiceGuidanceMode ?? (guideMode ? 'guide' : 'copilot')
+  const effectiveGuideMode = voiceMode === 'guide'
   const signal = options?.signal
 
   const steps: AgentStep[] = []
@@ -379,10 +420,22 @@ export async function runBrowserAgent(
   await new Promise(r => setTimeout(r, 500))
 
   const messages: LlmToolMessage[] = [
-    { role: 'system', content: buildAgentSystemPrompt(goal, guideMode) },
+    { role: 'system', content: buildAgentSystemPrompt(goal, effectiveGuideMode) },
     { role: 'user', content: `Please accomplish this goal: ${goal}` },
   ]
 
+  const clearsGuideHighlight = new Set([
+    'browser_navigate',
+    'browser_new_tab',
+    'browser_go_back',
+    'browser_switch_tab',
+    'browser_close_tab',
+    'browser_snapshot',
+    'browser_scroll',
+    'browser_extract_text',
+  ])
+
+  try {
   while (stepCount < maxSteps && !completed) {
     if (signal?.aborted) {
       finalSummary = 'Task was cancelled by the user.'
@@ -404,8 +457,9 @@ export async function runBrowserAgent(
       tool_calls: result.tool_calls,
     })
 
-    if (result.content && guideMode) {
+    if (result.content && effectiveGuideMode) {
       options?.onThinking?.(result.content)
+      options?.onSpeakNarration?.(result.content)
     }
 
     for (const tc of result.tool_calls) {
@@ -414,37 +468,58 @@ export async function runBrowserAgent(
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(tc.function.arguments) } catch { /* */ }
 
-      const toolResult = await executeBrowserTool(tc.function.name, args, browserControl, savedDocs)
+      const toolName = tc.function.name
+      if (clearsGuideHighlight.has(toolName)) {
+        await browserControl.highlightRef?.(null)
+      } else if (
+        effectiveGuideMode &&
+        browserControl.highlightRef &&
+        (toolName === 'browser_click' || toolName === 'browser_type')
+      ) {
+        const ref = args.ref as string | undefined
+        if (ref) {
+          await browserControl.highlightRef(ref, toolName === 'browser_click' ? 'Click' : 'Type here')
+        }
+      }
 
-      if (tc.function.name === 'task_complete') {
+      const toolResult = await executeBrowserTool(toolName, args, browserControl, savedDocs)
+
+      if (toolName === 'task_complete') {
+        await browserControl.highlightRef?.(null)
         finalSummary = (args.summary as string) || 'Task completed.'
         completed = true
-        messages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: finalSummary })
+        messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: finalSummary })
         const step: AgentStep = {
           action: 'task_complete',
           args,
           result: finalSummary,
-          narration: guideMode ? finalSummary : undefined,
+          narration: effectiveGuideMode ? finalSummary : undefined,
           timestamp: Date.now(),
         }
         steps.push(step)
         options?.onStep?.(step)
+        if (voiceMode === 'copilot') {
+          options?.onSpeakNarration?.(`Done: ${finalSummary.slice(0, 120)}`)
+        }
         stepCount++
         break
       }
 
       const step: AgentStep = {
-        action: tc.function.name,
+        action: toolName,
         args,
         result: toolResult.length > 500 ? toolResult.slice(0, 500) + '...' : toolResult,
-        narration: guideMode && result.content ? result.content : undefined,
+        narration: effectiveGuideMode && result.content ? result.content : undefined,
         timestamp: Date.now(),
       }
       steps.push(step)
       options?.onStep?.(step)
+      if (voiceMode === 'copilot') {
+        options?.onSpeakNarration?.(copilotNarration(toolName, args))
+      }
       stepCount++
 
-      messages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: toolResult })
+      messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: toolResult })
     }
   }
 
@@ -455,6 +530,9 @@ export async function runBrowserAgent(
     if (!finalSummary.includes('accomplished')) {
       finalSummary = `Reached step limit (${maxSteps}). The task may be incomplete. Review the browser for current state.`
     }
+  }
+  } finally {
+    await browserControl.highlightRef?.(null)
   }
 
   return {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, lazy, Suspense } from 'react'
+import { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, WorkspaceFile, UserSettings } from '@/lib/types'
@@ -14,6 +14,7 @@ import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
 import { SettingsDialog } from '@/components/SettingsDialog'
+import { ProactiveVisionLoop } from '@/components/ProactiveVisionLoop'
 import { OAuthCallback } from '@/components/OAuthCallback'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -28,6 +29,8 @@ import { A2EStudioPanel } from '@/components/A2EStudioPanel'
 import { AgentBrowserPanel } from '@/components/AgentBrowserPanel'
 import { VoiceMode } from '@/components/VoiceMode'
 import { WebBrowserModal } from '@/components/WebBrowserModal'
+import type { InspectorAiRequest, InspectorChatTicket } from '@/browser/types-layout'
+import { handleBrowserActGoal } from '@/browser/screen-browser-act'
 import { AppModuleRails } from '@/components/layout/AppModuleRails'
 import { HealthDashboardPage } from '@/components/HealthDashboardRoute'
 import ReasoningDashboardPage from '@/app/dashboard/page'
@@ -92,9 +95,12 @@ function MainApp() {
   const [a2eStudioOpen, setA2eStudioOpen] = useState(false)
   const [agentBrowserOpen, setAgentBrowserOpen] = useState(false)
   const [voiceModalOpen, setVoiceModalOpen] = useState(false)
+  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat')
   const [webBrowserOpen, setWebBrowserOpen] = useState(false)
   const [mediaCanvasOpen, setMediaCanvasOpen] = useState(false)
   const [codeEditorOpen, setCodeEditorOpen] = useState(false)
+  const [inspectorChatTicket, setInspectorChatTicket] = useState<InspectorChatTicket | null>(null)
+  const inspectorChatNonceRef = useRef(0)
   const [musicPlayerOpen, setMusicPlayerOpen] = useState(false)
   const [wakeWordEnabled, setWakeWordEnabled] = useLocalStorage('wake-word-enabled', false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
@@ -119,6 +125,16 @@ function MainApp() {
   const getCodeEditorControl = useRef(() => codeEditorControlRef.current).current
   const musicPlayerControl = useMusicPlayer()
   const { setGenerating: setMusicGenerating, setGeneratingLabel: setMusicGeneratingLabel } = useMusicPlayerGenerating()
+
+  const handleInspectorAiRequest = useCallback((request: InspectorAiRequest) => {
+    inspectorChatNonceRef.current += 1
+    setInspectorChatTicket({ nonce: inspectorChatNonceRef.current, request })
+    setCodeEditorOpen(true)
+  }, [])
+
+  const clearInspectorChatTicket = useCallback(() => {
+    setInspectorChatTicket(null)
+  }, [])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
   const contextWorkspaceId = activeWorkspaceId ?? activeThread?.workspaceId ?? null
@@ -153,18 +169,42 @@ function MainApp() {
     }
   }, [])
 
+  useEffect(() => {
+    const api = window.electronAPI
+    if (api?.onJarvisBrowserAct === undefined) {
+      return
+    }
+    return api.onJarvisBrowserAct((payload) => {
+      if (payload === null || typeof payload !== 'object') {
+        return
+      }
+      const goal = typeof payload.goal === 'string' ? payload.goal : ''
+      const rawSlots = payload.slots
+      const slots =
+        rawSlots !== null && typeof rawSlots === 'object' && !Array.isArray(rawSlots)
+          ? (rawSlots as Record<string, string | undefined>)
+          : {}
+      void handleBrowserActGoal(goal, slots, () => {
+        setWebBrowserOpen(true)
+      })
+    })
+  }, [])
+
   const handleNewThread = () => {
+    setMainView('chat')
     setActiveThreadId(null)
     setActiveWorkspaceId(null)
   }
 
   const handleThreadSelect = (threadId: string) => {
+    setMainView('chat')
     const selectedThread = (threads || []).find((thread) => thread.id === threadId)
     setActiveThreadId(threadId)
     setActiveWorkspaceId(selectedThread?.workspaceId ?? null)
   }
 
   const handleWorkspaceSelect = (workspaceId: string) => {
+    setMainView('chat')
     setActiveWorkspaceId(workspaceId)
     setActiveThreadId(null)
   }
@@ -662,6 +702,22 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
   }
 
   const renderMainContent = () => {
+    if (mainView === 'dashboard') {
+      return (
+        <div className="flex h-full min-h-0 flex-col overflow-hidden">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-background px-3 py-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setMainView('chat')}>
+              ← Chat
+            </Button>
+            <span className="text-sm text-muted-foreground">Jarvis Reasoning Dashboard</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <ReasoningDashboardPage />
+          </div>
+        </div>
+      )
+    }
+
     if (activeWorkspace && !activeThread) {
       return (
         <div className="flex-1 flex items-center justify-center p-6">
@@ -867,7 +923,8 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
     <TuneInControlProvider>
     <div className="flex h-screen overflow-hidden">
       <Toaster position="top-center" />
-      
+      <ProactiveVisionLoop />
+
       <AppSidebar
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
@@ -899,6 +956,8 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
         wakeWordSupported={wakeWordSupported}
         wakeWordListening={wakeWordListening}
         onWakeWordToggle={setWakeWordEnabled}
+        reasoningDashboardActive={mainView === 'dashboard'}
+        onOpenReasoningDashboard={() => setMainView('dashboard')}
       />
 
       <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
@@ -932,7 +991,12 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
         onClose={() => setVoiceModalOpen(false)}
       />
 
-      <WebBrowserModal open={webBrowserOpen} onOpenChange={setWebBrowserOpen} onRequestOpen={() => setWebBrowserOpen(true)} />
+      <WebBrowserModal
+        open={webBrowserOpen}
+        onOpenChange={setWebBrowserOpen}
+        onRequestOpen={() => setWebBrowserOpen(true)}
+        onInspectorAiRequest={handleInspectorAiRequest}
+      />
 
       <MediaCanvasModal open={mediaCanvasOpen} onOpenChange={setMediaCanvasOpen} />
 
@@ -942,6 +1006,8 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
           onOpenChange={setCodeEditorOpen}
           ideChatOnSend={handleIdeChat}
           onOpenAgentBrowser={() => setAgentBrowserOpen(true)}
+          inspectorChatTicket={inspectorChatTicket}
+          onInspectorChatConsumed={clearInspectorChatTicket}
         />
       </Suspense>
 

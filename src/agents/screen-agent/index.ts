@@ -38,6 +38,8 @@ export interface ScreenAgentDeps {
   significanceDetector?: SignificanceDetector
   safetyGate?: SafetyGate
   goalExecutor?: GoalExecutor
+  /** Orchestrator bus for BehaviourLogger (`goal:*`, `screen:mode_changed`). */
+  globalBehaviourBus?: EventEmitter
 }
 
 /**
@@ -58,6 +60,7 @@ export class ScreenAgent extends BaseAgent {
   private readonly adviceGenerator: AdviceGenerator
   private readonly safetyGate: SafetyGate
   private readonly goalExecutor: GoalExecutor
+  private readonly globalBehaviourBus: EventEmitter | undefined
 
   private readonly onUserConfirmed = (): void => {
     this.goalExecutor.notifyUserApproval(true)
@@ -77,17 +80,33 @@ export class ScreenAgent extends BaseAgent {
 
   private readonly handleScreenChange = async (raw: Record<string, unknown>): Promise<void> => {
     const frameId = raw.frame_id
+    const description =
+      typeof raw.description === 'string'
+        ? raw.description
+        : typeof raw.windowTitle === 'string' && raw.windowTitle
+          ? raw.windowTitle
+          : ''
+    const w = raw.width
+    const h = raw.height
+    const width = typeof w === 'number' && Number.isFinite(w) ? w : 0
+    const height = typeof h === 'number' && Number.isFinite(h) ? h : 0
     const state: ScreenState = {
       frameId:
         typeof frameId === 'number' || typeof frameId === 'string' ? String(frameId) : '0',
       timestamp: normalizeTimestamp(raw.timestamp),
       activeApp: typeof raw.app === 'string' ? raw.app : null,
-      windowTitle: typeof raw.window === 'string' ? raw.window : null,
-      fullText: '',
+      windowTitle:
+        typeof raw.window === 'string'
+          ? raw.window
+          : typeof raw.windowTitle === 'string'
+            ? raw.windowTitle
+            : null,
+      fullText: description,
       errorDetected: Boolean(raw.error_detected),
       url: null,
       elements: [],
-      resolution: { width: 0, height: 0 },
+      resolution: { width, height },
+      heartbeat: raw.heartbeat === true,
     }
     await this.stateManager.store(state)
     this.currentState = state
@@ -102,7 +121,7 @@ export class ScreenAgent extends BaseAgent {
       error_detected: raw.error_detected,
     })
 
-    if (this.mode === AgentMode.ADVISE) {
+    if (this.mode === AgentMode.ADVISE && !state.heartbeat) {
       const significance = this.significanceDetector.detect(state, this.prevState)
       if (significance.shouldSpeak) {
         const advice = await this.adviceGenerator.generate(state, significance.reason)
@@ -131,7 +150,14 @@ export class ScreenAgent extends BaseAgent {
     this.significanceDetector = deps.significanceDetector ?? new SignificanceDetector()
     this.adviceGenerator = deps.adviceGenerator ?? new AdviceGenerator(deps.llmClient)
     this.safetyGate = deps.safetyGate ?? new SafetyGate()
-    this.goalExecutor = deps.goalExecutor ?? new GoalExecutor(this.bridge, this.emitter, this.safetyGate)
+    this.globalBehaviourBus = deps.globalBehaviourBus
+    this.goalExecutor =
+      deps.goalExecutor ??
+      new GoalExecutor(this.bridge, this.emitter, this.safetyGate, this.globalBehaviourBus)
+  }
+
+  private emitBehaviourMode(mode: AgentMode): void {
+    this.globalBehaviourBus?.emit('screen:mode_changed', { newMode: mode })
   }
 
   emit<K extends keyof ScreenAgentEvents>(event: K, ...args: ScreenAgentEvents[K]): boolean {
@@ -189,6 +215,7 @@ export class ScreenAgent extends BaseAgent {
       }
       this.prevState = null
       this.mode = AgentMode.ACT
+      this.emitBehaviourMode(AgentMode.ACT)
       const result = await this.goalExecutor.execute(g)
       if (result.success) {
         this.emit('jarvis:speak', {
@@ -202,6 +229,7 @@ export class ScreenAgent extends BaseAgent {
         })
       }
       this.mode = AgentMode.WATCH
+      this.emitBehaviourMode(AgentMode.WATCH)
       this.bridge.send({ command: 'set_mode', mode: 'WATCH' })
       console.info('Returned to WATCH mode after goal completion')
       return
@@ -218,6 +246,9 @@ export class ScreenAgent extends BaseAgent {
       this.prevState = null
     }
     this.mode = mode
+    if (previous !== mode) {
+      this.emitBehaviourMode(mode)
+    }
     this.bridge.send({ command: 'set_mode', mode, goal })
     console.info('[ScreenAgent] mode', mode, goal ?? '')
   }
@@ -292,6 +323,11 @@ export class ScreenAgent extends BaseAgent {
 
   getMode(): AgentMode {
     return this.mode
+  }
+
+  /** True when the Python sidecar WebSocket is connected (desktop screen pipeline live). */
+  isPythonBridgeConnected(): boolean {
+    return this.bridge.getStatus() === 'connected'
   }
 }
 

@@ -38,8 +38,16 @@ export function classifyScreenIntent(transcript: string): ScreenIntentResult | n
     return { intent: 'screen.advise', entities: {} }
   }
 
-  // 4 — screen status OR what mode OR are you watching
-  if (/\bscreen status\b/i.test(lower) || /\bwhat mode\b/i.test(lower) || /\bare you watching\b/i.test(lower)) {
+  // 4 — desktop / monitor content questions → query Python vision (maps to jarvis.screen.query)
+  if (
+    /\bscreen status\b/i.test(lower) ||
+    /\bwhat mode\b/i.test(lower) ||
+    /\bare you watching\b/i.test(lower) ||
+    /\bwhat(?:'s|s| is)\s+(?:on|there)\s+(?:on\s+)?(?:my\s+)?screen\b/i.test(lower) ||
+    /\bwhat\s+do\s+you\s+see\b/i.test(lower) ||
+    /\bcan\s+you\s+see\s+(?:my\s+)?(?:screen|display|monitor)\b/i.test(lower) ||
+    /\b(describe|tell me)\s+(?:what'?s?|what is)\s+on\s+(?:my\s+)?screen\b/i.test(lower)
+  ) {
     return { intent: 'screen.status', entities: {} }
   }
 

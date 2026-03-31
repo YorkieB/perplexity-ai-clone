@@ -33,6 +33,8 @@ export interface ScreenState {
   url: string | null
   elements: ScreenElement[]
   resolution: { width: number; height: number }
+  /** True when Python sent a periodic sync (no large visual diff); skip proactive ADVISE LLM churn. */
+  heartbeat?: boolean
 }
 
 export interface AgentAction {

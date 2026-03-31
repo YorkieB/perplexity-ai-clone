@@ -4,6 +4,7 @@ import { getJarvisInlineHighlightingPromptSection } from '@/lib/jarvis-inline-hi
 import { getJarvisAiEditingCoreIntelligencePromptSection } from '@/lib/jarvis-ai-editing-core-intelligence'
 import { getJarvisBrowserMicroFunctionsPromptSection } from '@/lib/jarvis-browser-micro-functions'
 import { getJarvisAgentSystemCapabilitiesPromptSection } from '@/lib/jarvis-agent-system-capabilities'
+import { getJarvisDesktopOsCapabilitiesPromptSection } from '@/lib/jarvis-desktop-os-capabilities'
 import { getJarvisComposerCapabilitiesPromptSection } from '@/lib/jarvis-composer-capabilities'
 import { getJarvisSettingsCapabilitiesPromptSection } from '@/lib/jarvis-settings-capabilities'
 import { getThinkingPrompt, type ThinkingDepth } from '@/lib/thinking-engine'
@@ -28,6 +29,7 @@ export function buildJarvisToolSystemPrompt(args: {
   const jarvisAiEditing = getJarvisAiEditingCoreIntelligencePromptSection()
   const jarvisBrowserMicro = getJarvisBrowserMicroFunctionsPromptSection()
   const jarvisAgentSystem = getJarvisAgentSystemCapabilitiesPromptSection()
+  const jarvisDesktopOs = getJarvisDesktopOsCapabilitiesPromptSection()
   return `You are an advanced AI research assistant.${workspacePart}${modeInstruction}
 ${learnedBlock}${inlineHl}
 ${inlineEditorMicro}
@@ -36,6 +38,7 @@ ${jarvisComposer}
 ${jarvisAiEditing}
 ${jarvisBrowserMicro}
 ${jarvisAgentSystem}
+${jarvisDesktopOs}
 
 You have tools available:
 - web_search: Search the web for current information.
@@ -135,10 +138,20 @@ You have tools available:
 - vonage_send_sms: Send an SMS via Vonage (appointment reminders, notifications). Requires server Vonage credentials.
 - vonage_voice_call: Outbound phone call — Vonage speaks the given text with TTS when the callee answers (scripted message only). Requires Voice application (JWT) in .env.
 - vonage_ai_voice_call: Live two-way AI phone call — audio streams to the WebSocket bridge (STT → LLM → TTS). Requires Voice app, VONAGE_PUBLIC_WS_URL (public wss:// to the bridge, e.g. ngrok), optional VONAGE_WS_SECRET, and the bridge running.
+- native_mouse_click: Click on screen coordinates or at the current cursor (Windows desktop app). Prefer browser_action for the Jarvis embedded browser.
+- native_keyboard_type: Type text with the OS keyboard into the focused control.
+- native_keyboard_hotkey: Press a keyboard shortcut (e.g. Control+S).
+- native_window_focus: Bring a window to the foreground by title substring.
+- native_window_list: List open window titles.
+- native_screen_capture: Capture the screen or a region as PNG (base64) for analysis.
+- native_clipboard_read / native_clipboard_write: Read or write system clipboard text.
+- powershell_execute: Run PowerShell and return output (safety-filtered).
+- powershell_session_create / powershell_session_write: Persistent PowerShell session tied to the IDE terminal panel.
 
 EMAIL ACCOUNTS: The user has two email addresses: contact@yorkiebrown.uk (primary/default) and yorkie@yorkiebrown.uk. When no account is specified, use contact@yorkiebrown.uk. When the user says "check my emails", "any new mail?", or similar, use email_list_inbox. When they ask to reply to an email, first read it with email_read to get the Message-ID, then use email_send with replyToMessageId for proper threading. In autopilot mode, check emails proactively and summarise unread messages.
 
 When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
+When the user asks to automate the **desktop**, another **application outside the browser**, use **screenshots** of the whole display, the **clipboard**, **PowerShell**, or **window focus** on Windows, use the native_* and powershell_* tools (desktop app session). Prefer browser_* tools for anything inside the Jarvis Browser webview.
 When the user asks about stored information, use rag_search.
 When the user asks to write or create a document, use create_document.
 When the user asks to create, generate, draw, or make an image or picture, use generate_image.

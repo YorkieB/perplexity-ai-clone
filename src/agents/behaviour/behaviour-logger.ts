@@ -1,66 +1,54 @@
-import type EventEmitter from 'eventemitter3'
 import { v4 as uuidv4 } from 'uuid'
 
-import type { ScreenState } from '@/agents/screen-agent/types'
+import { SpacesClient } from './spaces-client'
+import {
+  type BehaviourEvent,
+  BehaviourEventType,
+  type BehaviourSession,
+  type SessionSummary,
+} from './types'
 
-import type { BehaviourEvent, SessionSummary } from './types'
-import { BehaviourEventType } from './types'
-import type { SpacesClient } from './spaces-client'
-
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function parseIntentPayload(raw: unknown): {
-  intent: string
-  rawText: string | null
-  entities: Record<string, unknown>
-} {
-  if (raw === null || typeof raw !== 'object') {
-    return { intent: '', rawText: null, entities: {} }
-  }
-  const p = raw as Record<string, unknown>
-  const intent = typeof p.intent === 'string' ? p.intent : ''
-  const rawText =
-    typeof p.rawText === 'string'
-      ? p.rawText
-      : typeof p.utterance === 'string'
-        ? p.utterance
-        : null
-  let entities: Record<string, unknown> = {}
-  if (p.entities !== null && typeof p.entities === 'object' && !Array.isArray(p.entities)) {
-    entities = p.entities as Record<string, unknown>
-  } else if (p.slots !== null && typeof p.slots === 'object' && !Array.isArray(p.slots)) {
-    entities = p.slots as Record<string, unknown>
-  }
-  return { intent, rawText, entities }
+/** Minimal bus surface: Node `EventEmitter`, `eventemitter3`, or any compatible implementation. */
+export interface BehaviourBus {
+  on(event: string, listener: (...args: unknown[]) => void): void
+  off(event: string, listener: (...args: unknown[]) => void): void
 }
 
 /**
- * Records session behaviour to a buffer and periodically flushes JSONL to Spaces.
- * Never throws from event handlers.
+ * Records orchestrator events to a buffer, flushes JSONL to Spaces, and uploads a session summary on end.
  */
 export class BehaviourLogger {
+  private readonly emitter: BehaviourBus
+  private readonly spaces: SpacesClient
   private readonly sessionId: string
   private readonly sessionStart: number
   private lastEventTime: number
-  private buffer: BehaviourEvent[] = []
-  private readonly allEvents: BehaviourEvent[] = []
-  private flushTimer: ReturnType<typeof setInterval> | null = null
+  private buffer: BehaviourEvent[]
+  /** Full session history (survives periodic {@link flush}). */
+  private readonly allSessionEvents: BehaviourEvent[] = []
+  private flushTimer: ReturnType<typeof setInterval> | null
+  private closed: boolean
+  private listenersAttached = false
 
-  constructor(
-    private readonly emitter: EventEmitter,
-    private readonly spacesClient: SpacesClient,
-  ) {
+  constructor(emitter: BehaviourBus, spaces: SpacesClient) {
+    this.emitter = emitter
+    this.spaces = spaces
     this.sessionId = uuidv4()
     this.sessionStart = Date.now()
-    this.lastEventTime = Date.now()
+    this.lastEventTime = this.sessionStart
+    this.buffer = []
+    this.flushTimer = null
+    this.closed = false
   }
 
   init(): void {
+    if (this.listenersAttached) {
+      return
+    }
+
     this.record({
       eventType: BehaviourEventType.SESSION_START,
-      app: '',
+      app: null,
       intent: null,
       rawText: null,
       agentMode: null,
@@ -68,265 +56,229 @@ export class BehaviourLogger {
       metadata: {},
     })
 
-    this.emitter.on('intent:resolved', (raw: unknown) => {
-      try {
-        const { intent, rawText, entities } = parseIntentPayload(raw)
-        this.record({
-          eventType: BehaviourEventType.INTENT_RESOLVED,
-          app: '',
-          intent: intent || null,
-          rawText,
-          agentMode: null,
-          outcome: null,
-          metadata: { entities },
-        })
-      } catch {
-        /* never break Jarvis */
-      }
-    })
+    this.emitter.on('intent:resolved', this.onIntentResolved)
+    this.emitter.on('jarvis:speak', this.onJarvisSpeak)
+    this.emitter.on('screen:change', this.onScreenChange)
+    this.emitter.on('screen:mode_changed', this.onScreenModeChanged)
+    this.emitter.on('goal:started', this.onGoalStarted)
+    this.emitter.on('goal:completed', this.onGoalCompleted)
+    this.emitter.on('goal:failed', this.onGoalFailed)
 
-    this.emitter.on('jarvis:speak', (p: unknown) => {
-      try {
-        const o = p as { text?: string; priority?: string }
-        this.record({
-          eventType: BehaviourEventType.ADVICE_GIVEN,
-          app: '',
-          intent: null,
-          rawText: typeof o.text === 'string' ? o.text : null,
-          agentMode: null,
-          outcome: null,
-          metadata: {
-            text: typeof o.text === 'string' ? o.text : '',
-            priority: o.priority,
-          },
-        })
-      } catch {
-        /* noop */
-      }
-    })
-
-    this.emitter.on('screen:change', (ev: unknown) => {
-      try {
-        const state = ev as Partial<ScreenState> & { significance?: number }
-        const app =
-          typeof state.windowTitle === 'string' && state.windowTitle.length > 0
-            ? state.windowTitle
-            : typeof state.activeApp === 'string'
-              ? state.activeApp
-              : ''
-        const meta: Record<string, unknown> = {}
-        if (typeof state.significance === 'number') {
-          meta.significance = state.significance
-        }
-        this.record({
-          eventType: BehaviourEventType.SCREEN_CHANGE,
-          app,
-          intent: null,
-          rawText: null,
-          agentMode: null,
-          outcome: null,
-          metadata: meta,
-        })
-      } catch {
-        /* noop */
-      }
-    })
-
-    this.emitter.on('screen:mode_changed', (p: unknown) => {
-      try {
-        let mode: string | null = null
-        if (typeof p === 'string') {
-          mode = p
-        } else if (p !== null && typeof p === 'object') {
-          const o = p as Record<string, unknown>
-          if (typeof o.newMode === 'string') {
-            mode = o.newMode
-          } else if (typeof o.mode === 'string') {
-            mode = o.mode
-          }
-        }
-        this.record({
-          eventType: BehaviourEventType.MODE_CHANGED,
-          app: '',
-          intent: null,
-          rawText: null,
-          agentMode: mode,
-          outcome: null,
-          metadata: {},
-        })
-      } catch {
-        /* noop */
-      }
-    })
-
-    this.emitter.on('goal:started', (p: unknown) => {
-      try {
-        let goal = ''
-        if (p !== null && typeof p === 'object' && typeof (p as { goal?: string }).goal === 'string') {
-          goal = (p as { goal: string }).goal
-        }
-        this.record({
-          eventType: BehaviourEventType.GOAL_STARTED,
-          app: '',
-          intent: 'jarvis.screen.act',
-          rawText: null,
-          agentMode: null,
-          outcome: 'pending',
-          metadata: { goal },
-        })
-      } catch {
-        /* noop */
-      }
-    })
-
-    this.emitter.on('goal:completed', (p: unknown) => {
-      try {
-        let stepsCompleted = 0
-        if (p !== null && typeof p === 'object' && 'stepsCompleted' in p) {
-          const s = (p as { stepsCompleted?: unknown }).stepsCompleted
-          if (typeof s === 'number' && !Number.isNaN(s)) {
-            stepsCompleted = s
-          }
-        }
-        this.record({
-          eventType: BehaviourEventType.GOAL_COMPLETED,
-          app: '',
-          intent: null,
-          rawText: null,
-          agentMode: null,
-          outcome: 'success',
-          metadata: { stepsCompleted },
-        })
-      } catch {
-        /* noop */
-      }
-    })
-
-    this.emitter.on('goal:failed', (p: unknown) => {
-      try {
-        let reason = ''
-        if (p !== null && typeof p === 'object' && typeof (p as { reason?: string }).reason === 'string') {
-          reason = (p as { reason: string }).reason
-        }
-        this.record({
-          eventType: BehaviourEventType.GOAL_FAILED,
-          app: '',
-          intent: null,
-          rawText: null,
-          agentMode: null,
-          outcome: 'failure',
-          metadata: { reason },
-        })
-      } catch {
-        /* noop */
-      }
-    })
+    this.listenersAttached = true
 
     this.flushTimer = setInterval(() => {
       void this.flush()
     }, 60_000)
   }
 
-  record(partial: Partial<BehaviourEvent>): void {
+  private detachListeners(): void {
+    if (!this.listenersAttached) {
+      return
+    }
+    this.emitter.off('intent:resolved', this.onIntentResolved)
+    this.emitter.off('jarvis:speak', this.onJarvisSpeak)
+    this.emitter.off('screen:change', this.onScreenChange)
+    this.emitter.off('screen:mode_changed', this.onScreenModeChanged)
+    this.emitter.off('goal:started', this.onGoalStarted)
+    this.emitter.off('goal:completed', this.onGoalCompleted)
+    this.emitter.off('goal:failed', this.onGoalFailed)
+    this.listenersAttached = false
+  }
+
+  private readonly onIntentResolved = (payload: unknown): void => {
+    const p = payload as {
+      intent?: string
+      rawText?: string
+      utterance?: string
+      entities?: Record<string, unknown>
+    }
+    this.record({
+      eventType: BehaviourEventType.INTENT_RESOLVED,
+      intent: p?.intent ?? null,
+      rawText: p?.rawText ?? p?.utterance ?? null,
+      agentMode: null,
+      app: null,
+      outcome: null,
+      metadata: { entities: p?.entities ?? {} },
+    })
+  }
+
+  private readonly onJarvisSpeak = (payload: unknown): void => {
+    const p = payload as { text?: string; priority?: string }
+    this.record({
+      eventType: BehaviourEventType.ADVICE_GIVEN,
+      intent: null,
+      rawText: null,
+      agentMode: null,
+      app: null,
+      outcome: null,
+      metadata: {
+        text: p?.text ?? '',
+        priority: p?.priority ?? 'normal',
+      },
+    })
+  }
+
+  private readonly onScreenChange = (event: unknown): void => {
+    const ev = event as {
+      windowTitle?: string | null
+      activeApp?: string | null
+      context?: { windowTitle?: string | null }
+      significance?: number | null
+    }
+    const fromTitle = ev?.windowTitle || ev?.context?.windowTitle || null
+    const fromActive =
+      typeof ev?.activeApp === 'string' && ev.activeApp.length > 0 ? ev.activeApp : null
+    const app = fromTitle || fromActive
+    this.record({
+      eventType: BehaviourEventType.SCREEN_CHANGE,
+      app: typeof app === 'string' && app.length > 0 ? app : null,
+      intent: null,
+      rawText: null,
+      agentMode: null,
+      outcome: null,
+      metadata: { significance: ev?.significance ?? null },
+    })
+  }
+
+  private readonly onScreenModeChanged = (mode: unknown): void => {
+    let agentMode: string | null = null
+    if (typeof mode === 'string') {
+      agentMode = mode
+    } else if (mode !== null && typeof mode === 'object') {
+      const o = mode as { newMode?: string; mode?: string }
+      if (typeof o.newMode === 'string') {
+        agentMode = o.newMode
+      } else if (typeof o.mode === 'string') {
+        agentMode = o.mode
+      }
+    }
+    this.record({
+      eventType: BehaviourEventType.MODE_CHANGED,
+      app: null,
+      intent: null,
+      rawText: null,
+      agentMode,
+      outcome: null,
+      metadata: {},
+    })
+  }
+
+  private readonly onGoalStarted = (payload: unknown): void => {
+    const p = payload as { goal?: string }
+    this.record({
+      eventType: BehaviourEventType.GOAL_STARTED,
+      app: null,
+      intent: 'jarvis.screen.act',
+      rawText: null,
+      agentMode: 'ACT',
+      outcome: 'pending',
+      metadata: { goal: p?.goal ?? null },
+    })
+  }
+
+  private readonly onGoalCompleted = (payload: unknown): void => {
+    const p = payload as { stepsCompleted?: number }
+    this.record({
+      eventType: BehaviourEventType.GOAL_COMPLETED,
+      app: null,
+      intent: 'jarvis.screen.act',
+      rawText: null,
+      agentMode: 'ACT',
+      outcome: 'success',
+      metadata: { stepsCompleted: p?.stepsCompleted ?? null },
+    })
+  }
+
+  private readonly onGoalFailed = (payload: unknown): void => {
+    const p = payload as { reason?: string; failureReason?: string; stepsCompleted?: number }
+    const reason = p?.reason ?? p?.failureReason ?? null
+    this.record({
+      eventType: BehaviourEventType.GOAL_FAILED,
+      app: null,
+      intent: 'jarvis.screen.act',
+      rawText: null,
+      agentMode: 'ACT',
+      outcome: 'failure',
+      metadata: {
+        reason,
+        stepsCompleted: p?.stepsCompleted ?? null,
+      },
+    })
+  }
+
+  private buildEvent(partial: Partial<BehaviourEvent>): BehaviourEvent {
     const now = Date.now()
+    const duration = now - this.lastEventTime
+
     const d = new Date(now)
     const hh = String(d.getHours()).padStart(2, '0')
     const mm = String(d.getMinutes()).padStart(2, '0')
-    const durationMs = now - this.lastEventTime
-    this.lastEventTime = now
-
-    const eventType = partial.eventType ?? BehaviourEventType.ERROR
 
     const event: BehaviourEvent = {
       sessionId: this.sessionId,
       timestamp: now,
       timeOfDay: `${hh}:${mm}`,
       dayOfWeek: d.getDay(),
-      app: typeof partial.app === 'string' ? partial.app : '',
-      eventType,
+      app: partial.app ?? null,
+      eventType: partial.eventType!,
       intent: partial.intent ?? null,
       rawText: partial.rawText ?? null,
       agentMode: partial.agentMode ?? null,
-      durationMs,
+      durationMs: partial.durationMs ?? duration,
       outcome: partial.outcome ?? null,
-      metadata: partial.metadata !== undefined ? partial.metadata : {},
+      metadata: partial.metadata ?? {},
     }
 
-    this.buffer.push(event)
-    this.allEvents.push(event)
+    this.lastEventTime = now
+    return event
+  }
+
+  record(partial: Partial<BehaviourEvent>): void {
+    if (this.closed) {
+      return
+    }
+    if (!partial.eventType) {
+      return
+    }
+    const evt = this.buildEvent(partial)
+    this.buffer.push(evt)
+    this.allSessionEvents.push(evt)
   }
 
   async flush(): Promise<void> {
-    if (this.buffer.length === 0) {
+    if (!this.buffer.length) {
       return
     }
     const events = [...this.buffer]
     this.buffer = []
-    const key = `behaviour/${todayKey()}/${this.sessionId}.jsonl`
+
+    const day = new Date(this.sessionStart)
+    const yyyy = day.getFullYear()
+    const mm = String(day.getMonth() + 1).padStart(2, '0')
+    const dd = String(day.getDate()).padStart(2, '0')
+
+    const key = `behaviour/${yyyy}-${mm}-${dd}/${this.sessionId}.jsonl`
     const lines = events.map((e) => JSON.stringify(e)).join('\n')
-    try {
-      await this.spacesClient.append(key, lines)
-      console.debug(`Flushed ${String(events.length)} behaviour events to Spaces`)
-    } catch {
-      /* SpacesClient should not throw; swallow if a test mock rejects */
-    }
-  }
 
-  private computeSummary(): SessionSummary {
-    const intentsResolved: string[] = []
-    const seenIntent = new Set<string>()
-    const modes = new Set<string>()
-    let goalsCompleted = 0
-    let goalsFailed = 0
-    const appCounts = new Map<string, number>()
-
-    for (const e of this.allEvents) {
-      if (e.eventType === BehaviourEventType.INTENT_RESOLVED && e.intent) {
-        if (!seenIntent.has(e.intent)) {
-          seenIntent.add(e.intent)
-          intentsResolved.push(e.intent)
-        }
-      }
-      if (e.eventType === BehaviourEventType.MODE_CHANGED && e.agentMode) {
-        modes.add(e.agentMode)
-      }
-      if (e.eventType === BehaviourEventType.GOAL_COMPLETED) {
-        goalsCompleted += 1
-      }
-      if (e.eventType === BehaviourEventType.GOAL_FAILED) {
-        goalsFailed += 1
-      }
-      if (e.app.length > 0) {
-        appCounts.set(e.app, (appCounts.get(e.app) ?? 0) + 1)
-      }
-    }
-
-    let mostActiveApp: string | null = null
-    let best = 0
-    for (const [app, n] of appCounts) {
-      if (n > best) {
-        best = n
-        mostActiveApp = app
-      }
-    }
-
-    const durationMinutes = (Date.now() - this.sessionStart) / 60_000
-
-    return {
-      totalEvents: this.allEvents.length,
-      intentsResolved,
-      modesUsed: [...modes],
-      goalsCompleted,
-      goalsFailed,
-      mostActiveApp,
-      durationMinutes,
-    }
+    await this.spaces.append(key, lines)
   }
 
   async endSession(): Promise<void> {
+    if (this.closed) {
+      return
+    }
+
+    if (this.flushTimer !== null) {
+      clearInterval(this.flushTimer)
+      this.flushTimer = null
+    }
+
+    this.detachListeners()
+
     this.record({
       eventType: BehaviourEventType.SESSION_END,
-      app: '',
+      app: null,
       intent: null,
       rawText: null,
       agentMode: null,
@@ -334,32 +286,69 @@ export class BehaviourLogger {
       metadata: {},
     })
 
-    const summary = this.computeSummary()
-    const day = todayKey()
-    await this.spacesClient.upload(
-      `behaviour/sessions/${day}/${this.sessionId}-summary.json`,
-      JSON.stringify(summary, null, 2),
-    )
-    await this.flush()
+    this.closed = true
 
-    if (this.flushTimer !== null) {
-      clearInterval(this.flushTimer)
-      this.flushTimer = null
+    const endTime = Date.now()
+    const allEvents = [...this.allSessionEvents]
+
+    const summary: SessionSummary = {
+      totalEvents: allEvents.length,
+      intentsResolved: Array.from(
+        new Set(
+          allEvents
+            .filter((e) => e.eventType === BehaviourEventType.INTENT_RESOLVED && e.intent)
+            .map((e) => e.intent as string),
+        ),
+      ),
+      modesUsed: Array.from(
+        new Set(allEvents.filter((e) => e.agentMode).map((e) => e.agentMode as string)),
+      ),
+      goalsCompleted: allEvents.filter((e) => e.eventType === BehaviourEventType.GOAL_COMPLETED)
+        .length,
+      goalsFailed: allEvents.filter((e) => e.eventType === BehaviourEventType.GOAL_FAILED).length,
+      mostActiveApp: null,
+      durationMinutes: (endTime - this.sessionStart) / 60_000,
     }
+
+    if (allEvents.length) {
+      const counts = new Map<string, number>()
+      for (const e of allEvents) {
+        if (!e.app) {
+          continue
+        }
+        counts.set(e.app, (counts.get(e.app) ?? 0) + 1)
+      }
+      let topApp: string | null = null
+      let topCount = 0
+      for (const [app, count] of counts.entries()) {
+        if (count > topCount) {
+          topCount = count
+          topApp = app
+        }
+      }
+      summary.mostActiveApp = topApp
+    }
+
+    const session: BehaviourSession = {
+      sessionId: this.sessionId,
+      startTime: this.sessionStart,
+      endTime,
+      events: allEvents,
+      summary,
+    }
+
+    const day = new Date(this.sessionStart)
+    const yyyy = day.getFullYear()
+    const mm = String(day.getMonth() + 1).padStart(2, '0')
+    const dd = String(day.getDate()).padStart(2, '0')
+
+    const summaryKey = `behaviour/sessions/${yyyy}-${mm}-${dd}/${this.sessionId}-summary.json`
+
+    await this.spaces.upload(summaryKey, JSON.stringify(session, null, 2))
+    await this.flush()
   }
 
   getSessionId(): string {
     return this.sessionId
-  }
-
-  /**
-   * Stops the 60s flush timer without emitting {@link BehaviourEventType.SESSION_END}.
-   * Use in tests or when tearing down without a full {@link endSession}.
-   */
-  cancelPeriodicFlush(): void {
-    if (this.flushTimer !== null) {
-      clearInterval(this.flushTimer)
-      this.flushTimer = null
-    }
   }
 }

@@ -1,4 +1,3 @@
-/** High-level behaviour event kinds for intent prediction / pattern learning. */
 export enum BehaviourEventType {
   VOICE_INPUT = 'voice_input',
   INTENT_RESOLVED = 'intent_resolved',
@@ -16,11 +15,9 @@ export enum BehaviourEventType {
 export interface BehaviourEvent {
   sessionId: string
   timestamp: number
-  /** 24h "HH:MM" local time */
   timeOfDay: string
-  /** 0 = Sunday … 6 = Saturday */
   dayOfWeek: number
-  app: string
+  app: string | null
   eventType: BehaviourEventType
   intent: string | null
   rawText: string | null

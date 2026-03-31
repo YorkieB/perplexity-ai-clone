@@ -1,48 +1,63 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 
-function isNotFoundError(err: unknown): boolean {
+function getHttpStatus(err: unknown): number | undefined {
   if (err === null || typeof err !== 'object') {
-    return false
+    return undefined
   }
-  const o = err as { name?: string; $metadata?: { httpStatusCode?: number } }
-  return o.name === 'NoSuchKey' || o.$metadata?.httpStatusCode === 404
+  return (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
 }
 
 /**
- * Thin S3 client for DigitalOcean Spaces (or any S3-compatible API).
- * Failures are logged and swallowed — never throws to callers.
+ * DigitalOcean Spaces (S3-compatible) client for behaviour JSON / JSONL.
  */
+function normalizeBucketEnv(raw: string | undefined): { bucket: string; ignoredSuffix: string | null } {
+  const s = (raw ?? '').trim()
+  if (!s) {
+    return { bucket: '', ignoredSuffix: null }
+  }
+  const i = s.indexOf('/')
+  if (i <= 0) {
+    return { bucket: s, ignoredSuffix: null }
+  }
+  // S3 bucket names cannot contain '/'. Common mistake: BUCKET=space-name/prefix — use bucket only; keys already include paths.
+  const bucket = s.slice(0, i)
+  const ignoredSuffix = s.slice(i + 1)
+  if (ignoredSuffix) {
+    console.warn(
+      `[SpacesClient] DO_SPACES_BUCKET contained '/' — using bucket "${bucket}" only. Put folder prefixes in object keys (e.g. behaviour/…), not in the bucket name.`,
+    )
+  }
+  return { bucket, ignoredSuffix }
+}
+
 export class SpacesClient {
-  private readonly client: S3Client | null
-  private readonly bucket: string
-  readonly enabled: boolean
+  private client: S3Client | null
+  private bucket: string | null
+  private enabled: boolean
 
   constructor() {
-    const endpoint = process.env.DO_SPACES_ENDPOINT?.trim()
-    const bucket = process.env.DO_SPACES_BUCKET?.trim()
-    const key = process.env.DO_SPACES_KEY?.trim()
-    const secret = process.env.DO_SPACES_SECRET?.trim()
-    const region = process.env.DO_SPACES_REGION?.trim() || 'nyc3'
+    const endpoint = process.env.DO_SPACES_ENDPOINT
+    const { bucket: bucketRaw } = normalizeBucketEnv(process.env.DO_SPACES_BUCKET)
+    const key = process.env.DO_SPACES_KEY
+    const secret = process.env.DO_SPACES_SECRET
+    const region = process.env.DO_SPACES_REGION || 'nyc3'
 
-    if (!endpoint || !bucket || !key || !secret) {
-      console.warn('SpacesClient: env vars not set — logging disabled')
+    if (!endpoint || !bucketRaw || !key || !secret) {
+      console.warn('[SpacesClient] env vars not set — logging disabled')
       this.client = null
-      this.bucket = ''
+      this.bucket = null
       this.enabled = false
       return
     }
 
-    this.bucket = bucket
-    this.enabled = true
     this.client = new S3Client({
+      forcePathStyle: true,
       region,
       endpoint,
-      credentials: {
-        accessKeyId: key,
-        secretAccessKey: secret,
-      },
-      forcePathStyle: false,
+      credentials: { accessKeyId: key, secretAccessKey: secret },
     })
+    this.bucket = bucketRaw
+    this.enabled = true
   }
 
   isEnabled(): boolean {
@@ -50,7 +65,7 @@ export class SpacesClient {
   }
 
   async upload(key: string, data: string): Promise<void> {
-    if (!this.enabled || this.client === null) {
+    if (!this.enabled || !this.client || !this.bucket) {
       return
     }
     try {
@@ -62,44 +77,108 @@ export class SpacesClient {
           ContentType: 'application/json',
         }),
       )
-    } catch (e) {
-      console.warn('SpacesClient: upload failed', e instanceof Error ? e.message : e)
+    } catch (err) {
+      console.warn('[SpacesClient] upload error', err)
     }
   }
 
-  async append(key: string, line: string): Promise<void> {
-    if (!this.enabled || this.client === null) {
-      return
+  /**
+   * Lists object keys under a prefix (for behaviour JSONL / analysis).
+   * Returns [] when disabled or on error.
+   */
+  async listObjectKeys(prefix: string): Promise<string[]> {
+    if (!this.enabled || !this.client || !this.bucket) {
+      return []
     }
-    let existing = ''
     try {
-      const out = await this.client.send(
+      const keys: string[] = []
+      let continuationToken: string | undefined
+      do {
+        const res = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: this.bucket,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          }),
+        )
+        for (const obj of res.Contents ?? []) {
+          if (obj.Key) {
+            keys.push(obj.Key)
+          }
+        }
+        continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined
+      } while (continuationToken)
+      return keys
+    } catch (err) {
+      console.warn('[SpacesClient] listObjects error', err)
+      return []
+    }
+  }
+
+  /**
+   * Reads an object body as UTF-8 text. Returns null when disabled, missing, or on error.
+   */
+  async getObjectString(key: string): Promise<string | null> {
+    if (!this.enabled || !this.client || !this.bucket) {
+      return null
+    }
+    try {
+      const obj = await this.client.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: key,
         }),
       )
-      if (out.Body) {
-        existing = await out.Body.transformToString()
+      return (await obj.Body?.transformToString?.()) ?? null
+    } catch (err: unknown) {
+      const status = getHttpStatus(err)
+      const name =
+        err !== null && typeof err === 'object' && 'name' in err ? String((err as { name: string }).name) : ''
+      const missing = status === 404 || name === 'NoSuchKey'
+      if (!missing) {
+        console.warn('[SpacesClient] getObject error', err)
       }
-    } catch (e) {
-      if (!isNotFoundError(e)) {
-        console.warn('SpacesClient: append read failed', e instanceof Error ? e.message : e)
-        return
-      }
+      return null
     }
-    const next = existing.length === 0 ? line : `${existing}\n${line}`
+  }
+
+  async append(key: string, line: string): Promise<void> {
+    if (!this.enabled || !this.client || !this.bucket) {
+      return
+    }
+
     try {
+      let existing = ''
+      try {
+        const obj = await this.client.send(
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+          }),
+        )
+        existing = (await obj.Body?.transformToString?.()) ?? ''
+      } catch (err: unknown) {
+        const status = getHttpStatus(err)
+        const name = err !== null && typeof err === 'object' && 'name' in err ? String((err as { name: string }).name) : ''
+        const missing = status === 404 || name === 'NoSuchKey'
+        if (!missing) {
+          console.warn('[SpacesClient] append get error', err)
+          return
+        }
+      }
+
+      const body = existing ? `${existing.trimEnd()}\n${line}` : line
+
       await this.client.send(
         new PutObjectCommand({
           Bucket: this.bucket,
           Key: key,
-          Body: next,
+          Body: body,
           ContentType: 'application/json',
         }),
       )
-    } catch (e) {
-      console.warn('SpacesClient: append write failed', e instanceof Error ? e.message : e)
+    } catch (err) {
+      console.warn('[SpacesClient] append put error', err)
     }
   }
 }

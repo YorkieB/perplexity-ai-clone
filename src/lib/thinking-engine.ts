@@ -11,12 +11,14 @@ const COMPLEXITY_KEYWORDS_HIGH = [
   'debug', 'troubleshoot', 'investigate', 'root cause', 'difference between',
   'how does', 'implement', 'optimize', 'security', 'performance', 'refactor',
   'plan', 'estimate', 'forecast', 'budget', 'invest',
+  'automate', 'set up', 'configure', 'install and configure', 'migrate', 'deploy', 'workflow', 'pipeline',
 ]
 
 const COMPLEXITY_KEYWORDS_LOW = [
   'hello', 'hi', 'hey', 'thanks', 'thank you', 'bye', 'goodbye',
   'what time', 'weather', 'define', 'what is', 'who is',
   'play', 'stop', 'pause', 'next', 'previous', 'volume',
+  'open', 'close', 'click', 'type', 'press', 'scroll', 'minimize', 'maximize', 'focus', 'switch to',
 ]
 
 export type ThinkingDepth = 'quick' | 'standard' | 'deep'

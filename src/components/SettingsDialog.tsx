@@ -13,7 +13,8 @@ import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star, Monitor } from '@phosphor-icons/react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { PlaidLinkButton } from '@/components/PlaidLinkButton'
 
@@ -361,7 +362,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </DialogHeader>
 
         <Tabs defaultValue="api-keys" className="flex-1 overflow-hidden flex flex-col">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="api-keys" className="gap-2">
               <Key size={16} />
               API Keys
@@ -369,6 +370,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <TabsTrigger value="voices" className="gap-2">
               <Microphone size={16} />
               Voices
+            </TabsTrigger>
+            <TabsTrigger value="desktop" className="gap-2">
+              <Monitor size={16} />
+              Desktop
             </TabsTrigger>
             <TabsTrigger value="oauth" className="gap-2">
               <CloudArrowUp size={16} />
@@ -904,6 +909,73 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </Button>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="desktop" className="flex-1 overflow-y-auto space-y-4 mt-4">
+            <Card className="p-6 space-y-6">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-primary/10 rounded-lg">
+                  <Monitor className="text-primary" size={22} />
+                </div>
+                <div className="flex-1 space-y-1">
+                  <h3 className="font-semibold text-lg">Desktop automation</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Controls for the Jarvis desktop app: screen-aware tips, voice during browser tasks, and OS-level tools
+                    (mouse, keyboard, PowerShell). Requires <code className="text-xs bg-muted px-1 rounded">npm run desktop</code>.
+                  </p>
+                </div>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="proactive-vision">Proactive vision</Label>
+                  <p className="text-xs text-muted-foreground max-w-md">
+                    Periodically analyze your screen (30s+ between runs) and surface brief suggestions when something stands out.
+                  </p>
+                </div>
+                <Switch
+                  id="proactive-vision"
+                  checked={settings?.proactiveVision ?? false}
+                  onCheckedChange={(checked) => setSettings((prev) => ({ ...prev, proactiveVision: checked }))}
+                />
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <Label>Voice during browser tasks</Label>
+                  <p className="text-xs text-muted-foreground max-w-md">
+                    Copilot: short spoken line per action. Guide: speaks the model&apos;s narration. Off: silent.
+                  </p>
+                </div>
+                <Select
+                  value={settings?.voiceGuidanceMode ?? 'copilot'}
+                  onValueChange={(value: 'copilot' | 'guide' | 'off') =>
+                    setSettings((prev) => ({ ...prev, voiceGuidanceMode: value }))
+                  }
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="copilot">Copilot</SelectItem>
+                    <SelectItem value="guide">Guide</SelectItem>
+                    <SelectItem value="off">Off</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="native-control">Allow native OS control in chat</Label>
+                  <p className="text-xs text-muted-foreground max-w-md">
+                    When off, mouse, screen capture, clipboard, and PowerShell tools are hidden from the text agent (safer).
+                  </p>
+                </div>
+                <Switch
+                  id="native-control"
+                  checked={settings?.nativeControlEnabled !== false}
+                  onCheckedChange={(checked) => setSettings((prev) => ({ ...prev, nativeControlEnabled: checked }))}
+                />
+              </div>
+            </Card>
           </TabsContent>
 
           <TabsContent value="oauth" className="flex-1 overflow-y-auto space-y-4 mt-4">

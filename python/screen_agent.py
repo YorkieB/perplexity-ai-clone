@@ -284,6 +284,47 @@ class AdviseEngine:
             _log.warning("AdviseEngine API error: %s", e)
             return None
 
+    def answer_question(
+        self,
+        screenshot: Image.Image,
+        question: str,
+        window_title: str,
+    ) -> Optional[str]:
+        """One-shot vision QA (query_screen) — not subject to ADVISE rate limit."""
+        if self.client is None:
+            return None
+        q = question.strip()
+        if not q:
+            return None
+        b64 = _jpeg_b64(screenshot, max_width=1200, quality=70)
+        system = (
+            "You are Jarvis. Answer ONLY from what is visible on the user's screen. "
+            "Be concise (2–6 sentences unless they ask for detail). If you cannot see the answer, say so."
+        )
+        user_text = f"Active window title: {window_title}\nQuestion: {q}"
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_text},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                            },
+                        ],
+                    },
+                ],
+                max_tokens=500,
+            )
+            return (resp.choices[0].message.content or "").strip() or None
+        except Exception as e:
+            _log.warning("answer_question API error: %s", e)
+            return None
+
 
 class ActEngine:
     """ACT mode: vision LLM plans pyautogui steps."""
@@ -584,8 +625,27 @@ class ScreenAgentProcess:
 
         elif cmd == "query_screen":
             q = str(msg.get("question", ""))
-            # Placeholder: no vision QA without extra LLM wiring
-            self.send({"type": "query_response", "answer": f"(stub) query_screen: {q[:200]}"})
+            if self._advise is None or self._advise.client is None:
+                self.send(
+                    {
+                        "type": "query_response",
+                        "answer": "Screen vision is unavailable (set OPENAI_API_KEY and install openai).",
+                    }
+                )
+            else:
+                try:
+                    img = self._capture.capture()
+                    title = self._capture.get_window_title()
+                    ans = self._advise.answer_question(img, q, title)
+                    self.send(
+                        {
+                            "type": "query_response",
+                            "answer": ans or "I could not answer from the current screen.",
+                        }
+                    )
+                except Exception as e:
+                    _log.warning("query_screen failed: %s", e)
+                    self.send({"type": "query_response", "answer": f"Screen capture failed: {e!s}"})
 
         elif cmd == "query_memory":
             ts = msg.get("timestamp")
@@ -593,6 +653,9 @@ class ScreenAgentProcess:
 
     def _capture_loop(self) -> None:
         prev_img: Optional[Image.Image] = None
+        last_heartbeat = 0.0
+        heartbeat_sec = _env_float("SCREEN_AGENT_HEARTBEAT_SEC", 30.0)
+
         while not self.stop_event.is_set():
             try:
                 img = self._capture.capture()
@@ -608,19 +671,29 @@ class ScreenAgentProcess:
 
             ctx = {"window_title": title, "diff_ratio": diff}
             sig = self._sig.is_significant(diff, ctx)
+            # First frame always emitted: diff is 0 when old is None, so significance was never true before.
+            is_first_frame = old is None
+            should_emit_change = self.mode in ("WATCH", "ADVISE") and (is_first_frame or sig)
 
             if self.mode == "ACT":
                 time.sleep(2.0)
                 continue
 
-            if sig and self.mode in ("WATCH", "ADVISE"):
+            now_ts = time.time()
+            heartbeat_due = heartbeat_sec > 0 and (now_ts - last_heartbeat) >= heartbeat_sec
+
+            if should_emit_change:
                 self._frame_id += 1
-                desc = self._sig.describe_change(old if old is not None else img, img)
+                desc = (
+                    "Initial screen — Jarvis is now observing."
+                    if is_first_frame
+                    else self._sig.describe_change(old if old is not None else img, img)
+                )
                 ts = time.time()
                 app = title.split(" - ")[-1][:120] if title else "unknown"
                 wt = title
                 err = False
-                sigv = float(min(1.0, max(0.0, diff)))
+                sigv = float(min(1.0, max(0.0, diff))) if not is_first_frame else 0.05
                 payload: dict[str, Any] = {
                     "type": "screen_change",
                     "frame_id": self._frame_id,
@@ -632,6 +705,9 @@ class ScreenAgentProcess:
                     "element_count": 0,
                     "significance": sigv,
                     "description": desc,
+                    "heartbeat": False,
+                    "width": img.width,
+                    "height": img.height,
                     "context": {
                         "frame_id": self._frame_id,
                         "timestamp": ts,
@@ -640,9 +716,11 @@ class ScreenAgentProcess:
                         "error_detected": err,
                         "diff_ratio": diff,
                         "mode": self.mode,
+                        "first_frame": is_first_frame,
                     },
                 }
                 self.send(payload)
+                last_heartbeat = now_ts
 
                 if self.mode == "ADVISE" and self._advise:
                     adv = self._advise.analyze(img, desc, title)
@@ -655,6 +733,40 @@ class ScreenAgentProcess:
                                 "actionable": bool(adv.get("actionable", False)),
                             }
                         )
+
+            elif heartbeat_due and self.mode in ("WATCH", "ADVISE"):
+                last_heartbeat = now_ts
+                self._frame_id += 1
+                ts = time.time()
+                app = title.split(" - ")[-1][:120] if title else "unknown"
+                wt = title
+                desc = f"Still watching — {wt[:120] if wt else 'desktop'}"
+                hb_payload: dict[str, Any] = {
+                    "type": "screen_change",
+                    "frame_id": self._frame_id,
+                    "timestamp": ts,
+                    "app": app,
+                    "window": wt,
+                    "windowTitle": wt,
+                    "error_detected": False,
+                    "element_count": 0,
+                    "significance": float(min(1.0, max(0.0, diff))),
+                    "description": desc,
+                    "heartbeat": True,
+                    "width": img.width,
+                    "height": img.height,
+                    "context": {
+                        "frame_id": self._frame_id,
+                        "timestamp": ts,
+                        "app": app,
+                        "windowTitle": wt,
+                        "error_detected": False,
+                        "diff_ratio": diff,
+                        "mode": self.mode,
+                        "heartbeat": True,
+                    },
+                }
+                self.send(hb_payload)
 
             time.sleep(2.0)
 

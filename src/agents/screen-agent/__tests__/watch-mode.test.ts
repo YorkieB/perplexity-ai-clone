@@ -94,6 +94,9 @@ describe('screen-agent WATCH mode', () => {
       frame_id: 42,
       app: 'TestApp',
       window: 'Win',
+      description: 'Visible: terminal output',
+      width: 1920,
+      height: 1080,
       error_detected: false,
       timestamp: 1_700_000_000,
       element_count: 0,
@@ -104,6 +107,8 @@ describe('screen-agent WATCH mode', () => {
     expect(arg.frameId).toBe('42')
     expect(arg.activeApp).toBe('TestApp')
     expect(arg.windowTitle).toBe('Win')
+    expect(arg.fullText).toBe('Visible: terminal output')
+    expect(arg.resolution).toEqual({ width: 1920, height: 1080 })
     expect(arg.errorDetected).toBe(false)
     expect(arg.elements).toEqual([])
     storeSpy.mockRestore()

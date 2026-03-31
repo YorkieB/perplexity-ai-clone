@@ -22,6 +22,9 @@ export type IdeAiPreset =
   | 'chat_clear'
   | 'insert_code'
   | 'insert_file'
+  | 'inspector_explain_node'
+  | 'inspector_fix_attributes'
+  | 'inspector_fix_layout'
 
 export interface IdeAttachment {
   /** Display name (filename or label). */
@@ -68,6 +71,12 @@ export function presetToInstruction(preset: IdeAiPreset): string {
     chat_clear: 'Acknowledge chat clear; no action needed unless the user asks something new.',
     insert_code: 'Insert the proposed code at the cursor position conceptually; use ide_replace_text or insertText patterns.',
     insert_file: 'Create or update files from the described content using ide_create_file / ide_edit_file.',
+    inspector_explain_node:
+      'The user inspected a DOM node in the in-app browser. Explain the element, its attributes, and how it fits layout and semantics. Reference data-j-source / file path when given.',
+    inspector_fix_attributes:
+      'The user inspected a DOM node. Suggest concrete attribute/class/style improvements (a11y, semantics, maintainability). If source mapping exists, prefer editing the real JSX/HTML file via IDE tools.',
+    inspector_fix_layout:
+      'The user inspected a DOM node. Suggest layout/CSS structure improvements (flex/grid, spacing, responsiveness). Use IDE tools when the mapped source file is known.',
   }
   return map[preset] ?? ''
 }

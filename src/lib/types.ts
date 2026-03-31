@@ -217,6 +217,12 @@ export interface UserSettings {
     }>
   }
   enableVoiceAnalysis?: boolean
+  /** Desktop automation (Electron): periodic screen analysis + unsolicited tips (30s+ cooldown). */
+  proactiveVision?: boolean
+  /** How Jarvis speaks during browser automation: copilot narrates actions; guide matches Guide Mode; off is silent. */
+  voiceGuidanceMode?: 'copilot' | 'guide' | 'off'
+  /** When false, native OS tools (mouse, screen, PowerShell exec) are hidden from the chat agent. */
+  nativeControlEnabled?: boolean
 }
 
 export interface CloudFile {

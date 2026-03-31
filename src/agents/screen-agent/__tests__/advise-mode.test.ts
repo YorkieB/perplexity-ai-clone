@@ -205,6 +205,30 @@ describe('ADVISE mode — ScreenAgent integration', () => {
     agent.stop()
   })
 
+  it('ADVISE mode skips AdviceGenerator on heartbeat screen_change', async () => {
+    lastMockSocket = null
+    const adviceGen = {
+      generate: jest.fn(async () => 'nope'),
+    } as unknown as AdviceGenerator
+    const agent = new ScreenAgent({ wsPort: 8765 }, { adviceGenerator: adviceGen })
+    await agent.initialize()
+    await agent.setMode(AgentMode.ADVISE)
+    lastMockSocket!.emitMessage({
+      type: 'screen_change',
+      frame_id: 99,
+      app: 'Code',
+      window: 'idle',
+      heartbeat: true,
+      description: 'Still watching',
+      error_detected: false,
+      timestamp: Date.now() / 1000,
+      element_count: 0,
+    })
+    await flushPromises()
+    expect(adviceGen.generate).not.toHaveBeenCalled()
+    agent.stop()
+  })
+
   it("ADVISE mode does NOT emit jarvis:speak when advice is null", async () => {
     lastMockSocket = null
     const adviceGen = {

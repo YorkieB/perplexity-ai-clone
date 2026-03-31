@@ -199,6 +199,8 @@ export class VoiceAgent {
   private playbackChild: ChildProcess | null = null
   private lowTimer: ReturnType<typeof setTimeout> | null = null
   private pendingLow: string | null = null
+  /** When true (e.g. Voice Mode open in renderer), skip ElevenLabs — avoids double voice with Realtime. */
+  private playbackSuppressed = false
 
   constructor(emitter: EventEmitter) {
     this.emitter = emitter
@@ -219,6 +221,16 @@ export class VoiceAgent {
     }
     this.emitter.on('jarvis:speak', this.onJarvisSpeak)
     this.started = true
+  }
+
+  /** Suppress main-process TTS (e.g. while renderer Voice Mode is active). */
+  setPlaybackSuppressed(suppress: boolean): void {
+    this.playbackSuppressed = suppress
+    if (suppress) {
+      this.clearLowDebounce()
+      this.queue.length = 0
+      this.cancelOngoing()
+    }
   }
 
   stop(): void {
@@ -254,6 +266,9 @@ export class VoiceAgent {
   }
 
   private handleSpeak(p: JarvisSpeakPayload): void {
+    if (this.playbackSuppressed) {
+      return
+    }
     if (p.priority === 'high') {
       this.clearLowDebounce()
       this.cancelOngoing()

@@ -13,7 +13,7 @@ const { promisify } = require('node:util')
 const { Readable } = require('node:stream')
 const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, session, shell, webContents } = require('electron')
 const jarvisDb = require('./jarvis-db.cjs')
 const ragDb = require('./rag-db.cjs')
 const spacesClient = require('./spaces-client.cjs')
@@ -22,8 +22,35 @@ const PROJECT_ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs')
 
+// <webview> GPU compositor issue: see iframe-based browser below.
+
 /** Loaded via tsx from `src/orchestrator/index.ts` (main process only). */
 let jarvisOrchestratorModule = null
+/** True while draining orchestrator on quit so the second `before-quit` can exit normally. */
+let jarvisOrchestratorQuitDrain = false
+/** So we only attach one `screen:change` → renderer forwarder per process. */
+let jarvisScreenForwardRegistered = false
+
+function forwardJarvisScreenToRenderer(state) {
+  try {
+    const w = getJarvisMainWindow()
+    if (!w || w.isDestroyed()) return
+    const s = state && typeof state === 'object' ? state : {}
+    const payload = {
+      activeApp: s.activeApp ?? null,
+      windowTitle: s.windowTitle ?? null,
+      summary: typeof s.fullText === 'string' ? s.fullText : '',
+      resolution:
+        s.resolution && typeof s.resolution === 'object'
+          ? { width: Number(s.resolution.width) || 0, height: Number(s.resolution.height) || 0 }
+          : { width: 0, height: 0 },
+      updatedAt: typeof s.timestamp === 'number' ? s.timestamp : Date.now(),
+    }
+    w.webContents.send('jarvis-screen-context-update', payload)
+  } catch (e) {
+    console.warn('[jarvis] forward screen context:', e instanceof Error ? e.message : e)
+  }
+}
 
 /**
  * Maps voice classifier output (`screen.*` + entities) to {@link ScreenAgentHandler} payload (`jarvis.screen.*` + slots).
@@ -67,11 +94,56 @@ function registerJarvisOrchestratorIpc() {
       console.warn('[jarvis] intent ignored — orchestrator not loaded')
       return
     }
+    if (payload && typeof payload === 'object' && payload.intent === 'screen.accept_suggestion') {
+      jarvisOrchestratorModule.globalEmitter.emit('jarvis:behaviour:accept')
+      return
+    }
     const resolved = mapVoiceIntentToResolved(payload)
     if (!resolved) {
       return
     }
+    if (typeof resolved.intent === 'string' && resolved.intent.startsWith('jarvis.screen.')) {
+      const rawText =
+        payload && typeof payload === 'object' && typeof payload.rawText === 'string' ? payload.rawText : ''
+      const clip = rawText.length > 72 ? `${rawText.slice(0, 72)}…` : rawText
+      const slotsJson =
+        resolved.slots && Object.keys(resolved.slots).length > 0
+          ? JSON.stringify(resolved.slots)
+          : '{}'
+      console.info(`[jarvis] voice -> intent:resolved ${resolved.intent} slots=${slotsJson} transcript="${clip}"`)
+    }
     jarvisOrchestratorModule.globalEmitter.emit('intent:resolved', resolved)
+  })
+
+  ipcMain.on('jarvis:behaviour:accept', () => {
+    if (!jarvisOrchestratorModule?.globalEmitter) {
+      console.warn('[jarvis] behaviour accept ignored — orchestrator not loaded')
+      return
+    }
+    jarvisOrchestratorModule.globalEmitter.emit('jarvis:behaviour:accept')
+  })
+
+  ipcMain.handle('jarvis-screen-context', () => {
+    if (!jarvisOrchestratorModule?.getJarvisLatestScreenContext) {
+      return null
+    }
+    try {
+      return jarvisOrchestratorModule.getJarvisLatestScreenContext()
+    } catch (e) {
+      console.warn('[jarvis] jarvis-screen-context:', e instanceof Error ? e.message : e)
+      return null
+    }
+  })
+
+  ipcMain.handle('jarvis-voice-mode-active', (_event, active) => {
+    if (typeof jarvisOrchestratorModule?.setJarvisVoiceAgentPlaybackSuppressed !== 'function') {
+      return
+    }
+    try {
+      jarvisOrchestratorModule.setJarvisVoiceAgentPlaybackSuppressed(Boolean(active))
+    } catch (e) {
+      console.warn('[jarvis] jarvis-voice-mode-active:', e instanceof Error ? e.message : e)
+    }
   })
 }
 
@@ -85,7 +157,19 @@ async function startJarvisOrchestrator() {
   try {
     const mod = require(path.join(PROJECT_ROOT, 'src', 'orchestrator', 'index.ts'))
     jarvisOrchestratorModule = mod
-    await mod.bootstrapJarvisScreenAgent()
+    await mod.bootstrapJarvisScreenAgent({
+      delegateBrowserAct: (payload) => {
+        const target = getJarvisMainWindow()
+        if (target === undefined || target === null || target.isDestroyed()) {
+          return
+        }
+        target.webContents.send('jarvis-browser-act', payload)
+      },
+    })
+    if (!jarvisScreenForwardRegistered && mod.globalEmitter?.on) {
+      jarvisScreenForwardRegistered = true
+      mod.globalEmitter.on('screen:change', forwardJarvisScreenToRenderer)
+    }
     console.info('[jarvis] orchestrator bootstrapped')
   } catch (e) {
     console.error('[jarvis] bootstrap failed:', e instanceof Error ? e.message : e)
@@ -93,13 +177,21 @@ async function startJarvisOrchestrator() {
   }
 }
 
-function shutdownJarvisOrchestrator() {
+async function shutdownJarvisOrchestratorAsync() {
   try {
-    jarvisOrchestratorModule?.shutdownJarvisScreenAgent?.()
+    const mod = jarvisOrchestratorModule
+    if (mod !== null && jarvisScreenForwardRegistered && mod.globalEmitter?.off) {
+      mod.globalEmitter.off('screen:change', forwardJarvisScreenToRenderer)
+      jarvisScreenForwardRegistered = false
+    }
+    if (mod !== null && typeof mod.shutdownJarvisScreenAgent === 'function') {
+      await mod.shutdownJarvisScreenAgent()
+    }
   } catch (e) {
     console.error('[jarvis] shutdown failed:', e instanceof Error ? e.message : e)
+  } finally {
+    jarvisOrchestratorModule = null
   }
-  jarvisOrchestratorModule = null
 }
 
 /**
@@ -113,11 +205,340 @@ const ELECTRON_APP_PORT = Number.isFinite(_electronPort) && _electronPort > 0 &&
 /** Shared session for all in-app `<webview>` tags (cookies, login state). */
 const BROWSER_PARTITION = 'persist:ai-search-browser'
 
+/** Jarvis DOM inspector: renderer tab id → guest `webContents.id` (see `registerJarvisBrowserInspectorIpc`). */
+const jarvisInspectorTabToGuestId = new Map()
+const WEBVIEW_INSPECTOR_PRELOAD = path.join(__dirname, 'webview-inspector-preload.cjs')
+const WEBVIEW_INSPECTOR_SCRIPT = path.join(__dirname, 'webview-injected', 'inspector.js')
+
+function readJarvisInspectorScript() {
+  try {
+    return fs.readFileSync(WEBVIEW_INSPECTOR_SCRIPT, 'utf8')
+  } catch (e) {
+    console.error('[jarvis-inspector] failed to read inspector script:', e instanceof Error ? e.message : e)
+    return ''
+  }
+}
+
+function registerJarvisBrowserInspectorIpc() {
+  ipcMain.handle('jarvis-browser-webview-guest-preload-path', () => WEBVIEW_INSPECTOR_PRELOAD)
+
+  ipcMain.handle('jarvis-browser-inspector-register', (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string' || typeof payload.webContentsId !== 'number') {
+      return { ok: false, error: 'Invalid payload' }
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    jarvisInspectorTabToGuestId.set(payload.tabId, payload.webContentsId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-unregister', (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid payload' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    jarvisInspectorTabToGuestId.delete(payload.tabId)
+    return { ok: true }
+  })
+
+  async function injectInspectorIntoGuest(wc) {
+    if (!wc || wc.isDestroyed()) return { ok: false, error: 'No guest webContents' }
+    const src = readJarvisInspectorScript()
+    if (!src) return { ok: false, error: 'Inspector script missing' }
+    try {
+      await wc.executeJavaScript(src, true)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  ipcMain.handle('jarvis-browser-inspector-inject', async (event, payload) => {
+    if (!payload || typeof payload.webContentsId !== 'number') return { ok: false, error: 'Invalid payload' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = webContents.fromId(payload.webContentsId)
+    if (!wc || wc.isDestroyed()) return { ok: false, error: 'Invalid webContentsId' }
+    return injectInspectorIntoGuest(wc)
+  })
+
+  function guestWcForTab(tabId) {
+    const gid = jarvisInspectorTabToGuestId.get(tabId)
+    if (gid == null) return null
+    const wc = webContents.fromId(gid)
+    if (!wc || wc.isDestroyed()) return null
+    return wc
+  }
+
+  ipcMain.handle('jarvis-browser-inspector-capture', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid tabId' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab or webview not registered' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      const data = await wc.executeJavaScript(
+        'window.__jarvisInspectorCaptureSnapshot && window.__jarvisInspectorCaptureSnapshot()',
+        true
+      )
+      return { ok: true, data }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-enable', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid tabId' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      await wc.executeJavaScript(
+        'window.__jarvisInspectorEnableInspectMode && window.__jarvisInspectorEnableInspectMode()',
+        true
+      )
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-disable', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid tabId' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    try {
+      await wc.executeJavaScript(
+        'window.__jarvisInspectorDisableInspectMode && window.__jarvisInspectorDisableInspectMode()',
+        true
+      )
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-highlight', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string' || typeof payload.nodeId !== 'string') {
+      return { ok: false, error: 'Invalid payload' }
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      const nodeIdJson = JSON.stringify(payload.nodeId)
+      await wc.executeJavaScript(
+        `window.__jarvisInspectorHighlightNode && window.__jarvisInspectorHighlightNode(${nodeIdJson})`,
+        true
+      )
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-clear-highlight', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid tabId' }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      await wc.executeJavaScript(
+        'window.__jarvisInspectorClearHighlight && window.__jarvisInspectorClearHighlight()',
+        true
+      )
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-apply-layout-edit', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string' || !payload.action || typeof payload.action !== 'object') {
+      return { ok: false, error: 'Invalid payload' }
+    }
+    const action = payload.action
+    const kinds = new Set(['moveBefore', 'moveAfter', 'appendChild'])
+    if (
+      typeof action.kind !== 'string' ||
+      !kinds.has(action.kind) ||
+      typeof action.sourceNodeId !== 'string' ||
+      typeof action.targetNodeId !== 'string'
+    ) {
+      return { ok: false, error: 'Invalid layout action' }
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      const actionJson = JSON.stringify(payload.action)
+      const data = await wc.executeJavaScript(
+        `window.__jarvisInspectorApplyLayoutEdit && window.__jarvisInspectorApplyLayoutEdit(${actionJson})`,
+        true
+      )
+      if (data && typeof data === 'object' && data.ok === false) {
+        return {
+          ok: false,
+          error: typeof data.error === 'string' ? data.error : 'Layout edit rejected',
+        }
+      }
+      return { ok: true, data }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('jarvis-browser-inspector-apply-attribute-edit', async (event, payload) => {
+    if (!payload || typeof payload.tabId !== 'string' || !payload.edit || typeof payload.edit !== 'object') {
+      return { ok: false, error: 'Invalid payload' }
+    }
+    const edit = payload.edit
+    const validKinds = new Set(['set-attribute', 'remove-attribute', 'set-style'])
+    if (typeof edit.kind !== 'string' || !validKinds.has(edit.kind) || typeof edit.nodeId !== 'string') {
+      return { ok: false, error: 'Invalid attribute edit' }
+    }
+    if (
+      (edit.kind === 'set-attribute' || edit.kind === 'remove-attribute') &&
+      (typeof edit.name !== 'string' || !edit.name)
+    ) {
+      return { ok: false, error: 'Missing attribute name' }
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) {
+      return { ok: false, error: 'Invalid sender' }
+    }
+    const wc = guestWcForTab(payload.tabId)
+    if (!wc) return { ok: false, error: 'Unknown tab' }
+    const inj = await injectInspectorIntoGuest(wc)
+    if (!inj.ok) return inj
+    try {
+      const editJson = JSON.stringify(payload.edit)
+      const data = await wc.executeJavaScript(
+        `window.__jarvisInspectorApplyAttributeEdit && window.__jarvisInspectorApplyAttributeEdit(${editJson})`,
+        true
+      )
+      if (data && typeof data === 'object' && data.ok === false) {
+        return {
+          ok: false,
+          error: typeof data.error === 'string' ? data.error : 'Attribute edit rejected',
+        }
+      }
+      return { ok: true, data }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.on('jarvis-browser-inspector-guest-event', (event, data) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!mainWindow || win == null || win.isDestroyed() || win.id !== mainWindow.id) return
+    if (!data || typeof data.tabId !== 'string' || typeof data.kind !== 'string') return
+    const target = getJarvisMainWindow()
+    if (!target || target.isDestroyed()) return
+    const pl = data.payload && typeof data.payload === 'object' ? data.payload : {}
+    const envelope = {
+      tabId: data.tabId,
+      nodeId: typeof pl.nodeId === 'string' ? pl.nodeId : '',
+      domPath: Array.isArray(pl.domPath) ? pl.domPath : [],
+      boundingRect: pl.boundingRect,
+    }
+    if (data.kind === 'hover') target.webContents.send('jarvis-inspector-hover', envelope)
+    else if (data.kind === 'select') target.webContents.send('jarvis-inspector-select', envelope)
+  })
+}
+
+/** Synced from renderer (`jarvis-browser-apply-settings` IPC). */
+let jarvisBrowserPrivacy = { sendDoNotTrack: false, blockThirdPartyCookies: false }
+/** Origin → camera | microphone | notifications: 'allow' | 'block' | 'ask' */
+let jarvisBrowserSitePermissions = {}
+
 function setupBrowserSession() {
   const ses = session.fromPartition(BROWSER_PARTITION)
   // Remove the Electron token from the user-agent so websites don't block/degrade the webview
   ses.setUserAgent(ses.getUserAgent().replace(/Electron\/\S+\s?/, ''))
+
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...(details.requestHeaders || {}) }
+    if (jarvisBrowserPrivacy.sendDoNotTrack) {
+      headers.DNT = '1'
+    }
+    callback({ requestHeaders: headers })
+  })
+
+  ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const permMap = {
+      media: 'camera',
+      camera: 'camera',
+      microphone: 'microphone',
+      notifications: 'notifications',
+    }
+    const key = permMap[permission]
+    // Allow fullscreen, pointer-lock, etc.; mapped keys still use per-site allow/block below.
+    if (!key) {
+      callback(true)
+      return
+    }
+    let origin = ''
+    try {
+      if (details && typeof details.requestingUrl === 'string') {
+        origin = new URL(details.requestingUrl).origin
+      } else if (webContents && typeof webContents.getURL === 'function') {
+        const u = webContents.getURL()
+        if (u && !u.startsWith('about:')) origin = new URL(u).origin
+      }
+    } catch {
+      origin = ''
+    }
+    const site = origin && jarvisBrowserSitePermissions[origin]
+    const decision = site && site[key]
+    if (decision === 'allow') {
+      callback(true)
+      return
+    }
+    if (decision === 'block') {
+      callback(false)
+      return
+    }
+    callback(false)
+  })
+
   ses.on('will-download', (_event, item) => {
+    const downloadId = `dl_${Date.now()}_${randomInt(1e9, 2e9 - 1)}`
+    const url = item.getURL()
+    const fileName = item.getFilename()
     if (!item.getSavePath()) {
       const base = app.getPath('downloads')
       const target = path.join(base, item.getFilename())
@@ -127,12 +548,48 @@ function setupBrowserSession() {
         /* ignore */
       }
     }
-    item.on('done', (_e, state) => {
-      if (state !== 'completed') return
+    const sendProgress = (payload) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('browser-download-complete', {
-          filename: item.getFilename(),
-          path: item.getSavePath(),
+        mainWindow.webContents.send('browser-download-progress', payload)
+      }
+    }
+    sendProgress({
+      id: downloadId,
+      url,
+      fileName,
+      status: 'in_progress',
+      bytesReceived: 0,
+      totalBytes: item.getTotalBytes() > 0 ? item.getTotalBytes() : undefined,
+      path: item.getSavePath() || '',
+    })
+    item.on('updated', (_e, state) => {
+      const total = item.getTotalBytes() > 0 ? item.getTotalBytes() : undefined
+      sendProgress({
+        id: downloadId,
+        url,
+        fileName,
+        status: state === 'progressing' ? 'in_progress' : state === 'completed' ? 'completed' : 'in_progress',
+        bytesReceived: item.getReceivedBytes(),
+        totalBytes: total,
+        path: item.getSavePath() || '',
+      })
+      if (state === 'completed') {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('browser-download-complete', {
+            id: downloadId,
+            filename: item.getFilename(),
+            path: item.getSavePath(),
+          })
+        }
+      } else if (state === 'interrupted') {
+        sendProgress({
+          id: downloadId,
+          url,
+          fileName,
+          status: 'failed',
+          bytesReceived: item.getReceivedBytes(),
+          totalBytes: total,
+          path: item.getSavePath() || '',
         })
       }
     })
@@ -147,6 +604,29 @@ function setupBrowserSession() {
 }
 
 function registerBrowserIpc() {
+  ipcMain.handle('jarvis-browser-apply-settings', async (_e, payload) => {
+    if (payload && typeof payload === 'object') {
+      const p = payload.privacy
+      if (p && typeof p === 'object') {
+        jarvisBrowserPrivacy = {
+          sendDoNotTrack: Boolean(p.sendDoNotTrack),
+          blockThirdPartyCookies: Boolean(p.blockThirdPartyCookies),
+        }
+      }
+      const sp = payload.sitePermissions
+      if (sp && typeof sp === 'object' && !Array.isArray(sp)) {
+        jarvisBrowserSitePermissions = sp
+      }
+    }
+    return { ok: true }
+  })
+
+  ipcMain.handle('shell-show-item-in-folder', async (_e, fullPath) => {
+    if (typeof fullPath !== 'string' || !fullPath.trim()) return false
+    shell.showItemInFolder(path.resolve(fullPath.trim()))
+    return true
+  })
+
   ipcMain.handle('shell-open-external', async (_e, url) => {
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
     await shell.openExternal(url)
@@ -3561,6 +4041,72 @@ function startLocalServer() {
   })
 }
 
+/**
+ * In-app `<webview>` guests: remote pages load over HTTPS in Chromium — no WebSocket or local
+ * port is required for the page to render. Force opaque guest + background from main process:
+ * the HTML `webpreferences` string is easy to mis-parse; `will-attach-webview` receives the
+ * real WebPreferences object (see Electron docs).
+ */
+function attachJarvisWebviewGuestHandlers(hostWebContents) {
+  hostWebContents.on('will-attach-webview', (_event, webPreferences) => {
+    webPreferences.transparent = false
+    webPreferences.backgroundThrottling = false
+  })
+
+  hostWebContents.on('did-attach-webview', (_event, guest) => {
+    try { guest.setBackgroundColor('#FFFFFFFF') } catch { /* ignore */ }
+
+    const nudgeCompositor = () => {
+      try { guest.setBackgroundColor('#FFFFFFFF') } catch { /* ignore */ }
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+      if (win) {
+        try {
+          const [w, h] = win.getSize()
+          win.setSize(w + 1, h)
+          setTimeout(() => {
+            try { if (!win.isDestroyed()) win.setSize(w, h) } catch { /* */ }
+          }, 60)
+        } catch { /* ignore */ }
+      }
+    }
+
+    guest.once('dom-ready', () => setTimeout(nudgeCompositor, 120))
+    guest.once('did-finish-load', () => setTimeout(nudgeCompositor, 200))
+  })
+}
+
+/**
+ * Same rules as `src/browser/embed-url-guard.ts` — keep in sync.
+ * Nested iframes (e.g. Bing auth) navigate to /identity/idtokenv2; forwarding
+ * those as the main embed `src` replaces the visible page with a blank token URL.
+ */
+function isEmbeddableBrowserNavigationUrl(url) {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    const p = u.pathname.toLowerCase()
+    if (p.includes('/identity/') || p.includes('idtoken')) return false
+    if (p.includes('/oauth') && (p.includes('/token') || p.endsWith('/token'))) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Intercept `window.open` / target=_blank so they stay in-app. Do NOT use
+ * `did-frame-navigate` for child frames — that fires for nested iframes inside
+ * sites (ads, auth) and would hijack the main embed URL.
+ */
+function attachIframeBrowserHandlers(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url && url !== 'about:blank' && isEmbeddableBrowserNavigationUrl(url)) {
+      win.webContents.send('jarvis-browser:iframe-navigated', url)
+    }
+    return { action: 'deny' }
+  })
+}
+
 async function createWindow() {
   const devUrl = process.env.ELECTRON_START_URL
   if (devUrl) {
@@ -3570,6 +4116,7 @@ async function createWindow() {
       minWidth: 800,
       minHeight: 600,
       title: 'AI Search Engine',
+      backgroundColor: '#1a1a2e',
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -3578,6 +4125,8 @@ async function createWindow() {
         preload: PRELOAD_PATH,
       },
     })
+    attachJarvisWebviewGuestHandlers(mainWindow.webContents)
+    attachIframeBrowserHandlers(mainWindow)
     await mainWindow.loadURL(devUrl)
     if (process.env.ELECTRON_OPEN_DEVTOOLS === '1') {
       mainWindow.webContents.openDevTools({ mode: 'detach' })
@@ -3605,6 +4154,7 @@ async function createWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'AI Search Engine',
+    backgroundColor: '#1a1a2e',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -3613,6 +4163,9 @@ async function createWindow() {
       preload: PRELOAD_PATH,
     },
   })
+
+  attachJarvisWebviewGuestHandlers(mainWindow.webContents)
+  attachIframeBrowserHandlers(mainWindow)
 
   const url = `http://127.0.0.1:${port}/`
   await mainWindow.loadURL(url)
@@ -3633,6 +4186,20 @@ app.whenReady().then(() => {
     return allowed.includes(permission)
   })
 
+  // Strip X-Frame-Options & CSP frame-ancestors from ALL HTTP responses so the
+  // in-app browser <iframe> can embed any external site.  This replaces the
+  // broken <webview> path (GPU compositor never paints the guest surface).
+  const FRAME_BLOCK_HEADERS = new Set(['x-frame-options', 'content-security-policy', 'content-security-policy-report-only'])
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const headers = { ...details.responseHeaders }
+    for (const key of Object.keys(headers)) {
+      if (FRAME_BLOCK_HEADERS.has(key.toLowerCase())) {
+        delete headers[key]
+      }
+    }
+    callback({ responseHeaders: headers })
+  })
+
   loadEnvFromFile()
   registerJarvisOrchestratorIpc()
   void startJarvisOrchestrator()
@@ -3643,8 +4210,22 @@ app.whenReady().then(() => {
   }
   setupBrowserSession()
   registerBrowserIpc()
+  registerJarvisBrowserInspectorIpc()
   registerJarvisIdeIpc()
   registerTerminalIpc()
+
+  try {
+    const {
+      registerScreenVisionIpc,
+      registerNativeInputIpc,
+      registerPowerShellExecIpc,
+    } = require('./jarvis-desktop-automation.cjs')
+    registerScreenVisionIpc()
+    registerNativeInputIpc()
+    registerPowerShellExecIpc()
+  } catch (e) {
+    console.error('[jarvis-desktop-automation] failed to register:', e instanceof Error ? e.message : e)
+  }
 
   // Initialise RAG database schema (pgvector) if configured
   if (ragDb.isConfigured()) {
@@ -3654,8 +4235,18 @@ app.whenReady().then(() => {
   void createWindow()
 })
 
-app.on('before-quit', () => {
-  shutdownJarvisOrchestrator()
+app.on('before-quit', (e) => {
+  if (jarvisOrchestratorQuitDrain) {
+    return
+  }
+  if (!jarvisOrchestratorModule) {
+    return
+  }
+  e.preventDefault()
+  jarvisOrchestratorQuitDrain = true
+  void shutdownJarvisOrchestratorAsync().finally(() => {
+    app.quit()
+  })
 })
 
 app.on('window-all-closed', () => {

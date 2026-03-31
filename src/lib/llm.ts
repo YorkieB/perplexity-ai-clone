@@ -168,6 +168,50 @@ export async function callLlmWithTools(
   }
 }
 
+/** Multimodal chat (e.g. vision) — same `/api/llm` proxy; `user.content` may be a parts array. */
+export type LlmChatMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string | ChatUserContentPart[]
+}
+
+export async function callLlmChat(
+  messages: LlmChatMessage[],
+  model: string,
+  options?: { signal?: AbortSignal; max_tokens?: number; temperature?: number },
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: stripDoPrefix(model),
+    messages,
+    temperature: options?.temperature ?? 0.4,
+    max_tokens: options?.max_tokens ?? 512,
+  }
+
+  const response = await fetch('/api/llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    signal: options?.signal,
+    body: JSON.stringify(body),
+  })
+
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`LLM request failed: ${response.status} — ${text}`)
+  }
+
+  const data = JSON.parse(text) as {
+    error?: { message?: string }
+    choices?: Array<{ message?: { content?: string } }>
+  }
+
+  if (data.error?.message) throw new Error(data.error.message)
+
+  const content = data.choices?.[0]?.message?.content
+  if (content === undefined || content === null) {
+    throw new Error('LLM response missing message content')
+  }
+  return content
+}
+
 export type ToolExecutor = (name: string, args: Record<string, unknown>) => Promise<string>
 
 /**
