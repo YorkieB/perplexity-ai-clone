@@ -1,12 +1,18 @@
 /**
- * Shared Vonage Voice helpers for Electron main and Vite proxy (duplicated logic kept minimal).
+ * Shared Vonage SMS/Voice: E.164-ish digits for Nexmo/Vonage APIs.
+ *
+ * Strips a leading `+`, then **repeatedly** strips international access `00` so values like
+ * `+00447700900123` (duplicate prefix) normalize to `447700900123`. UK 11-digit national `0…` → `44…`.
+ *
  * @param {string} raw
  */
 function normalizeVonagePhoneDigits(raw) {
-  let digits = String(raw || '').trim().replace(/\s+/g, '')
-  if (digits.startsWith('00')) digits = digits.slice(2)
-  if (digits.startsWith('+')) digits = digits.slice(1)
-  digits = digits.replace(/\D/g, '')
+  let s = String(raw || '').trim().replace(/\s+/g, '')
+  if (s.startsWith('+')) s = s.slice(1)
+  while (s.startsWith('00') && s.length > 2) {
+    s = s.slice(2)
+  }
+  let digits = s.replace(/\D/g, '')
   if (digits.length === 11 && digits.startsWith('0')) {
     digits = `44${digits.slice(1)}`
   }

@@ -1,4 +1,5 @@
 import { VoiceRealtimeError } from '@/lib/voice/errors'
+import { normalizeRealtimeServerEventType } from '@/lib/voice/realtimeServerEvents'
 import type {
   VoiceEventHandler,
   VoiceEventMap,
@@ -10,6 +11,7 @@ import type { VoiceSession } from '@/lib/voice/voiceSession'
 /** Successful `POST /v1/realtime/client_secrets` JSON (browser receives only this). */
 export interface RealtimeClientSecretPayload {
   value?: string
+  /** Unix timestamp in seconds (OpenAI client secret expiry). */
   expires_at?: number
 }
 
@@ -45,17 +47,27 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
   private readonly sessionRequestBody: Record<string, unknown> | undefined
   private readonly rtcConfiguration: RTCConfiguration
 
-  private connectGeneration = 0
+  /** Identity token for the current connect attempt; replaced instead of incrementing (avoids Number overflow). */
+  private connectToken: object = {}
+  /** Ensures two concurrent `connect()` calls cannot interleave and corrupt `this.pc` / cleanup. */
+  private connectInFlight: Promise<void> | null = null
   private pc: RTCPeerConnection | null = null
   private dc: RTCDataChannel | null = null
   private localStream: MediaStream | null = null
   private remoteAudio: HTMLAudioElement | null = null
+
+  /** Data-channel `open` wait: cleared in {@link cleanupTracksAndPc} so disconnect never leaves a stale timer. */
+  private dataChannelOpenTimeoutId: number | null = null
+  /** Reject fn for the pending data-channel open Promise; nulled when settled or cleared in cleanup. */
+  private dataChannelOpenWaitReject: ((reason?: unknown) => void) | null = null
 
   private readonly listeners: ListenerMap = {
     user_speech_started: new Set(),
     user_speech_stopped: new Set(),
     assistant_audio_started: new Set(),
     assistant_audio_stopped: new Set(),
+    transcription: new Set(),
+    response_text: new Set(),
     error: new Set(),
     connection_state_changed: new Set(),
     state_changed: new Set(),
@@ -72,6 +84,10 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     this.rtcConfiguration = options.rtcConfiguration ?? {
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     }
+  }
+
+  get state(): VoiceSessionState {
+    return this.currentSessionState
   }
 
   on<E extends VoiceEventName>(event: E, handler: VoiceEventHandler<E>): void {
@@ -116,8 +132,23 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       throw err
     }
 
+    if (this.connectInFlight) {
+      return this.connectInFlight
+    }
+
+    const attempt = this.runConnectAttempt()
+    this.connectInFlight = attempt
+    try {
+      await attempt
+    } finally {
+      this.connectInFlight = null
+    }
+  }
+
+  private async runConnectAttempt(): Promise<void> {
     this.disconnectWithoutNotifyingIdle()
-    const generation = this.connectGeneration
+    const token = {}
+    this.connectToken = token
     this.setSessionState('connecting')
     this.emitConnection('connecting')
 
@@ -128,7 +159,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         body: JSON.stringify(this.sessionRequestBody ?? {}),
       })
       const sessionText = await sessionRes.text()
-      if (generation !== this.connectGeneration) {
+      if (token !== this.connectToken) {
         return
       }
       if (!sessionRes.ok) {
@@ -149,11 +180,18 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
       if (!ephemeral) {
         throw new VoiceRealtimeError('MISSING_EPHEMERAL_KEY', 'Session response missing ephemeral `value`')
       }
+      if (secret.expires_at && secret.expires_at * 1000 < Date.now() + 5000) {
+        throw new VoiceRealtimeError(
+          'MISSING_EPHEMERAL_KEY',
+          'Ephemeral key expired or expiring imminently',
+        )
+      }
 
       const pc = new RTCPeerConnection(this.rtcConfiguration)
       this.pc = pc
 
       pc.onconnectionstatechange = () => {
+        if (pc !== this.pc) return
         if (pc.connectionState === 'failed') {
           this.emitConnection('failed')
           this.emitError(
@@ -164,12 +202,13 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
 
       const remoteAudio = document.createElement('audio')
       remoteAudio.autoplay = true
-      remoteAudio.setAttribute('playsInline', 'true')
+      remoteAudio.setAttribute('playsinline', 'true')
       remoteAudio.style.display = 'none'
       document.body.appendChild(remoteAudio)
       this.remoteAudio = remoteAudio
 
       pc.ontrack = (ev) => {
+        if (pc !== this.pc) return
         const [stream] = ev.streams
         if (stream && remoteAudio) {
           remoteAudio.srcObject = stream
@@ -193,7 +232,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
           cause: e,
         })
       }
-      if (generation !== this.connectGeneration) {
+      if (token !== this.connectToken) {
         localStream.getTracks().forEach((t) => t.stop())
         return
       }
@@ -221,7 +260,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         },
       })
       const answerSdp = await sdpRes.text()
-      if (generation !== this.connectGeneration) {
+      if (token !== this.connectToken) {
         return
       }
       if (!sdpRes.ok) {
@@ -238,14 +277,21 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
           resolve()
           return
         }
-        const t = window.setTimeout(
-          () => reject(new VoiceRealtimeError('DATA_CHANNEL_FAILED', 'Data channel open timeout')),
-          30_000
-        )
+        this.dataChannelOpenWaitReject = reject
+        this.dataChannelOpenTimeoutId = window.setTimeout(() => {
+          this.dataChannelOpenTimeoutId = null
+          const rj = this.dataChannelOpenWaitReject
+          this.dataChannelOpenWaitReject = null
+          rj?.(new VoiceRealtimeError('DATA_CHANNEL_FAILED', 'Data channel open timeout'))
+        }, 30_000)
         dc.addEventListener(
           'open',
           () => {
-            clearTimeout(t)
+            if (this.dataChannelOpenTimeoutId !== null) {
+              clearTimeout(this.dataChannelOpenTimeoutId)
+              this.dataChannelOpenTimeoutId = null
+            }
+            this.dataChannelOpenWaitReject = null
             resolve()
           },
           { once: true }
@@ -253,21 +299,28 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         dc.addEventListener(
           'error',
           () => {
-            clearTimeout(t)
+            if (this.dataChannelOpenTimeoutId !== null) {
+              clearTimeout(this.dataChannelOpenTimeoutId)
+              this.dataChannelOpenTimeoutId = null
+            }
+            this.dataChannelOpenWaitReject = null
             reject(new VoiceRealtimeError('DATA_CHANNEL_FAILED', 'Data channel error'))
           },
           { once: true }
         )
       })
 
-      if (generation !== this.connectGeneration) {
+      if (token !== this.connectToken) {
         return
       }
 
       this.emitConnection('connected')
       this.setSessionState('listening')
     } catch (e) {
-      if (generation !== this.connectGeneration) {
+      // Always release pc / mic / hidden audio for this attempt. Stale generations must still
+      // cleanup: otherwise rapid reconnect or data-channel timeout leaves OS mic handles open.
+      this.cleanupTracksAndPc()
+      if (token !== this.connectToken) {
         return
       }
       let err: VoiceRealtimeError
@@ -275,28 +328,42 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         err = e
       } else {
         const msg = e instanceof Error ? e.message : 'Voice connection failed'
-        err = new VoiceRealtimeError('WEBRTC_NEGOTIATION_FAILED', msg, { cause: e })
+        err = new VoiceRealtimeError('INTERNAL_ERROR', msg, { cause: e })
       }
       this.emitError(err)
-      this.cleanupTracksAndPc()
       throw err
     }
   }
 
   disconnect(): void {
-    this.connectGeneration++
+    this.connectToken = {}
     this.cleanupTracksAndPc()
     this.emitConnection('disconnected')
-    this.setSessionState('idle')
+    this.setSessionState('disconnected')
   }
 
   /** Internal: release resources without emitting idle (used before reconnect). */
   private disconnectWithoutNotifyingIdle(): void {
-    this.connectGeneration++
+    this.connectToken = {}
     this.cleanupTracksAndPc()
   }
 
   private cleanupTracksAndPc(): void {
+    if (this.dataChannelOpenTimeoutId !== null) {
+      clearTimeout(this.dataChannelOpenTimeoutId)
+      this.dataChannelOpenTimeoutId = null
+    }
+    if (this.dataChannelOpenWaitReject) {
+      const rj = this.dataChannelOpenWaitReject
+      this.dataChannelOpenWaitReject = null
+      rj(
+        new VoiceRealtimeError(
+          'DATA_CHANNEL_FAILED',
+          'Disconnected before data channel opened',
+        ),
+      )
+    }
+
     this.localStream?.getTracks().forEach((t) => t.stop())
     this.localStream = null
 
@@ -349,7 +416,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) {
       return
     }
-    const type = (parsed as { type: string }).type
+    const type = normalizeRealtimeServerEventType((parsed as { type: string }).type)
     const now = Date.now()
 
     switch (type) {
@@ -376,7 +443,35 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         break
       }
 
-      case 'response.output_audio.delta':
+      case 'conversation.item.input_audio_transcription.completed': {
+        const transcript = String((parsed as { transcript?: string }).transcript ?? '').trim()
+        if (transcript) {
+          this.emit('transcription', { text: transcript, isFinal: true, timestamp: now })
+        }
+        break
+      }
+
+      case 'response.text.delta': {
+        const delta = String((parsed as { delta?: string }).delta ?? '')
+        if (delta) {
+          this.emit('response_text', { text: delta, isFinal: false, timestamp: now })
+        }
+        break
+      }
+
+      case 'response.text.done':
+        this.emit('response_text', { text: '', isFinal: true, timestamp: now })
+        break
+
+      case 'response.audio_transcript.delta': {
+        const delta = String((parsed as { delta?: string }).delta ?? '')
+        if (delta) {
+          this.emit('response_text', { text: delta, isFinal: false, timestamp: now })
+        }
+        break
+      }
+
+      case 'response.audio.delta':
         if (!this.assistantOutputActive) {
           this.assistantOutputActive = true
           this.emit('assistant_audio_started', { timestamp: now })
@@ -401,8 +496,10 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
         this.activeResponseId = null
         if (wasActive) {
           this.emit('assistant_audio_stopped', { timestamp: now })
+          this.setSessionState('interrupted')
+        } else {
+          this.setSessionState('listening')
         }
-        this.setSessionState('interrupted')
         break
       }
 

@@ -10,9 +10,22 @@
 const http = require('node:http')
 const path = require('node:path')
 const fs = require('node:fs')
+const { randomBytes } = require('node:crypto')
 const { WebSocketServer } = require('ws')
 
 const WS_PATH = '/voice/ws'
+
+/** Strip optional surrounding quotes from .env values (same convention as `electron/main.cjs` loadEnvFromFile). */
+function stripEnvValueQuotes(raw) {
+  let val = String(raw).trim().replaceAll('\r', '')
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    val = val.slice(1, -1)
+  }
+  return val
+}
 
 function loadDotEnv() {
   const envPath = path.join(__dirname, '..', '.env')
@@ -20,7 +33,7 @@ function loadDotEnv() {
   const text = fs.readFileSync(envPath, 'utf8')
   for (const line of text.split('\n')) {
     const m = line.match(/^([^#=]+)=(.*)$/)
-    if (m) process.env[m[1].trim()] = m[2].trim().replaceAll('\r', '')
+    if (m) process.env[m[1].trim()] = stripEnvValueQuotes(m[2])
   }
 }
 
@@ -85,7 +98,7 @@ function sendPcmInVonageChunks(ws, pcm16) {
 
 async function whisperTranscribe(pcm16, sampleRate, apiKey, base) {
   const wav = pcm16ToWav(pcm16, sampleRate)
-  const boundary = `----JarvisForm${String(Date.now())}`
+  const boundary = `----JarvisForm${Date.now().toString(36)}${randomBytes(8).toString('hex')}`
   const body = Buffer.concat([
     Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="chunk.wav"\r\nContent-Type: audio/wav\r\n\r\n`,
@@ -153,7 +166,7 @@ async function ttsPcm(text, apiKey, base) {
 function createBridge(getEnv) {
   function getKeyBase() {
     const env = getEnv()
-    const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+    const key = (env.OPENAI_API_KEY || '').trim()
     const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
     return { key, base, env }
   }

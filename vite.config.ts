@@ -1,15 +1,40 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react-swc'
-import { defineConfig, loadEnv, PluginOption } from 'vite'
+import { defineConfig, loadEnv, PluginOption, ProxyOptions } from 'vite'
 import { resolve } from 'path'
 import { openaiProxyPlugin } from './vite-plugins/openai-proxy'
 import { browserProxyPlugin } from './vite-plugins/browser-proxy'
 
+/** There is no `vite-plugins/browser-proxy` in this repo. Dev and `vite preview` API routes are served only by {@link openaiProxyPlugin} (named export, `configureServer` + `configurePreviewServer`). Adding another plugin that mounts `/api/*` middleware must avoid path overlap with that plugin. */
 const projectRoot = process.env.PROJECT_ROOT || import.meta.dirname
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, projectRoot, '')
   const openaiKey = env.OPENAI_API_KEY || ''
+
+  /** Screen-agent / Python sidecar reads `process.env` when spawned from this dev server. Default TTS on; set `JARVIS_VOICEAGENT_TTS=0` in `.env` to disable. */
+  if (process.env.JARVIS_VOICEAGENT_TTS === undefined) {
+    const fromFile = env.JARVIS_VOICEAGENT_TTS?.trim()
+    process.env.JARVIS_VOICEAGENT_TTS =
+      fromFile !== undefined && fromFile !== '' ? fromFile : '1'
+  }
+
+  /** http-proxy does not reliably apply `headers:` to WebSocket upgrades — OpenAI gets no API key and closes the socket. */
+  const openaiRealtimeWsProxy: ProxyOptions = {
+    target: 'wss://api.openai.com',
+    ws: true,
+    changeOrigin: true,
+    secure: true,
+    rewrite: (path) => path.replace(/^\/ws\/realtime/, '/v1/realtime'),
+    configure: (proxy) => {
+      proxy.on('proxyReqWs', (proxyReq) => {
+        if (openaiKey) {
+          proxyReq.setHeader('Authorization', `Bearer ${openaiKey}`)
+          proxyReq.setHeader('OpenAI-Beta', 'realtime=v1')
+        }
+      })
+    },
+  }
 
   return {
     // Dev `data-j-source` on JSX: see `src/browser/types-layout.ts`, `DevSourceMarker`, and a future Vite/Babel plugin.
@@ -68,16 +93,7 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_DASHBOARD_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:3000',
           changeOrigin: true,
         },
-        '/ws/realtime': {
-          target: 'wss://api.openai.com',
-          ws: true,
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/ws\/realtime/, '/v1/realtime'),
-          headers: {
-            Authorization: `Bearer ${openaiKey}`,
-            'OpenAI-Beta': 'realtime=v1',
-          },
-        },
+        '/ws/realtime': openaiRealtimeWsProxy,
       },
     },
   }

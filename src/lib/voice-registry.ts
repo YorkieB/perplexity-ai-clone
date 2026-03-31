@@ -44,6 +44,12 @@ export function saveVoiceRegistry(registry: VoiceRegistry): void {
 }
 
 export function addVoiceToRegistry(profile: VoiceProfile): VoiceRegistry {
+  if (!profile.id?.trim()) throw new Error('VoiceProfile.id is required')
+  if (!profile.name?.trim()) throw new Error('VoiceProfile.name is required')
+  if (!profile.elevenLabsVoiceId?.trim()) {
+    throw new Error('VoiceProfile.elevenLabsVoiceId is required')
+  }
+
   const reg = getVoiceRegistry()
   const existing = reg.voices.findIndex(v => v.id === profile.id)
   if (existing >= 0) {

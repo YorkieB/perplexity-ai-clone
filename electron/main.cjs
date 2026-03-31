@@ -13,12 +13,17 @@ const { promisify } = require('node:util')
 const { Readable } = require('node:stream')
 const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
-const { app, BrowserWindow, dialog, ipcMain, session, shell, webContents } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, session, shell, clipboard, desktopCapturer, screen, webContents } =
+  require('electron')
 const jarvisDb = require('./jarvis-db.cjs')
 const ragDb = require('./rag-db.cjs')
 const spacesClient = require('./spaces-client.cjs')
 
 const PROJECT_ROOT = path.join(__dirname, '..')
+const { buildAllowedElevenLabsSharedVoicesQuery } = require(path.join(PROJECT_ROOT, 'scripts', 'elevenlabs-shared-voices-query.cjs'))
+const { buildAllowedSunoGenerateBody } = require(path.join(PROJECT_ROOT, 'scripts', 'suno-generate-body.cjs'))
+const { normalizeLlmChatCompletionBody } = require(path.join(PROJECT_ROOT, 'scripts', 'llm-chat-completion-body.cjs'))
+const { normalizeOpenAiAudioSpeechBody } = require(path.join(PROJECT_ROOT, 'scripts', 'openai-tts-speech-body.cjs'))
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs')
 
@@ -1036,6 +1041,10 @@ function loadEnvFromFile() {
     }
     if (process.env[key] === undefined) process.env[key] = val
   }
+  // Screen-agent stack (external Python / tooling): ElevenLabs TTS for voice agent — default on unless .env sets 0
+  if (process.env.JARVIS_VOICEAGENT_TTS === undefined) {
+    process.env.JARVIS_VOICEAGENT_TTS = '1'
+  }
 }
 
 function getEnv() {
@@ -1227,9 +1236,16 @@ async function handleElevenLabsTtsProxy(req, res, parsed) {
     )
     if (!upstream.ok) {
       const errText = await upstream.text()
-      res.statusCode = upstream.status
-      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
-      res.end(errText)
+      let msg = 'ElevenLabs TTS error'
+      try {
+        const j = JSON.parse(errText)
+        msg = j.detail || j.message || msg
+      } catch {
+        if (errText && errText.length < 2000) msg = errText
+      }
+      res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ error: { message: String(msg).slice(0, 2000) } }))
       return
     }
     const ct = upstream.headers.get('content-type') || 'audio/mpeg'
@@ -1263,6 +1279,14 @@ async function handleTtsProxy(req, res) {
 
   if (parsed?.provider === 'elevenlabs') {
     await handleElevenLabsTtsProxy(req, res, parsed)
+    return
+  }
+
+  const normalized = normalizeOpenAiAudioSpeechBody(bodyStr)
+  if (!normalized.ok) {
+    res.statusCode = normalized.status
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: normalized.message } }))
     return
   }
 
@@ -1300,13 +1324,20 @@ async function handleTtsProxy(req, res) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
       },
-      body: bodyStr,
+      body: normalized.body,
     })
     if (!upstream.ok) {
       const text = await upstream.text()
-      res.statusCode = upstream.status
-      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
-      res.end(text)
+      let msg = 'OpenAI TTS request failed'
+      try {
+        const j = JSON.parse(text)
+        msg = j.error?.message || j.message || msg
+      } catch {
+        if (text && text.length < 2000) msg = text
+      }
+      res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ error: { message: String(msg).slice(0, 2000) } }))
       return
     }
     const ct = upstream.headers.get('content-type') || 'audio/mpeg'
@@ -1450,7 +1481,8 @@ async function handleLlmProxy(req, res) {
       return
     }
     try {
-      const body = await readBody(req)
+      const bodyRaw = await readBody(req)
+      const body = normalizeLlmChatCompletionBody(bodyRaw, getEnv(), 'digitalocean')
       const streamRequested = wantsSseStreamFromBody(body)
       const upstream = await fetch(`${DO_INFERENCE}/chat/completions`, {
         method: 'POST',
@@ -1498,7 +1530,8 @@ async function handleLlmProxy(req, res) {
   )
 
   try {
-    const body = await readBody(req)
+    const bodyRaw = await readBody(req)
+    const body = normalizeLlmChatCompletionBody(bodyRaw, getEnv(), 'openai')
     const streamRequested = wantsSseStreamFromBody(body)
     const upstream = await fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -1839,6 +1872,20 @@ async function handleElevenLabsStreamingTts(req, res) {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'ElevenLabs TTS error' } }))
   }
+}
+
+function handleRealtimeVoiceReady(_req, res) {
+  const env = getEnv()
+  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+  if (!key) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY in .env' } }))
+    return
+  }
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json')
+  res.end(JSON.stringify({ ok: true }))
 }
 
 async function handleRealtimeSession(req, res) {
@@ -2495,13 +2542,25 @@ async function processIngestFile(file, fields, results, errors) {
   }
 }
 
-async function handleRagIngest(req, res) {
+/** Returns true if a 503 was sent (RAG disabled or offline). */
+function sendIfRagUnavailable(res) {
   if (!ragDb.isConfigured()) {
     res.statusCode = 503
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
-    return
+    res.end(JSON.stringify({ error: { message: 'RAG not configured — set DATABASE_URL in .env, or set RAG_DB_ENABLED=false to run without the knowledge base.' } }))
+    return true
   }
+  if (!ragDb.isReady()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database is not connected (unreachable or still starting). Check DATABASE_URL, VPN/firewall, DigitalOcean trusted sources; or set RAG_DB_ENABLED=false in .env.' } }))
+    return true
+  }
+  return false
+}
+
+async function handleRagIngest(req, res) {
+  if (sendIfRagUnavailable(res)) return
   try {
     const raw = await readBodyRaw(req)
     const ct = req.headers['content-type'] || ''
@@ -2539,12 +2598,7 @@ async function handleRagIngest(req, res) {
 }
 
 async function handleRagIngestText(req, res) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -2574,12 +2628,7 @@ async function handleRagIngestText(req, res) {
 }
 
 async function handleRagSearch(req, res) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -2604,12 +2653,7 @@ async function handleRagSearch(req, res) {
 }
 
 async function handleRagCreateDocument(req, res) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -2697,12 +2741,7 @@ async function handleRagCreateDocument(req, res) {
 }
 
 async function handleRagDocumentsList(req, res) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const u = new URL(req.url || '/', 'http://127.0.0.1')
     const limit = Number.parseInt(u.searchParams.get('limit') || '50', 10)
@@ -2719,12 +2758,7 @@ async function handleRagDocumentsList(req, res) {
 }
 
 async function handleRagDocumentGet(req, res, docId) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const doc = await ragDb.getDocument(docId)
     if (!doc) {
@@ -2746,6 +2780,7 @@ async function handleRagDocumentGet(req, res, docId) {
 
 async function handleRagDocumentDownload(req, res, docId) {
   try {
+    if (sendIfRagUnavailable(res)) return
     const doc = await ragDb.getDocument(docId)
     if (!doc?.spaces_key) {
       res.statusCode = 404
@@ -2772,12 +2807,7 @@ async function handleRagDocumentDownload(req, res, docId) {
 }
 
 async function handleRagDocumentDelete(req, res, docId) {
-  if (!ragDb.isConfigured()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
-    return
-  }
+  if (sendIfRagUnavailable(res)) return
   try {
     const doc = await ragDb.deleteDocument(docId)
     if (!doc) {
@@ -2834,8 +2864,9 @@ async function handleElevenLabsSharedVoices(req, res) {
     return
   }
   try {
-    const query = (req.url || '').split('?')[1] || ''
-    const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${query}`, {
+    const rawQuery = (req.url || '').split('?')[1] || ''
+    const query = buildAllowedElevenLabsSharedVoicesQuery(rawQuery)
+    const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices${query ? `?${query}` : ''}`, {
       headers: { 'xi-api-key': elKey },
     })
     const text = await upstream.text()
@@ -2931,11 +2962,11 @@ async function handleSunoGenerate(req, res) {
   try {
     const raw = await readBody(req)
     const parsed = JSON.parse(raw)
-    if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
+    const body = buildAllowedSunoGenerateBody(parsed)
     const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(parsed),
+      body: JSON.stringify(body),
     })
     const text = await upstream.text()
     res.statusCode = upstream.status
@@ -3756,6 +3787,443 @@ async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-cal
   }
 }
 
+/** @type {{ text: string; at: number } | null} */
+let lastDesktopPaste = null
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Copy text to the system clipboard and simulate paste (Ctrl+V / Cmd+V) so the
+ * foreground window (e.g. Notepad) receives it. User should focus the target app first.
+ */
+async function handleDesktopPasteText(req, res) {
+  if (req.method !== 'POST') {
+    res.statusCode = 405
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
+    return
+  }
+  try {
+    const raw = await readBody(req)
+    let body = {}
+    try {
+      body = JSON.parse(raw || '{}')
+    } catch {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
+      return
+    }
+    const text = typeof body.text === 'string' ? body.text : ''
+    const maxLen = 100000
+    if (!text.length) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: 'Missing or empty "text"' }))
+      return
+    }
+    if (text.length > maxLen) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: `Text too long (max ${maxLen} characters)` }))
+      return
+    }
+
+    const now = Date.now()
+    if (lastDesktopPaste && text === lastDesktopPaste.text && now - lastDesktopPaste.at < 4000) {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        ok: true,
+        pasted: true,
+        duplicateSkipped: true,
+        message: 'Same text was pasted a moment ago; skipped duplicate paste to avoid garbled output. If you need a new version, change the text first.',
+      }))
+      return
+    }
+    lastDesktopPaste = { text, at: now }
+
+    clipboard.writeText(text)
+    await sleep(180)
+
+    const platform = process.platform
+    let pasted = false
+    let pasteDetail = ''
+
+    if (platform === 'win32') {
+      await new Promise((resolve) => {
+        execFile(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            'Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 120; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')',
+          ],
+          { timeout: 20000 },
+          (err, _stdout, stderr) => {
+            pasted = !err
+            if (err) pasteDetail = err.message || String(stderr || 'SendKeys failed')
+            resolve()
+          },
+        )
+      })
+    } else if (platform === 'darwin') {
+      await sleep(80)
+      await new Promise((resolve) => {
+        execFile(
+          'osascript',
+          ['-e', 'tell application "System Events" to keystroke "v" using command down'],
+          { timeout: 20000 },
+          (err) => {
+            pasted = !err
+            if (err) pasteDetail = err.message || 'osascript failed (check Accessibility permissions for Electron)'
+            resolve()
+          },
+        )
+      })
+    } else {
+      await sleep(80)
+      await new Promise((resolve) => {
+        execFile('xdotool', ['key', 'ctrl+v'], { timeout: 5000 }, (err) => {
+          pasted = !err
+          if (err) {
+            pasteDetail = 'xdotool not available — text is on the clipboard; user can press Ctrl+V in the focused app.'
+          }
+          resolve()
+        })
+      })
+    }
+
+    const msg = pasted
+      ? `Pasted ${text.length} characters into the foreground window. If it went to the wrong place, focus the correct app (e.g. Notepad) and run again.`
+      : `Copied ${text.length} characters to the clipboard. Automatic paste did not complete (${pasteDetail}). Ask the user to click the target window and press Ctrl+V (Cmd+V on Mac).`
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true, pasted, platform, message: msg }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+  }
+}
+
+const CLIPBOARD_READ_MAX = 200000
+
+function handleDesktopClipboardRead(req, res) {
+  if (req.method !== 'GET') {
+    res.statusCode = 405
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
+    return
+  }
+  try {
+    let text = clipboard.readText()
+    if (typeof text !== 'string') text = ''
+    const truncated = text.length > CLIPBOARD_READ_MAX
+    if (truncated) text = text.slice(0, CLIPBOARD_READ_MAX)
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({
+      ok: true,
+      text,
+      length: text.length,
+      truncated,
+    }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+  }
+}
+
+/**
+ * Foreground-window hints for Realtime system instructions (values are sanitised in the renderer before the model).
+ * Stub: populate activeApp / windowTitle / summary via OS APIs or sidecar when available.
+ */
+function handleDesktopFocusContext(_req, res) {
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify({ activeApp: '', windowTitle: '', summary: '' }))
+}
+
+/**
+ * Capture a monitor and return PNG bytes (desktopCapturer thumbnail — full display size when possible).
+ */
+async function captureScreenPng(displayIndex = 0) {
+  const displays = screen.getAllDisplays()
+  if (!displays.length) {
+    throw new Error('No displays detected')
+  }
+  const idx = Math.min(Math.max(0, displayIndex), displays.length - 1)
+  const d = displays[idx]
+  const scale = d.scaleFactor || 1
+  const tw = Math.min(4096, Math.max(1, Math.ceil(d.bounds.width * scale)))
+  const th = Math.min(4096, Math.max(1, Math.ceil(d.bounds.height * scale)))
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: tw, height: th },
+  })
+  if (!sources.length) {
+    throw new Error('No screen sources from desktopCapturer')
+  }
+  const wantId = String(d.id)
+  const source = sources.find((s) => s.display_id === wantId) || sources[idx] || sources[0]
+  const img = source.thumbnail
+  if (!img || img.isEmpty()) {
+    throw new Error('Empty screen capture')
+  }
+  return { png: img.toPNG(), screenName: source.name || 'Screen', displayIndex: idx, displayCount: displays.length }
+}
+
+const SCREEN_READ_VISION_PROMPT = `You are reading a screenshot of the user's desktop (one full monitor).
+1) Transcribe ALL clearly readable text: window titles, document or editor content, browser UI (tabs, address bar if visible), dialogs, notifications, taskbar labels, clock, menus. Follow reading order (roughly top to bottom, then left to right within each region).
+2) For text that is too small, cropped, or blurry, write [illegible] for that fragment — do not invent words.
+3) Finish with a short summary (2–4 sentences) of what is on screen and what the user is likely doing.
+
+Plain text only. Do not fabricate content that is not visible in the image.`
+
+async function analyzeScreenPngWithOpenAI(pngBuffer) {
+  const env = getEnv()
+  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+  if (!key) {
+    return { error: 'No OPENAI_API_KEY — add it to .env for screen reading.' }
+  }
+  const base64 = pngBuffer.toString('base64')
+  const dataUrl = `data:image/png;base64,${base64}`
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 4096,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: SCREEN_READ_VISION_PROMPT },
+              { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            ],
+          },
+        ],
+      }),
+    })
+    if (!resp.ok) {
+      const errText = await resp.text()
+      console.error('[desktop] screen vision API error:', resp.status, errText.slice(0, 400))
+      return { error: `Vision API error HTTP ${resp.status}` }
+    }
+    const data = await resp.json()
+    const text = data.choices?.[0]?.message?.content?.trim()
+    if (!text) {
+      return { error: 'Empty response from vision model' }
+    }
+    return { analysis: text }
+  } catch (e) {
+    console.error('[desktop] screen vision error:', e.message)
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+async function handleDesktopScreenRead(req, res) {
+  if (req.method !== 'POST') {
+    res.statusCode = 405
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
+    return
+  }
+  try {
+    let body = {}
+    try {
+      body = JSON.parse(await readBody(req) || '{}')
+    } catch {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
+      return
+    }
+    const rawIdx = body.display_index
+    const displayIndex = typeof rawIdx === 'number' && Number.isFinite(rawIdx)
+      ? Math.max(0, Math.floor(rawIdx))
+      : 0
+
+    const { png, screenName, displayIndex: usedIdx, displayCount } = await captureScreenPng(displayIndex)
+    const vision = await analyzeScreenPngWithOpenAI(png)
+    if (vision.error) {
+      res.statusCode = 502
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: vision.error }))
+      return
+    }
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({
+      ok: true,
+      analysis: vision.analysis,
+      screen_name: screenName,
+      display_index: usedIdx,
+      display_count: displayCount,
+    }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+  }
+}
+
+/**
+ * Launch a desktop app or open a URL in a named browser (Electron only).
+ * POST JSON: { target: string, url?: string }
+ * - target: "edge" | "chrome" | "firefox" | "notepad" | "explorer" | or a full https?:// URL (default browser)
+ * - url: optional https URL to open in that browser (edge/chrome/firefox)
+ */
+async function handleDesktopLaunch(req, res) {
+  if (req.method !== 'POST') {
+    res.statusCode = 405
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
+    return
+  }
+  try {
+    const raw = await readBody(req)
+    let body = {}
+    try {
+      body = JSON.parse(raw || '{}')
+    } catch {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
+      return
+    }
+    const targetRaw = typeof body.target === 'string' ? body.target.trim() : ''
+    const urlRaw = typeof body.url === 'string' ? body.url.trim() : ''
+    if (!targetRaw) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: false, error: 'Missing "target" (e.g. edge, chrome, notepad, or an https:// URL)' }))
+      return
+    }
+
+    const t = targetRaw.toLowerCase()
+    const platform = process.platform
+    let message = ''
+    const urlOk = urlRaw && /^https?:\/\//i.test(urlRaw)
+
+    // Open arbitrary URL in default browser
+    if (/^https?:\/\//i.test(targetRaw)) {
+      await shell.openExternal(targetRaw)
+      message = `Opened in default browser: ${targetRaw}`
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true, message, platform }))
+      return
+    }
+
+    if (t === 'edge' || t === 'microsoft edge' || t === 'msedge') {
+      if (platform === 'win32') {
+        if (urlOk) {
+          await shell.openExternal(`microsoft-edge:${urlRaw}`)
+          message = `Launched Microsoft Edge with URL: ${urlRaw}`
+        } else {
+          await shell.openExternal('microsoft-edge:')
+          message = 'Launched Microsoft Edge'
+        }
+      } else if (platform === 'darwin') {
+        const args = urlOk ? ['-a', 'Microsoft Edge', urlRaw] : ['-a', 'Microsoft Edge']
+        await execFileAsync('open', args)
+        message = urlOk ? `Launched Microsoft Edge with URL: ${urlRaw}` : 'Launched Microsoft Edge'
+      } else {
+        const bin = 'microsoft-edge-stable'
+        await execFileAsync(bin, urlOk ? [urlRaw] : [], { timeout: 15000 }).catch(async () => {
+          await execFileAsync('microsoft-edge', urlOk ? [urlRaw] : [], { timeout: 15000 })
+        })
+        message = urlOk ? `Launched Microsoft Edge with URL: ${urlRaw}` : 'Launched Microsoft Edge'
+      }
+    } else if (t === 'chrome' || t === 'google chrome') {
+      if (platform === 'win32') {
+        const cmd = urlOk ? `start "" chrome "${urlRaw.replace(/"/g, '')}"` : 'start "" chrome'
+        await execAsync(cmd, { timeout: 20000, windowsHide: true })
+        message = urlOk ? `Launched Google Chrome with URL: ${urlRaw}` : 'Launched Google Chrome'
+      } else if (platform === 'darwin') {
+        const args = urlOk ? ['-a', 'Google Chrome', urlRaw] : ['-a', 'Google Chrome']
+        await execFileAsync('open', args)
+        message = urlOk ? `Launched Google Chrome with URL: ${urlRaw}` : 'Launched Google Chrome'
+      } else {
+        await execFileAsync('google-chrome', urlOk ? [urlRaw] : [], { timeout: 15000 }).catch(async () => {
+          await execFileAsync('chromium', urlOk ? [urlRaw] : [], { timeout: 15000 })
+        })
+        message = urlOk ? `Launched Chrome with URL: ${urlRaw}` : 'Launched Chrome'
+      }
+    } else if (t === 'firefox' || t === 'mozilla firefox') {
+      if (platform === 'win32') {
+        const cmd = urlOk
+          ? `start "" firefox "${urlRaw.replace(/"/g, '')}"`
+          : 'start "" firefox'
+        await execAsync(cmd, { timeout: 20000, windowsHide: true })
+        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
+      } else if (platform === 'darwin') {
+        const args = urlOk ? ['-a', 'Firefox', urlRaw] : ['-a', 'Firefox']
+        await execFileAsync('open', args)
+        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
+      } else {
+        await execFileAsync('firefox', urlOk ? [urlRaw] : [], { timeout: 15000 })
+        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
+      }
+    } else if (t === 'notepad') {
+      if (platform === 'win32') {
+        await execFileAsync('notepad.exe', [], { timeout: 15000, windowsHide: true })
+      } else if (platform === 'darwin') {
+        await execFileAsync('open', ['-a', 'TextEdit'], { timeout: 15000 })
+      } else {
+        await execFileAsync('gedit', [], { timeout: 15000 }).catch(async () => {
+          await execFileAsync('xed', [], { timeout: 15000 })
+        })
+      }
+      message = platform === 'win32' ? 'Launched Notepad' : 'Launched default text editor'
+    } else if (t === 'explorer' || t === 'file explorer' || t === 'files') {
+      if (platform === 'win32') {
+        await execFileAsync('explorer.exe', [], { timeout: 15000, windowsHide: true })
+        message = 'Opened File Explorer'
+      } else if (platform === 'darwin') {
+        await execFileAsync('open', ['/'], { timeout: 15000 })
+        message = 'Opened Finder'
+      } else {
+        await execFileAsync('xdg-open', [os.homedir()], { timeout: 15000 })
+        message = 'Opened file manager'
+      }
+    } else if (t === 'calculator' || t === 'calc') {
+      if (platform === 'win32') {
+        await shell.openExternal('ms-calculator:')
+      } else if (platform === 'darwin') {
+        await execFileAsync('open', ['-a', 'Calculator'], { timeout: 15000 })
+      } else {
+        await execFileAsync('gnome-calculator', [], { timeout: 15000 }).catch(async () => {
+          await execFileAsync('kcalc', [], { timeout: 15000 })
+        })
+      }
+      message = 'Launched Calculator'
+    } else {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        ok: false,
+        error: `Unknown target "${targetRaw}". Use edge, chrome, firefox, notepad, explorer, calculator, or pass an https:// URL as target.`,
+      }))
+      return
+    }
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ ok: true, message, platform }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+  }
+}
+
 async function handleVonageSms(req, res) {
   const env = getEnv()
   const apiKey = (env.VONAGE_API_KEY || '').trim()
@@ -3780,13 +4248,7 @@ async function handleVonageSms(req, res) {
       res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
       return
     }
-    let digits = rawTo.replaceAll(/\s+/g, '')
-    if (digits.startsWith('00')) digits = digits.slice(2)
-    if (digits.startsWith('+')) digits = digits.slice(1)
-    digits = digits.replaceAll(/\D/g, '')
-    if (digits.length === 11 && digits.startsWith('0')) {
-      digits = `44${digits.slice(1)}`
-    }
+    const digits = vonageShared.normalizeVonagePhoneDigits(rawTo)
     if (digits.length < 8 || digits.length > 15) {
       res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
@@ -3841,6 +4303,7 @@ const exactRoutes = [
   { method: 'POST', path: '/api/llm', handler: handleLlmProxy },
   { method: 'POST', path: '/api/tts', handler: handleTtsProxy },
   { method: 'POST', path: '/api/elevenlabs-tts', handler: handleElevenLabsStreamingTts },
+  { method: 'GET', path: '/api/realtime/voice-ready', handler: handleRealtimeVoiceReady },
   { method: 'POST', path: '/api/realtime/session', handler: handleRealtimeSession },
   { method: 'GET', path: '/api/jarvis-memory', handler: handleJarvisMemoryGet },
   { method: 'POST', path: '/api/jarvis-memory', handler: handleJarvisMemoryPost },
@@ -3855,6 +4318,11 @@ const exactRoutes = [
   { method: 'GET', path: '/api/elevenlabs/voices', handler: handleElevenLabsSharedVoices },
   { method: 'POST', path: '/api/elevenlabs/sound-effect', handler: handleElevenLabsSoundEffect },
   { method: 'POST', path: '/api/voice-analysis', handler: handleVoiceAnalysis },
+  { method: 'POST', path: '/api/desktop/paste-text', handler: handleDesktopPasteText },
+  { method: 'GET', path: '/api/desktop/clipboard-text', handler: handleDesktopClipboardRead },
+  { method: 'POST', path: '/api/desktop/screen-read', handler: handleDesktopScreenRead },
+  { method: 'POST', path: '/api/desktop/launch', handler: handleDesktopLaunch },
+  { method: 'GET', path: '/api/desktop/focus-context', handler: handleDesktopFocusContext },
   { method: 'POST', path: '/api/rag/ingest', handler: handleRagIngest },
   { method: 'POST', path: '/api/rag/ingest-text', handler: handleRagIngestText },
   { method: 'POST', path: '/api/rag/search', handler: handleRagSearch },
@@ -4227,9 +4695,9 @@ app.whenReady().then(() => {
     console.error('[jarvis-desktop-automation] failed to register:', e instanceof Error ? e.message : e)
   }
 
-  // Initialise RAG database schema (pgvector) if configured
+  // Initialise RAG database schema (pgvector) if configured — failures are logged inside rag-db (non-fatal)
   if (ragDb.isConfigured()) {
-    ragDb.initSchema().catch((err) => console.error('[rag-db] schema init failed:', err.message))
+    void ragDb.initSchema()
   }
 
   void createWindow()

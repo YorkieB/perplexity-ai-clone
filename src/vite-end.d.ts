@@ -73,6 +73,11 @@ interface JarvisNativeAPI {
     error?: string
   }>
   getScreenSources: () => Promise<Array<{ id: string; name: string; thumbnail: string; appIcon: string | null }>>
+  /** Voice bridge branding; must match `JARVIS_NATIVE_VOICE_BRIDGE_TOKEN` in `src/lib/jarvis-native-bridge.ts`. */
+  bridgeToken: string
+  bridgeVersion: number
+  /** Optional: main may push foreground metadata (`jarvis-desktop-focus-context`). */
+  onDesktopFocusContext?: (handler: (payload: Record<string, unknown>) => void) => () => void
 }
 
 /** Electron preload (`electron/preload.cjs`) — only present in desktop shell. */
@@ -131,6 +136,8 @@ declare global {
     electronAPI?: ElectronJarvisApi
     electronInAppBrowser?: ElectronInAppBrowserAPI
     jarvisNative?: JarvisNativeAPI
+    /** Optional: injected by Electron for renderer routing when voice UI is active. */
+    setRendererVoiceModeOpen?: (open: boolean) => void
   }
 
   namespace JSX {

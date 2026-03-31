@@ -16,6 +16,8 @@ import librosa
 import webrtcvad
 
 SAMPLE_RATE = 24000
+# webrtcvad only accepts 8000, 16000, 32000, or 48000 Hz — not 24000.
+VAD_SAMPLE_RATE = 16000
 FRAME_DURATION_MS = 30  # webrtcvad frame size
 
 
@@ -40,8 +42,7 @@ def analyze_pitch(sound: parselmouth.Sound) -> dict[str, float | None]:
     }
 
 
-def analyze_jitter(sound: parselmouth.Sound) -> dict[str, float | None]:
-    point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+def _jitter_from_point_process(point_process: Any) -> dict[str, float | None]:
     try:
         local = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
         rap = call(point_process, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
@@ -55,8 +56,9 @@ def analyze_jitter(sound: parselmouth.Sound) -> dict[str, float | None]:
     }
 
 
-def analyze_shimmer(sound: parselmouth.Sound) -> dict[str, float | None]:
-    point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+def _shimmer_from_sound_and_point_process(
+    sound: parselmouth.Sound, point_process: Any
+) -> dict[str, float | None]:
     try:
         local = call(
             [sound, point_process],
@@ -74,6 +76,16 @@ def analyze_shimmer(sound: parselmouth.Sound) -> dict[str, float | None]:
         "local": round(local, 4) if not np.isnan(local) else None,
         "apq": round(apq, 4) if not np.isnan(apq) else None,
     }
+
+
+def analyze_jitter_and_shimmer(
+    sound: parselmouth.Sound,
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """One Praat periodic PointProcess for both jitter and shimmer (expensive step)."""
+    point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+    jitter = _jitter_from_point_process(point_process)
+    shimmer = _shimmer_from_sound_and_point_process(sound, point_process)
+    return jitter, shimmer
 
 
 def analyze_hnr(sound: parselmouth.Sound) -> float | None:
@@ -136,18 +148,24 @@ def analyze_spectral(samples: np.ndarray) -> dict[str, float | None]:
 
 def analyze_vad(pcm_bytes: bytes) -> dict[str, Any]:
     vad = webrtcvad.Vad(2)
-    frame_size = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000) * 2  # bytes per frame
-    n_frames = len(pcm_bytes) // frame_size
+    samples_24k = pcm16_to_float32(pcm_bytes)
+    if len(samples_24k) == 0:
+        return {"speechRatio": 0.0, "segments": 0, "segmentTimes": []}
+
+    samples_16k = librosa.resample(
+        samples_24k, orig_sr=SAMPLE_RATE, target_sr=VAD_SAMPLE_RATE
+    )
+    pcm_16k = (np.clip(samples_16k, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+
+    frame_size = int(VAD_SAMPLE_RATE * FRAME_DURATION_MS / 1000) * 2  # bytes per frame
+    n_frames = len(pcm_16k) // frame_size
     if n_frames == 0:
         return {"speechRatio": 0.0, "segments": 0, "segmentTimes": []}
 
     is_speech: list[bool] = []
     for i in range(n_frames):
-        frame = pcm_bytes[i * frame_size : (i + 1) * frame_size]
-        try:
-            is_speech.append(vad.is_speech(frame, SAMPLE_RATE))
-        except Exception:
-            is_speech.append(False)
+        frame = pcm_16k[i * frame_size : (i + 1) * frame_size]
+        is_speech.append(vad.is_speech(frame, VAD_SAMPLE_RATE))
 
     speech_ratio = sum(is_speech) / len(is_speech) if is_speech else 0.0
 
@@ -217,10 +235,12 @@ def analyze_audio(pcm_bytes: bytes) -> dict[str, Any]:
     vad_result = analyze_vad(pcm_bytes)
     segment_times: list[tuple[float, float]] = vad_result.get("segmentTimes", [])
 
+    jitter, shimmer = analyze_jitter_and_shimmer(sound)
+
     return {
         "pitch": analyze_pitch(sound),
-        "jitter": analyze_jitter(sound),
-        "shimmer": analyze_shimmer(sound),
+        "jitter": jitter,
+        "shimmer": shimmer,
         "hnr": analyze_hnr(sound),
         "speakingRate": analyze_speaking_rate(samples, segment_times),
         "mfcc": analyze_mfcc(samples),

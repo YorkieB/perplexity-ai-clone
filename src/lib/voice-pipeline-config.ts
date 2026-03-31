@@ -9,4 +9,12 @@
  */
 export const VOICE_PIPELINE_STRATEGY = 'composed' as const
 
-export type VoicePipelineStrategy = typeof VOICE_PIPELINE_STRATEGY
+/**
+ * Additional backend discriminants — start as `never` and replace with string literals as
+ * implementations land (e.g. `'realtime_webrtc'`, `'gemini_live'`). Keeps {@link VoicePipelineStrategy}
+ * open for extension without widening the runtime {@link VOICE_PIPELINE_STRATEGY} constant.
+ */
+type FutureVoicePipelineStrategy = never
+
+/** Union of supported and planned pipeline strategies; only {@link VOICE_PIPELINE_STRATEGY} is active today. */
+export type VoicePipelineStrategy = typeof VOICE_PIPELINE_STRATEGY | FutureVoicePipelineStrategy

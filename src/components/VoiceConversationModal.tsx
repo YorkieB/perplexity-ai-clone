@@ -61,13 +61,8 @@ export function VoiceConversationModal({
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const runVoiceTurnRef = useRef<(userText: string) => Promise<void>>(async () => {})
 
-  useEffect(() => {
-    phaseRef.current = phase
-  }, [phase])
-
-  useEffect(() => {
-    openRef.current = open
-  }, [open])
+  phaseRef.current = phase
+  openRef.current = open
 
   const onVisionFileChosen = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -214,6 +209,7 @@ export function VoiceConversationModal({
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!Ctor) {
       toast.error('Speech recognition is not supported in this browser.')
+      onOpenChange(false)
       return
     }
 
@@ -250,11 +246,20 @@ export function VoiceConversationModal({
       }
     }
 
-    recognition.onerror = () => {
-      /* browsers may emit errors when stopping recognition */
+    recognition.onerror = (e: Event) => {
+      const code = (e as Event & { error?: string }).error
+      if (!code) return
+      if (code === 'aborted' || code === 'no-speech') return
+      if (code === 'not-allowed') {
+        toast.error('Microphone access was denied.')
+        onOpenChange(false)
+        return
+      }
+      toast.error(`Voice recognition error: ${code}`)
     }
 
     recognition.onend = () => {
+      if (recognitionRef.current !== recognition) return
       if (openRef.current && phaseRef.current === 'listening' && !busyRef.current) {
         try {
           recognition.start()
@@ -275,7 +280,7 @@ export function VoiceConversationModal({
       recognition.abort()
       if (recognitionRef.current === recognition) recognitionRef.current = null
     }
-  }, [open, interrupt])
+  }, [open, interrupt, onOpenChange])
 
   const handleClose = (next: boolean) => {
     if (!next) {
@@ -397,23 +402,33 @@ export function VoiceConversationModal({
           </div>
 
           <div className="rounded-lg border border-border p-4 space-y-2 min-h-[100px]">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <p
+              className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               Status — {phaseLabel}
             </p>
-            {lastHeard && (
-              <p className="text-sm">
-                <span className="text-muted-foreground">You: </span>
-                {lastHeard}
-              </p>
-            )}
-            {lastReply && (
-              <p className="text-sm whitespace-pre-wrap">
-                <span className="text-muted-foreground">Assistant: </span>
-                {lastReply}
-              </p>
-            )}
+            <div aria-live="polite" aria-atomic="false">
+              {lastHeard && (
+                <p className="text-sm">
+                  <span className="text-muted-foreground">You: </span>
+                  {lastHeard}
+                </p>
+              )}
+            </div>
+            <div aria-live={phase === 'speaking' ? 'assertive' : 'polite'} aria-atomic="false">
+              {lastReply && (
+                <p className="text-sm whitespace-pre-wrap">
+                  <span className="text-muted-foreground">Assistant: </span>
+                  {lastReply}
+                </p>
+              )}
+            </div>
             {!lastHeard && !lastReply && (
-              <p className="text-sm text-muted-foreground">Waiting for speech…</p>
+              <div aria-live="polite" aria-atomic="true">
+                <p className="text-sm text-muted-foreground">Waiting for speech…</p>
+              </div>
             )}
           </div>
 
@@ -423,6 +438,8 @@ export function VoiceConversationModal({
               variant="outline"
               onClick={() => {
                 interrupt()
+                recognitionRef.current?.abort()
+                recognitionRef.current = null
                 setLastReply('')
                 setLastHeard('')
                 setVisionAttachment(null)

@@ -221,7 +221,7 @@ export interface UserSettings {
   proactiveVision?: boolean
   /** How Jarvis speaks during browser automation: copilot narrates actions; guide matches Guide Mode; off is silent. */
   voiceGuidanceMode?: 'copilot' | 'guide' | 'off'
-  /** When false, native OS tools (mouse, screen, PowerShell exec) are hidden from the chat agent. */
+  /** When false, native OS tools are hidden from the chat agent. When true, voice may register native desktop tools where applicable. */
   nativeControlEnabled?: boolean
 }
 

@@ -20,10 +20,22 @@ export const EMOTION_PRESETS: Record<string, Partial<VoiceSettings>> = {
   sarcastic:{ stability: 0.30, similarity_boost: 0.70, style: 0.6 },
 }
 
-const SELF_CLOSE_RE = /\[(laugh|sigh|gasp)\]/gi
-const EMOTION_RE = /\[(whisper|dramatic|excited|sad|angry|calm|sarcastic)\]([\s\S]*?)\[\/\1\]/gi
-const VOICE_RE = /\[voice:([^\]]+)\]([\s\S]*?)\[\/voice\]/gi
-const SFX_RE = /\[sfx:([^\]]+)\]/gi
+/**
+ * Fresh RegExp instances per call — avoids `g` regex `lastIndex` state if these patterns are ever
+ * used with `.exec()` / iteration across calls (module-level `/g` regexes are fragile).
+ */
+function behavioralMarkupRegexes() {
+  return {
+    selfClose: /\[(laugh|sigh|gasp)\]/gi,
+    emotion: /\[(whisper|dramatic|excited|sad|angry|calm|sarcastic)\]([\s\S]*?)\[\/\1\]/gi,
+    voice: /\[voice:([^\]]+)\]([\s\S]*?)\[\/voice\]/gi,
+    sfx: /\[sfx:([^\]]+)\]/gi,
+    openTag: /\[(whisper|dramatic|excited|sad|angry|calm|sarcastic|voice:[^\]]+)\]/gi,
+    closeTag: /\[\/(whisper|dramatic|excited|sad|angry|calm|sarcastic|voice)\]/gi,
+    /** Collapse runs of whitespace after stripping tags (fresh `/g` each call, not module-singleton). */
+    collapseWhitespace: /\s{2,}/g,
+  }
+}
 
 interface TagMatch {
   index: number
@@ -36,18 +48,19 @@ interface TagMatch {
 }
 
 function collectTagMatches(text: string): TagMatch[] {
+  const { selfClose, emotion, voice, sfx } = behavioralMarkupRegexes()
   const matches: TagMatch[] = []
 
-  for (const m of text.matchAll(SELF_CLOSE_RE)) {
+  for (const m of text.matchAll(selfClose)) {
     matches.push({ index: m.index!, length: m[0].length, type: 'self', emotion: m[1].toLowerCase() })
   }
-  for (const m of text.matchAll(EMOTION_RE)) {
+  for (const m of text.matchAll(emotion)) {
     matches.push({ index: m.index!, length: m[0].length, type: 'emotion', emotion: m[1].toLowerCase(), innerText: m[2].trim() })
   }
-  for (const m of text.matchAll(VOICE_RE)) {
+  for (const m of text.matchAll(voice)) {
     matches.push({ index: m.index!, length: m[0].length, type: 'voice', voiceName: m[1].trim(), innerText: m[2].trim() })
   }
-  for (const m of text.matchAll(SFX_RE)) {
+  for (const m of text.matchAll(sfx)) {
     matches.push({ index: m.index!, length: m[0].length, type: 'sfx', sfxDescription: m[1].trim() })
   }
 
@@ -70,7 +83,7 @@ export function parseBehavioralMarkup(
   voiceMap: Map<string, VoiceProfile>,
 ): BehavioralChunk[] {
   const tagMatches = collectTagMatches(text)
-  if (tagMatches.length === 0) return [{ text }]
+  if (tagMatches.length === 0) return [{ text: stripBehavioralMarkup(text) }]
 
   const chunks: BehavioralChunk[] = []
   let lastIndex = 0
@@ -78,7 +91,8 @@ export function parseBehavioralMarkup(
   for (const tm of tagMatches) {
     if (tm.index > lastIndex) {
       const plain = text.slice(lastIndex, tm.index).trim()
-      if (plain) chunks.push({ text: plain })
+      const cleanedPlain = stripBehavioralMarkup(plain)
+      if (cleanedPlain) chunks.push({ text: cleanedPlain })
     }
 
     if (tm.type === 'self' && tm.emotion) {
@@ -88,19 +102,25 @@ export function parseBehavioralMarkup(
         emotion: tm.emotion,
       })
     } else if (tm.type === 'emotion' && tm.emotion && tm.innerText) {
-      chunks.push({
-        text: tm.innerText,
-        voiceSettings: EMOTION_PRESETS[tm.emotion],
-        emotion: tm.emotion,
-      })
+      const cleanedInner = stripBehavioralMarkup(tm.innerText)
+      if (cleanedInner) {
+        chunks.push({
+          text: cleanedInner,
+          voiceSettings: EMOTION_PRESETS[tm.emotion],
+          emotion: tm.emotion,
+        })
+      }
     } else if (tm.type === 'voice' && tm.voiceName && tm.innerText) {
       const profile = voiceMap.get(tm.voiceName.toLowerCase())
-      chunks.push({
-        text: tm.innerText,
-        voiceId: profile?.elevenLabsVoiceId,
-        voiceSettings: profile?.voiceSettings,
-        emotion: `voice:${tm.voiceName}`,
-      })
+      const cleanedInner = stripBehavioralMarkup(tm.innerText)
+      if (cleanedInner) {
+        chunks.push({
+          text: cleanedInner,
+          voiceId: profile?.elevenLabsVoiceId,
+          voiceSettings: profile?.voiceSettings,
+          emotion: `voice:${tm.voiceName}`,
+        })
+      }
     } else if (tm.type === 'sfx' && tm.sfxDescription) {
       chunks.push({
         text: tm.sfxDescription,
@@ -114,35 +134,42 @@ export function parseBehavioralMarkup(
 
   if (lastIndex < text.length) {
     const remaining = text.slice(lastIndex).trim()
-    if (remaining) chunks.push({ text: remaining })
+    const cleanedRemaining = stripBehavioralMarkup(remaining)
+    if (cleanedRemaining) chunks.push({ text: cleanedRemaining })
   }
 
-  return chunks.length > 0 ? chunks : [{ text }]
+  return chunks.length > 0 ? chunks : [{ text: stripBehavioralMarkup(text) }]
 }
 
 /**
  * Strip all behavioral markup tags from text, returning clean text for display.
  */
 export function stripBehavioralMarkup(text: string): string {
+  const { selfClose, emotion, voice, sfx, collapseWhitespace } = behavioralMarkupRegexes()
   return text
-    .replace(SELF_CLOSE_RE, '') // NOSONAR -- replaceAll not available in target
-    .replace(EMOTION_RE, (_m, _tag, content) => (content as string).trim())
-    .replace(VOICE_RE, (_m, _name, content) => (content as string).trim())
-    .replace(SFX_RE, '')
-    .replace(/\s{2,}/g, ' ')
+    .replace(selfClose, '') // NOSONAR -- replaceAll not available in target
+    .replace(emotion, (_m, _tag, content) => (content as string).trim())
+    .replace(voice, (_m, _name, content) => (content as string).trim())
+    .replace(sfx, '')
+    .replace(collapseWhitespace, ' ')
     .trim()
 }
 
-const OPEN_TAG_RE = /\[(whisper|dramatic|excited|sad|angry|calm|sarcastic|voice:[^\]]+)\]/gi
-const CLOSE_TAG_RE = /\[\/(whisper|dramatic|excited|sad|angry|calm|sarcastic|voice)\]/gi
-
 /**
- * Check if text contains any pending (unclosed) behavioral markup tags.
- * Used to determine if we should wait for more text before chunking.
+ * Heuristic: whether the buffer likely has an **unclosed** behavioral tag (more open tags than
+ * close tags in a simple count). Used only to decide **whether to wait** for more streamed text
+ * before chunking — a conservative “maybe still incomplete” signal.
+ *
+ * **Limitations (acceptable here):** This does not parse a full tag stack or validate nesting.
+ * Streaming edge cases can produce **false positives** (we wait/chunk-split later than strictly
+ * necessary), e.g. partial `[voice:…]` substrings, ambiguous fragments, or unusual nesting. False
+ * negatives are also possible in theory. Product-wise, erring on “wait” is preferred over splitting
+ * mid-tag and breaking TTS markup.
  */
 export function hasUnclosedTag(text: string): boolean {
-  const openTags = text.match(OPEN_TAG_RE) ?? []
-  const closeTags = text.match(CLOSE_TAG_RE) ?? []
+  const { openTag, closeTag } = behavioralMarkupRegexes()
+  const openTags = text.match(openTag) ?? []
+  const closeTags = text.match(closeTag) ?? []
   return openTags.length > closeTags.length
 }
 

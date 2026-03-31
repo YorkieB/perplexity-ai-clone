@@ -181,7 +181,12 @@ export function playTts(
       await new Promise<void>((resolve) => {
         const src = playAudioBuffer(buf, resolve)
         ac.signal.addEventListener('abort', () => {
-          try { src.stop() } catch { /* already stopped */ }
+          try {
+            src.stop()
+          } catch {
+            /* already stopped */
+          }
+          _activeSources.delete(src)
           resolve()
         }, { once: true })
       })

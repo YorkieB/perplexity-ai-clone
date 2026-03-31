@@ -13,7 +13,7 @@ Vendor-neutral types and a **no-op** session live under `src/lib/voice/`.
 | Path | Role |
 |------|------|
 | `src/lib/voice/types.ts` | `VoiceSessionState`, `VoiceConnectionState`, `VoiceTurn`, `VoiceEventMap` payloads |
-| `src/lib/voice/voiceSession.ts` | `VoiceSession` interface, `NullVoiceSession`, `VoiceSessionStub` alias |
+| `src/lib/voice/voiceSession.ts` | `VoiceSession` interface, `NullVoiceSession` no-op implementation |
 | `src/lib/voice/index.ts` | Barrel re-exports (see below for Phase 1 additions) |
 
 Imports:
@@ -23,7 +23,7 @@ Imports:
 
 ### `VoiceSessionState`
 
-`idle` | `connecting` | `listening` | `thinking` | `speaking` | `interrupted` | `error`
+`idle` | `connecting` | `listening` | `thinking` | `speaking` | `interrupted` | `disconnected` | `error` — see FSM comment on `VoiceSessionState` in `types.ts`.
 
 ### `VoiceConnectionState`
 
@@ -35,19 +35,24 @@ Imports:
 |-------|---------|
 | `user_speech_started` / `user_speech_stopped` | `timestamp` |
 | `assistant_audio_started` / `assistant_audio_stopped` | `timestamp` |
+| `transcription` | `text`, `isFinal`, `timestamp` — user speech as text (e.g. input audio transcription) |
+| `response_text` | `text`, `isFinal`, `timestamp` — assistant text (streaming deltas and completion) |
 | `error` | `error`, `timestamp` |
 | `connection_state_changed` | `state`, `timestamp` |
 | `state_changed` | `state` (`VoiceSessionState`), `timestamp` |
 
 ### `VoiceSession` API
 
+- `state` — read-only `VoiceSessionState` (same as the last `state_changed` event; synchronous, no subscription required)
 - `connect()` / `disconnect()`
 - `on` / `off` with typed handlers
 - Optional `sendAudioChunk` / `abortAssistant`
 
-### `NullVoiceSession` / `VoiceSessionStub`
+### `NullVoiceSession`
 
 No network, no mic; safe default for builds without a provider.
+
+The name `VoiceSessionStub` is a deprecated alias for `NullVoiceSession` (same value); new code should import `NullVoiceSession` only.
 
 ### Messages (`src/lib/types.ts`)
 
@@ -88,10 +93,12 @@ Implements `VoiceSession`:
 
 ### Event mapping (GA → `VoiceEventMap`)
 
-Examples include:
+Server event names are normalized in `realtimeServerEvents.ts` (e.g. `response.output_audio.delta` → `response.audio.delta`). Examples include:
 
 - `input_audio_buffer.speech_started` / `speech_stopped` → `user_speech_*`
-- `response.created`, `response.output_audio.delta`, `response.done`, `response.cancelled` → assistant lifecycle / `state_changed` (e.g. interrupted)
+- `conversation.item.input_audio_transcription.completed` → `transcription`
+- `response.output_text.delta` / `.done` and `response.output_audio_transcript.delta` → `response_text`
+- `response.created`, `response.audio.delta`, `response.done`, `response.cancelled` → assistant lifecycle / `state_changed` (`interrupted` if audio was active; otherwise `listening` on cancel)
 - Errors → `error` + `VoiceSessionState` `error` when appropriate
 
 See `openaiRealtimeVoiceSession.ts` for the full switch and edge cases (e.g. inferring assistant audio when deltas are omitted).
@@ -100,7 +107,7 @@ See `openaiRealtimeVoiceSession.ts` for the full switch and edge cases (e.g. inf
 
 `VoiceRealtimeError` with codes such as:
 
-`SESSION_BOOTSTRAP_FAILED` | `WEBRTC_NEGOTIATION_FAILED` | `MISSING_EPHEMERAL_KEY` | `DATA_CHANNEL_FAILED` | `NOT_SUPPORTED` | `USER_MEDIA_DENIED`
+`SESSION_BOOTSTRAP_FAILED` | `WEBRTC_NEGOTIATION_FAILED` | `MISSING_EPHEMERAL_KEY` | `DATA_CHANNEL_FAILED` | `NOT_SUPPORTED` | `USER_MEDIA_DENIED` | `INTERNAL_ERROR`
 
 ### Exports (`src/lib/voice/index.ts`)
 

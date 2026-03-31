@@ -135,7 +135,17 @@ contextBridge.exposeInMainWorld('electronInAppBrowser', {
 })
 
 /** Native OS automation (Windows): mouse, keyboard, screen, clipboard, PowerShell exec — see `jarvis-desktop-automation.cjs`. */
+/** Must match `JARVIS_NATIVE_VOICE_BRIDGE_TOKEN` in `src/lib/jarvis-native-bridge.ts`. */
 contextBridge.exposeInMainWorld('jarvisNative', {
+  bridgeToken: 'jarvis-native-voice-v1',
+  bridgeVersion: 1,
+  onDesktopFocusContext: (handler) => {
+    const fn = (_e, payload) => {
+      handler(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {})
+    }
+    ipcRenderer.on('jarvis-desktop-focus-context', fn)
+    return () => ipcRenderer.removeListener('jarvis-desktop-focus-context', fn)
+  },
   mouseMove: (pos) => ipcRenderer.invoke('jarvis-native-mouse-move', pos),
   mouseClick: (opts) => ipcRenderer.invoke('jarvis-native-mouse-click', opts),
   mouseScroll: (opts) => ipcRenderer.invoke('jarvis-native-mouse-scroll', opts),

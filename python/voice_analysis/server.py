@@ -21,12 +21,19 @@ from .state_interpreter import interpret_vocal_state
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("voice-analysis")
 
+# Local-only service: allow browser origins for the Vite dev app only (not "*").
+# The app normally proxies via /api/voice-analysis; direct calls to :5199 still get a tight CORS policy.
+_LOCAL_DEV_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
 app = FastAPI(title="Jarvis Voice Analysis", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["POST"],
+    allow_origins=list(_LOCAL_DEV_ORIGINS),
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 

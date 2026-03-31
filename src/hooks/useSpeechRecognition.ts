@@ -89,12 +89,16 @@ export function useSpeechRecognition(options: {
   const silenceStartRef = useRef<number>(0)
   const chunksRef = useRef<Blob[]>([])
   const busyRef = useRef(false)
+  /** Prevents overlapping `start()` runs while `getUserMedia` is pending (avoids duplicate recorders). */
+  const startingRef = useRef(false)
   const mimeRef = useRef(getSupportedMimeType())
 
   const onFinalRef = useRef(onFinalTranscript)
   const onSpeechStartRef = useRef(onSpeechStart)
+  const langRef = useRef(lang)
   useEffect(() => { onFinalRef.current = onFinalTranscript }, [onFinalTranscript])
   useEffect(() => { onSpeechStartRef.current = onSpeechStart }, [onSpeechStart])
+  useEffect(() => { langRef.current = lang }, [lang])
 
   const beginRecording = useCallback(() => {
     if (!streamRef.current || !streamRef.current.active) return
@@ -114,7 +118,7 @@ export function useSpeechRecognition(options: {
   const transcribeAndReport = useCallback(async (blob: Blob) => {
     setInterimTranscript('Transcribing…')
     try {
-      const text = await transcribeAudio(blob, lang)
+      const text = await transcribeAudio(blob, langRef.current)
       if (text.trim()) {
         setTranscript((prev) => (prev ? `${prev} ${text.trim()}` : text.trim()))
         onFinalRef.current?.(text.trim())
@@ -125,7 +129,7 @@ export function useSpeechRecognition(options: {
       setInterimTranscript('')
       busyRef.current = false
     }
-  }, [lang])
+  }, [])
 
   const handleEndOfSpeech = useCallback(() => {
     if (!recorderRef.current || recorderRef.current.state === 'inactive' || busyRef.current) return
@@ -201,37 +205,43 @@ export function useSpeechRecognition(options: {
   }, [])
 
   const start = useCallback(async () => {
-    setErrorMessage(null)
-    setTranscript('')
-    setInterimTranscript('')
-    wantListening.current = true
+    if (startingRef.current) return
+    startingRef.current = true
+    try {
+      setErrorMessage(null)
+      setTranscript('')
+      setInterimTranscript('')
+      wantListening.current = true
 
-    if (!streamRef.current || !streamRef.current.active) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
-        })
-        streamRef.current = stream
+      if (!streamRef.current || !streamRef.current.active) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true },
+          })
+          streamRef.current = stream
 
-        const ctx = new AudioContext()
-        audioCtxRef.current = ctx
-        const source = ctx.createMediaStreamSource(stream)
-        const analyser = ctx.createAnalyser()
-        analyser.fftSize = 2048
-        source.connect(analyser)
-        analyserRef.current = analyser
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Microphone access denied'
-        setErrorMessage(msg)
-        setStatus('error')
-        wantListening.current = false
-        return
+          const ctx = new AudioContext()
+          audioCtxRef.current = ctx
+          const source = ctx.createMediaStreamSource(stream)
+          const analyser = ctx.createAnalyser()
+          analyser.fftSize = 2048
+          source.connect(analyser)
+          analyserRef.current = analyser
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Microphone access denied'
+          setErrorMessage(msg)
+          setStatus('error')
+          wantListening.current = false
+          return
+        }
       }
-    }
 
-    beginRecording()
-    setStatus('listening')
-    rafRef.current = requestAnimationFrame(monitorAudio)
+      beginRecording()
+      setStatus('listening')
+      rafRef.current = requestAnimationFrame(monitorAudio)
+    } finally {
+      startingRef.current = false
+    }
   }, [beginRecording, monitorAudio])
 
   const stop = useCallback(() => {

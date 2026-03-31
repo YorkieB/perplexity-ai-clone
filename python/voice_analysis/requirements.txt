@@ -1,7 +1,8 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
-numpy>=1.26
-praat-parselmouth>=0.4.4
-librosa>=0.10
-webrtcvad>=2.0.10
-soundfile>=0.12
+# Direct dependencies with upper bounds to avoid silent API breaks on `pip install -U`.
+# Reproducible installs: `uv pip sync -r requirements-lock.txt` (or `pip install -r requirements-lock.txt`).
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+numpy>=1.26,<3
+praat-parselmouth>=0.4.4,<0.6
+librosa>=0.10,<0.11
+webrtcvad>=2.0.10,<3

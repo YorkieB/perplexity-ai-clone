@@ -7,6 +7,7 @@
     "scripts": {
         "dev": "vite",
         "smoke": "node smoketest.mjs",
+        "smoke:wire": "node scripts/smoke-wire.mjs",
         "kill": "fuser -k 5000/tcp",
         "build": "tsc -b && vite build",
         "lint": "eslint .",
@@ -91,6 +92,7 @@
         "eventemitter3": "^5.0.4",
         "express": "^5.2.1",
         "faiss-node": "^0.5.1",
+        "focus-trap-react": "^12.0.0",
         "framer-motion": "^12.6.2",
         "imapflow": "^1.2.18",
         "input-otp": "^1.4.2",

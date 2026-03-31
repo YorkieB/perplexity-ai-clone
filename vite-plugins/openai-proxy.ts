@@ -12,6 +12,9 @@
  *
  * No separate Node server is required: this uses Vite’s Connect middleware in dev and
  * preview. Production static hosting still needs an equivalent backend route.
+ *
+ * - `POST /api/elevenlabs-tts` — streaming PCM TTS (same behaviour as Electron’s handler).
+ * - `POST /api/tts` — OpenAI `audio/speech` or ElevenLabs (same behaviour as Electron’s handler).
  */
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
@@ -20,6 +23,7 @@ import { randomInt } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { pipeline, Readable } from 'node:stream'
 import { tokenGenerate } from '@vonage/jwt'
 
 const requireVonage = createRequire(import.meta.url)
@@ -28,6 +32,24 @@ const vonageShared = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-voi
   normalizeVonagePhoneDigits: (raw: string) => string
   loadVonagePrivateKeyPem: (env: Record<string, string>) => string
   buildVonageAiVoiceWebSocketUri: (env: Record<string, string>) => string | null
+}
+
+const elevenLabsSharedVoices = requireVonage(join(_pluginDir, '..', 'scripts', 'elevenlabs-shared-voices-query.cjs')) as {
+  buildAllowedElevenLabsSharedVoicesQuery: (rawQuery: string) => string
+}
+
+const sunoGenerateBody = requireVonage(join(_pluginDir, '..', 'scripts', 'suno-generate-body.cjs')) as {
+  buildAllowedSunoGenerateBody: (parsed: unknown) => Record<string, unknown>
+}
+
+const llmChatBody = requireVonage(join(_pluginDir, '..', 'scripts', 'llm-chat-completion-body.cjs')) as {
+  normalizeLlmChatCompletionBody: (bodyStr: string, env: Record<string, string | undefined>, provider: 'openai' | 'digitalocean') => string
+}
+
+const openaiTtsSpeechBody = requireVonage(join(_pluginDir, '..', 'scripts', 'openai-tts-speech-body.cjs')) as {
+  normalizeOpenAiAudioSpeechBody: (
+    bodyStr: string
+  ) => { ok: true; body: string } | { ok: false; status: number; message: string }
 }
 
 /** ImapFlow envelope address shape (minimal for formatting). */
@@ -121,12 +143,73 @@ function getOpenAiConfig(env: Record<string, string>): {
   key: string | undefined
   base: string
 } {
-  const key = env.OPENAI_API_KEY?.trim() || env.VITE_OPENAI_API_KEY?.trim()
+  const key = env.OPENAI_API_KEY?.trim()
   const base =
     env.OPENAI_BASE_URL?.replace(/\/$/, '') ||
     env.VITE_OPENAI_BASE_URL?.replace(/\/$/, '') ||
     'https://api.openai.com/v1'
   return { key, base }
+}
+
+function getBearerFromReqHeader(req: Connect.IncomingMessage): string | null {
+  const raw = req.headers.authorization?.trim()
+  if (!raw) return null
+  if (raw.toLowerCase().startsWith('bearer ')) return raw.slice(7).trim()
+  return null
+}
+
+function getXiApiKeyFromReqHeader(req: Connect.IncomingMessage): string | null {
+  const raw = req.headers['xi-api-key'] ?? req.headers['x-elevenlabs-api-key']
+  if (!raw) return null
+  const s = Array.isArray(raw) ? raw[0] : raw
+  const t = String(s).trim()
+  return t || null
+}
+
+/** Max chars of upstream error detail exposed to the client (avoid echoing HTML blobs). */
+const TTS_UPSTREAM_ERROR_MAX = 512
+
+function safeTtsUpstreamMessage(raw: string, fallback: string): string {
+  const t = raw
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TTS_UPSTREAM_ERROR_MAX)
+  return t || fallback
+}
+
+/**
+ * Pipes a `fetch()` Web ReadableStream to `res` and cancels the upstream reader when the
+ * client disconnects (navigation, barge-in abort, tab close) so the remote stream does not
+ * keep pumping indefinitely. Uses `pipeline` so `res.write()` backpressure is respected.
+ */
+function pipeWebReadableToResWithClientAbort(
+  req: Connect.IncomingMessage,
+  res: ServerResponse,
+  webStream: import('stream/web').ReadableStream
+): void {
+  const nodeReadable = Readable.fromWeb(webStream)
+  function cleanup(reason: string) {
+    req.removeListener('aborted', onAbort)
+    res.removeListener('close', onResClose)
+    if (res.writableEnded || nodeReadable.readableEnded) return
+    if (!nodeReadable.destroyed) {
+      nodeReadable.destroy(new Error(reason))
+    }
+    void webStream.cancel(reason).catch(() => {})
+  }
+  function onAbort() {
+    cleanup('client aborted')
+  }
+  function onResClose() {
+    if (!res.writableEnded) cleanup('client disconnected')
+  }
+  req.once('aborted', onAbort)
+  res.once('close', onResClose)
+  pipeline(nodeReadable, res, () => {
+    req.removeListener('aborted', onAbort)
+    res.removeListener('close', onResClose)
+  })
 }
 
 const viteBookCache = new Map<string, { title: string; authors: string[]; fullText: string; fetchedAt: number }>()
@@ -199,6 +282,137 @@ function mergeRealtimeSessionBody(raw: string): typeof defaultRealtimeSession {
 function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.Server) {
   middlewares.use(async (req: Connect.IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => {
     const path = req.url?.split('?')[0]
+
+    /** Electron-only: paste into foreground app (see electron/main.cjs). Dev browser has no OS keyboard access. */
+    if (path === '/api/desktop/paste-text' && req.method === 'POST') {
+      try {
+        await readBody(req)
+      } catch {
+        /* ignore */
+      }
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error:
+            'Desktop paste is only available in the Jarvis Electron desktop app (npm run desktop). In Vite dev, copy text manually or use the embedded browser tools.',
+        })
+      )
+      return
+    }
+
+    if (path === '/api/desktop/clipboard-text' && req.method === 'GET') {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error:
+            'Reading the system clipboard requires the Jarvis Electron desktop app (npm run desktop).',
+        })
+      )
+      return
+    }
+
+    if (path === '/api/desktop/screen-read' && req.method === 'POST') {
+      try {
+        await readBody(req)
+      } catch {
+        /* ignore */
+      }
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error:
+            'Screen capture and reading requires the Jarvis Electron desktop app (npm run desktop) and OPENAI_API_KEY.',
+        })
+      )
+      return
+    }
+
+    if (path === '/api/desktop/launch' && req.method === 'POST') {
+      try {
+        await readBody(req)
+      } catch {
+        /* ignore */
+      }
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error:
+            'Launching desktop apps requires the Jarvis Electron desktop app (npm run desktop).',
+        })
+      )
+      return
+    }
+
+    /** Foreground metadata for voice Realtime instructions — full data only in Electron; empty in Vite. */
+    if (path === '/api/desktop/focus-context' && req.method === 'GET') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ activeApp: '', windowTitle: '', summary: '' }))
+      return
+    }
+
+    /**
+     * Electron proxies /api/vision/* to Jarvis Visual Engine :5000. Plain Vite dev has no engine —
+     * return a minimal OK payload so voice mode gets hasVision and does not parrot "camera offline".
+     */
+    if (path === '/api/vision/context' && req.method === 'GET') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          connected: true,
+          camera_connected: true,
+          scene_description:
+            'Vite dev placeholder: start Jarvis Visual Engine (port 5000) or use Electron (npm run desktop) for a live camera feed.',
+          frames_processed: 0,
+          last_updated: new Date().toISOString(),
+        }),
+      )
+      return
+    }
+
+    if (path === '/api/vision/analyze' && req.method === 'POST') {
+      try {
+        await readBody(req)
+      } catch {
+        /* ignore */
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true, stub: true }))
+      return
+    }
+
+    /** Cheap check for voice UI — does not call OpenAI (unlike POST /api/realtime/session). */
+    if (path === '/api/realtime/voice-ready' && req.method === 'GET') {
+      const env = getEnv()
+      const { key } = getOpenAiConfig(env)
+      if (!key) {
+        res.statusCode = 503
+        res.setHeader('Content-Type', 'application/json')
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                'Missing OPENAI_API_KEY. Add it to .env (dev/preview proxy only) and restart `npm run dev`.',
+            },
+          })
+        )
+        return
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
 
     if (path === '/api/realtime/session' && req.method === 'POST') {
       const env = getEnv()
@@ -518,7 +732,8 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         return
       }
       try {
-        const body = await readBody(req)
+        const bodyRaw = await readBody(req)
+        const body = llmChatBody.normalizeLlmChatCompletionBody(bodyRaw, env, 'digitalocean')
         const upstream = await fetch('https://inference.do-ai.run/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -570,8 +785,12 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         return
       }
       try {
-        const query = (req.url || '').split('?')[1] || ''
-        const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${query}`, { headers: { 'xi-api-key': elKey } })
+        const rawQuery = (req.url || '').split('?')[1] || ''
+        const query = elevenLabsSharedVoices.buildAllowedElevenLabsSharedVoicesQuery(rawQuery)
+        const upstream = await fetch(
+          `https://api.elevenlabs.io/v1/shared-voices${query ? `?${query}` : ''}`,
+          { headers: { 'xi-api-key': elKey } },
+        )
         const text = await upstream.text()
         res.statusCode = upstream.status
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
@@ -614,7 +833,13 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
           const errText = await upstream.text().catch(() => upstream.statusText)
           res.statusCode = upstream.status
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: errText } }))
+          res.end(
+            JSON.stringify({
+              error: {
+                message: safeTtsUpstreamMessage(String(errText), `ElevenLabs error (${upstream.status})`),
+              },
+            })
+          )
           return
         }
         res.statusCode = 200
@@ -625,6 +850,265 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Sound effect error' } }))
+      }
+      return
+    }
+
+    // ── ElevenLabs streaming TTS (PCM) — matches `handleElevenLabsStreamingTts` in electron/main.cjs
+    if (path === '/api/elevenlabs-tts' && req.method === 'POST') {
+      const env = getEnv()
+      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+      if (!elKey) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY' } }))
+        return
+      }
+      try {
+        const bodyStr = await readBody(req)
+        const body = JSON.parse(bodyStr) as {
+          text?: string
+          voice_id?: string
+          model_id?: string
+          voice_settings?: Record<string, unknown>
+        }
+        const text = String(body.text || '').trim()
+        if (!text) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: 'Empty text' } }))
+          return
+        }
+        const voiceId =
+          String(body.voice_id || '').trim() ||
+          (env.ELEVENLABS_VOICE_ID || env.VITE_ELEVENLABS_VOICE_ID || '').trim() ||
+          'pNInz6obpgDQGcFmaJgB'
+
+        const upstream = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=pcm_24000&optimize_streaming_latency=3`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'xi-api-key': elKey,
+            },
+            body: JSON.stringify({
+              text,
+              model_id: body.model_id || 'eleven_turbo_v2_5',
+              voice_settings: body.voice_settings || {
+                stability: 0.5,
+                similarity_boost: 0.75,
+                style: 0,
+                use_speaker_boost: true,
+              },
+            }),
+          },
+        )
+
+        if (!upstream.ok) {
+          const errText = await upstream.text().catch(() => upstream.statusText)
+          res.statusCode = upstream.status
+          res.setHeader('Content-Type', 'application/json')
+          res.end(
+            JSON.stringify({
+              error: {
+                message: safeTtsUpstreamMessage(String(errText), `ElevenLabs error (${upstream.status})`),
+              },
+            })
+          )
+          return
+        }
+
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'audio/pcm')
+        if (upstream.body) {
+          pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
+        } else {
+          res.end()
+        }
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(
+          JSON.stringify({
+            error: {
+              message: safeTtsUpstreamMessage(
+                e instanceof Error ? e.message : 'ElevenLabs TTS error',
+                'ElevenLabs TTS error'
+              ),
+            },
+          })
+        )
+      }
+      return
+    }
+
+    // ── POST /api/tts — OpenAI audio/speech or ElevenLabs (matches `handleTtsProxy` in electron/main.cjs) ──
+    if (path === '/api/tts' && req.method === 'POST') {
+      const env = getEnv()
+      const bodyStr = await readBody(req)
+      let parsed: Record<string, unknown> | null = null
+      try {
+        parsed = JSON.parse(bodyStr) as Record<string, unknown>
+      } catch {
+        parsed = null
+      }
+
+      if (parsed?.provider === 'elevenlabs') {
+        const xiKey =
+          getXiApiKeyFromReqHeader(req) ||
+          (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+        const voiceId =
+          String(parsed.voice_id || '').trim() ||
+          (env.ELEVENLABS_VOICE_ID || env.VITE_ELEVENLABS_VOICE_ID || '').trim()
+        if (!xiKey || !voiceId) {
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('X-Tts-Unavailable', 'missing-elevenlabs-config')
+          res.end(
+            JSON.stringify({
+              error: {
+                message:
+                  'ElevenLabs TTS requires an API key and voice ID (Settings → API Keys, or ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID in .env).',
+              },
+            })
+          )
+          return
+        }
+        const text = String(parsed.text || '').trim().slice(0, 5000)
+        if (!text) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: { message: 'Empty text' } }))
+          return
+        }
+        const modelId = String(
+          parsed.model_id || env.ELEVENLABS_MODEL_ID || env.VITE_ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2'
+        ).trim()
+        try {
+          const upstream = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'xi-api-key': xiKey,
+                Accept: 'audio/mpeg',
+              },
+              body: JSON.stringify({ text, model_id: modelId }),
+            }
+          )
+          if (!upstream.ok) {
+            const errText = await upstream.text()
+            let msg = 'ElevenLabs TTS error'
+            try {
+              const j = JSON.parse(errText) as { detail?: string; message?: string }
+              const raw = typeof j.detail === 'string' ? j.detail : j.message
+              msg = safeTtsUpstreamMessage(typeof raw === 'string' ? raw : '', msg)
+            } catch {
+              msg = safeTtsUpstreamMessage(errText, msg)
+            }
+            res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
+            res.setHeader('Content-Type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ error: { message: msg } }))
+            return
+          }
+          const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+          res.statusCode = upstream.status
+          res.setHeader('Content-Type', ct)
+          if (upstream.body) {
+            pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
+          } else {
+            const buf = await upstream.arrayBuffer()
+            res.end(Buffer.from(buf))
+          }
+        } catch (e) {
+          res.statusCode = 502
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.end(
+            JSON.stringify({
+              error: {
+                message: safeTtsUpstreamMessage(
+                  e instanceof Error ? e.message : 'ElevenLabs TTS proxy error',
+                  'ElevenLabs TTS proxy error'
+                ),
+              },
+            })
+          )
+        }
+        return
+      }
+
+      const normalized = openaiTtsSpeechBody.normalizeOpenAiAudioSpeechBody(bodyStr)
+      if (!normalized.ok) {
+        res.statusCode = normalized.status
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify({ error: { message: normalized.message } }))
+        return
+      }
+
+      const fromClient = getBearerFromReqHeader(req)
+      const key =
+        (fromClient ? fromClient : '') || (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+      if (!key) {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.setHeader('X-Tts-Unavailable', 'missing-openai-key')
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                'TTS requires an OpenAI API key: add OPENAI_API_KEY to .env or paste your key in Settings → API Keys.',
+            },
+          })
+        )
+        return
+      }
+
+      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+      try {
+        const upstream = await fetch(`${base}/audio/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: normalized.body,
+        })
+        if (!upstream.ok) {
+          const text = await upstream.text()
+          let msg = 'OpenAI TTS request failed'
+          try {
+            const j = JSON.parse(text) as { error?: { message?: string }; message?: string }
+            const raw = j.error?.message || j.message || ''
+            msg = safeTtsUpstreamMessage(String(raw), msg)
+          } catch {
+            msg = safeTtsUpstreamMessage(text, msg)
+          }
+          res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: { message: msg } }))
+          return
+        }
+        const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+        res.statusCode = upstream.status
+        res.setHeader('Content-Type', ct)
+        if (upstream.body) {
+          pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
+        } else {
+          const buf = await upstream.arrayBuffer()
+          res.end(Buffer.from(buf))
+        }
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(
+          JSON.stringify({
+            error: {
+              message: safeTtsUpstreamMessage(e instanceof Error ? e.message : 'TTS proxy error', 'TTS proxy error'),
+            },
+          })
+        )
       }
       return
     }
@@ -964,13 +1448,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
           res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
           return
         }
-        let digits = rawTo.replace(/\s+/g, '')
-        if (digits.startsWith('00')) digits = digits.slice(2)
-        if (digits.startsWith('+')) digits = digits.slice(1)
-        digits = digits.replace(/\D/g, '')
-        if (digits.length === 11 && digits.startsWith('0')) {
-          digits = `44${digits.slice(1)}`
-        }
+        const digits = vonageShared.normalizeVonagePhoneDigits(rawTo)
         if (digits.length < 8 || digits.length > 15) {
           res.statusCode = 400
           res.setHeader('Content-Type', 'application/json')
@@ -1308,11 +1786,11 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       try {
         const raw = await readBody(req)
         const parsed = JSON.parse(raw)
-        if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
+        const body = sunoGenerateBody.buildAllowedSunoGenerateBody(parsed)
         const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sunoKey}` },
-          body: JSON.stringify(parsed),
+          body: JSON.stringify(body),
         })
         const text = await upstream.text()
         res.statusCode = upstream.status
@@ -1433,7 +1911,8 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
     }
 
     try {
-      const body = await readBody(req)
+      const bodyRaw = await readBody(req)
+      const body = llmChatBody.normalizeLlmChatCompletionBody(bodyRaw, env, 'openai')
       const upstream = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {

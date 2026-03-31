@@ -74,6 +74,9 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
   const [aiText, setAiText] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
+  const stateRef = useRef<VoicePipelineState>(state)
+  stateRef.current = state
+
   const abortRef = useRef<AbortController | null>(null)
   const sentenceBufferRef = useRef('')
   const usingBrowserTTSRef = useRef(false)
@@ -82,11 +85,13 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
   const drainActiveRef = useRef(false)
   const isOpenRef = useRef(false)
   const userTranscriptRef = useRef('')
+  const handleFinalTranscriptRef = useRef<(text: string) => Promise<void>>(async () => {})
 
   // ── Barge-in ──────────────────────────────────────────────────────────────
 
   const bargeIn = useCallback(() => {
-    if (state !== 'speaking' && state !== 'thinking') return
+    const s = stateRef.current
+    if (s !== 'speaking' && s !== 'thinking') return
 
     abortRef.current?.abort()
     abortRef.current = null
@@ -99,7 +104,7 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
     usingBrowserTTSRef.current = false
 
     setState('listening')
-  }, [state])
+  }, [])
 
   // ── Speech recognition callbacks ──────────────────────────────────────────
 
@@ -108,6 +113,70 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
       bargeIn()
     }
   }, [state, bargeIn])
+
+  const onFinalTranscriptStable = useCallback((text: string) => {
+    void handleFinalTranscriptRef.current(text)
+  }, [])
+
+  // ── STT hook (before TTS drain + final transcript — they need `stt`) ─────
+
+  const stt = useSpeechRecognition({
+    onFinalTranscript: onFinalTranscriptStable,
+    onSpeechStart: handleSpeechStart,
+  })
+
+  // ── TTS queue helpers ─────────────────────────────────────────────────────
+
+  const enqueueSentence = useCallback((text: string, signal: AbortSignal) => {
+    const promise = synthesizeSpeechChunk(text, signal, 'alloy', 'tts-1', 1.1)
+      .then((buffer) => ({ buffer, text }))
+      .catch(() => {
+        usingBrowserTTSRef.current = true
+        return { buffer: null, text }
+      })
+
+    ttsQueueRef.current.push(promise)
+  }, [])
+
+  const drainTTSQueue = useCallback(
+    async (signal: AbortSignal) => {
+      while (drainActiveRef.current) {
+        if (signal.aborted) return
+
+        if (ttsQueueRef.current.length === 0) {
+          await sleep(20)
+          continue
+        }
+
+        const itemPromise = ttsQueueRef.current.shift()!
+        const item = await itemPromise
+
+        if (signal.aborted || !drainActiveRef.current) return
+
+        setState('speaking')
+
+        if (item.buffer) {
+          await new Promise<void>((resolve) => {
+            playAudioBuffer(item.buffer!, resolve)
+          })
+        } else {
+          try {
+            await speakWithBrowserTTS(item.text, signal)
+          } catch {
+            // Aborted or unsupported
+          }
+        }
+
+        if (signal.aborted || !drainActiveRef.current) return
+      }
+
+      if (!signal.aborted && isOpenRef.current) {
+        setState('listening')
+        stt.start()
+      }
+    },
+    [stt],
+  )
 
   const handleFinalTranscript = useCallback(
     async (text: string) => {
@@ -132,7 +201,7 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
         ttsQueueRef.current = []
         drainActiveRef.current = true
 
-        drainTTSQueue(abort.signal)
+        void drainTTSQueue(abort.signal)
 
         for await (const delta of callLlmStream(prompt, model, abort.signal)) {
           if (abort.signal.aborted) break
@@ -165,66 +234,10 @@ export function useVoicePipeline(options: UseVoicePipelineOptions = {}): UseVoic
         stt.start()
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state, focusMode, model, onResponse]
+    [state, model, onResponse, stt, drainTTSQueue, enqueueSentence],
   )
 
-  // ── TTS queue helpers ─────────────────────────────────────────────────────
-
-  function enqueueSentence(text: string, signal: AbortSignal) {
-    const promise = synthesizeSpeechChunk(text, signal, 'alloy', 'tts-1', 1.1)
-      .then((buffer) => ({ buffer, text }))
-      .catch(() => {
-        usingBrowserTTSRef.current = true
-        return { buffer: null, text }
-      })
-
-    ttsQueueRef.current.push(promise)
-  }
-
-  async function drainTTSQueue(signal: AbortSignal) {
-    while (drainActiveRef.current) {
-      if (signal.aborted) return
-
-      if (ttsQueueRef.current.length === 0) {
-        await sleep(20)
-        continue
-      }
-
-      const itemPromise = ttsQueueRef.current.shift()!
-      const item = await itemPromise
-
-      if (signal.aborted || !drainActiveRef.current) return
-
-      setState('speaking')
-
-      if (item.buffer) {
-        await new Promise<void>((resolve) => {
-          playAudioBuffer(item.buffer!, resolve)
-        })
-      } else {
-        try {
-          await speakWithBrowserTTS(item.text, signal)
-        } catch {
-          // Aborted or unsupported
-        }
-      }
-
-      if (signal.aborted || !drainActiveRef.current) return
-    }
-
-    if (!signal.aborted && isOpenRef.current) {
-      setState('listening')
-      stt.start()
-    }
-  }
-
-  // ── STT hook ──────────────────────────────────────────────────────────────
-
-  const stt = useSpeechRecognition({
-    onFinalTranscript: handleFinalTranscript,
-    onSpeechStart: handleSpeechStart,
-  })
+  handleFinalTranscriptRef.current = handleFinalTranscript
 
   // ── Public API ────────────────────────────────────────────────────────────
 

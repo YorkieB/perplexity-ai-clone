@@ -7,8 +7,20 @@
 const { Pool } = require('pg')
 
 let _pool = null
+/** True only after initSchema() completes successfully. */
+let _schemaReady = false
+/** True after a failed init — do not retry connecting on every request. */
+let _initFailed = false
+
+function isRagEnvEnabled() {
+  const v = (process.env.RAG_DB_ENABLED ?? 'true').trim().toLowerCase()
+  return v !== 'false' && v !== '0' && v !== 'no'
+}
 
 function getPool() {
+  if (_initFailed) {
+    throw new Error('RAG database unavailable — initial connection failed. Set RAG_DB_ENABLED=false in .env to run without RAG, or fix DATABASE_URL / network access.')
+  }
   if (_pool) return _pool
   const rawUrl = (process.env.DATABASE_URL || '').trim()
   if (!rawUrl) throw new Error('DATABASE_URL not set — add your DigitalOcean Managed PostgreSQL connection string to .env')
@@ -20,23 +32,31 @@ function getPool() {
     ssl: { rejectUnauthorized: false },
     max: 5,
     idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 12_000,
   })
   _pool.on('error', (err) => console.error('[rag-db] pool error:', err.message))
   return _pool
 }
 
 function isConfigured() {
-  return Boolean((process.env.DATABASE_URL || '').trim())
+  return Boolean((process.env.DATABASE_URL || '').trim()) && isRagEnvEnabled()
+}
+
+function isReady() {
+  return _schemaReady
 }
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
 async function initSchema() {
-  const pool = getPool()
-  await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
-  await pool.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+  if (!isConfigured()) return
+  let pool
+  try {
+    pool = getPool()
+    await pool.query('CREATE EXTENSION IF NOT EXISTS vector')
+    await pool.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
 
-  await pool.query(`
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS documents (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       title TEXT NOT NULL,
@@ -86,7 +106,22 @@ async function initSchema() {
     END $$
   `)
 
-  console.log('[rag-db] Schema initialised')
+    _schemaReady = true
+    console.log('[rag-db] Schema initialised')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    _initFailed = true
+    _schemaReady = false
+    try {
+      await shutdown()
+    } catch {
+      /* ignore */
+    }
+    console.warn('[rag-db] Schema init skipped — RAG disabled for this session:', msg)
+    console.warn(
+      '[rag-db] Fix DATABASE_URL / firewall / DigitalOcean trusted sources, or add RAG_DB_ENABLED=false to .env to silence this and run without the knowledge base.',
+    )
+  }
 }
 
 // ── Embeddings (OpenAI) ─────────────────────────────────────────────────────
@@ -294,6 +329,7 @@ async function ingestText(text, { title, filename, spacesKey, mimeType, source, 
 
 module.exports = {
   isConfigured,
+  isReady,
   initSchema,
   embedTexts,
   embedSingle,
