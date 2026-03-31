@@ -5,11 +5,11 @@ alwaysApply: true
 
 # Jarvis voice & vision — automatic agent behavior
 
-When changing **voice**, **vision**, **Realtime**, **Electron desktop APIs**, or **Vite proxies** for those features (`src/hooks/useRealtimeVoice.ts`, `src/hooks/useVision.ts`, `electron/main.cjs` vision/desktop routes, `vite-plugins/openai-proxy.ts` vision stubs):
+When changing **voice**, **vision**, **Realtime**, **Electron desktop APIs**, or **Vite proxies** for those features (`src/hooks/useRealtimeVoice.ts`, `src/hooks/useVision.ts`, `electron/main.cjs` vision/desktop routes, `vite-plugins/openai-proxy.ts` vision proxy):
 
 1. **Run `npx tsc -b`** (or the project’s TypeScript check) before finishing the task — do not wait for the user to ask.
 2. **Do not ask for permission** to run that typecheck in this scope; it is expected.
 3. **Environment facts** (do not re-debate unless the user changes setup):
-   - Plain `npm run dev` uses **stubbed** `/api/vision/*` responses; real camera analysis needs the **Jarvis Visual Engine** (proxied in Electron) and/or **`npm run desktop`**.
+   - `/api/vision/*` is **proxied live** to `VISION_ENGINE_URL` (default `http://127.0.0.1:5000`) in both Vite dev and Electron — start the **Jarvis Visual Engine** there (or set the URL). If the engine is down, the proxy returns **502** JSON, not fake scene text.
    - **Desktop screen capture / paste / clipboard** (`/api/desktop/*`) only work in **Electron** with a configured API key; Vite returns 503 stubs.
 4. When fixing “same canned reply” or hallucinated desktop/camera behavior, prefer **grounding** (authoritative system messages, `desktop_read_screen`, existing transcript-intent flow) over **prompt-only** tweaks.

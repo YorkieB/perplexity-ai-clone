@@ -19,12 +19,12 @@ function normalizeBucketEnv(raw: string | undefined): { bucket: string; ignoredS
   if (i <= 0) {
     return { bucket: s, ignoredSuffix: null }
   }
-  // S3 bucket names cannot contain '/'. Common mistake: BUCKET=space-name/prefix — use bucket only; keys already include paths.
+  // S3 bucket names cannot contain '/'. Common mistake: BUCKET=space-name/prefix - use bucket only; keys already include paths.
   const bucket = s.slice(0, i)
   const ignoredSuffix = s.slice(i + 1)
   if (ignoredSuffix) {
     console.warn(
-      `[SpacesClient] DO_SPACES_BUCKET contained '/' — using bucket "${bucket}" only. Put folder prefixes in object keys (e.g. behaviour/…), not in the bucket name.`,
+      `[SpacesClient] DO_SPACES_BUCKET had a "/" in it - using bucket "${bucket}" only. Remove "/${ignoredSuffix}" from .env; folders go in object keys (e.g. behaviour/...), not in DO_SPACES_BUCKET.`,
     )
   }
   return { bucket, ignoredSuffix }
@@ -36,11 +36,11 @@ export class SpacesClient {
   private enabled: boolean
 
   constructor() {
-    const endpoint = process.env.DO_SPACES_ENDPOINT
-    const { bucket: bucketRaw } = normalizeBucketEnv(process.env.DO_SPACES_BUCKET)
-    const key = process.env.DO_SPACES_KEY
-    const secret = process.env.DO_SPACES_SECRET
-    const region = process.env.DO_SPACES_REGION || 'nyc3'
+    const endpoint = process.env.DO_SPACES_ENDPOINT || process.env.SPACES_ENDPOINT
+    const { bucket: bucketRaw } = normalizeBucketEnv(process.env.DO_SPACES_BUCKET || process.env.SPACES_BUCKET)
+    const key = process.env.DO_SPACES_KEY || process.env.SPACES_ACCESS_KEY
+    const secret = process.env.DO_SPACES_SECRET || process.env.SPACES_SECRET_KEY
+    const region = process.env.DO_SPACES_REGION || process.env.SPACES_REGION || 'nyc3'
 
     if (!endpoint || !bucketRaw || !key || !secret) {
       console.warn('[SpacesClient] env vars not set — logging disabled')

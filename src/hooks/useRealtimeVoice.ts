@@ -212,8 +212,14 @@ function float32ToPcm16(f: Float32Array): ArrayBuffer {
   return p.buffer
 }
 
+/** Base64-encode raw bytes for `input_audio_buffer.append`. Avoid `TextDecoder`+`btoa` — some runtimes yield code points `btoa` rejects. */
 function abToBase64(buf: ArrayBuffer): string {
-  return btoa(new TextDecoder('latin1').decode(new Uint8Array(buf)))
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!)
+  }
+  return btoa(binary)
 }
 
 function b64ToInt16(b64: string): Int16Array {
@@ -800,13 +806,13 @@ When they ask to reply to an email, first read it with email_read to get the Mes
 Do NOT say "I don't have access to email" or "I can't manage emails." You CAN. Use the email tools.
 === END EMAIL ===
 
-=== SMS & VOICE CALLS ===
-You can send SMS and make phone calls via Vonage:
-- vonage_send_sms: Send an SMS text message. Only when the user explicitly asks.
-- vonage_voice_call: Outbound call where Vonage speaks text using TTS (one-shot script, not live conversation).
-- vonage_ai_voice_call: Live two-way AI phone call (audio streams through a WebSocket bridge: STT → LLM → TTS). Only if the bridge is configured.
+=== SMS & VOICE CALLS (VONAGE) ===
+You **are capable** of telephony through Vonage when the server is configured:
+- vonage_send_sms: Send an SMS. Use only when the user clearly asks to text someone.
+- vonage_voice_call: Outbound call — a **fixed script** is read aloud with TTS (one-way announcement).
+- vonage_ai_voice_call: **Live two-way** call — you hear the caller and reply through the media bridge (STT → you → TTS). The server may use streaming for faster replies when enabled.
 
-Do NOT say you cannot send texts or make calls. You CAN, via Vonage.
+Do NOT say you cannot send texts or make calls. Use the tools; if something fails, read the error (e.g. bridge not running, missing public WebSocket URL).
 === END SMS & VOICE CALLS ===`
 
   if (isElevenLabs) {
@@ -1272,12 +1278,18 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
   const getPlayCtx = useCallback(() => {
     if (!playCtxRef.current || playCtxRef.current.state === 'closed')
       playCtxRef.current = new AudioContext({ sampleRate: SAMPLE_RATE })
-    if (playCtxRef.current.state === 'suspended') playCtxRef.current.resume()
     return playCtxRef.current
   }, [])
 
-  const playPcm = useCallback((i16: Int16Array) => {
+  const playPcm = useCallback(async (i16: Int16Array) => {
     const ctx = getPlayCtx()
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume()
+      } catch (e) {
+        console.warn('[voice] playback AudioContext.resume failed:', e)
+      }
+    }
     const f32 = new Float32Array(i16.length)
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768
     const ab = ctx.createBuffer(1, f32.length, SAMPLE_RATE)
@@ -1344,9 +1356,12 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
         use_speaker_boost: true,
       }
     }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const elKeyFromSettings = userSettingsRef.current?.apiKeys?.elevenLabs?.trim()
+    if (elKeyFromSettings) headers['xi-api-key'] = elKeyFromSettings
     const res = await fetch('/api/elevenlabs-tts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal,
     })
@@ -1372,16 +1387,19 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
       const aLen = c.length - (c.length % 2)
       if (aLen > 0) {
         const pcmSlice = c.slice(0, aLen)
-        playPcm(new Int16Array(pcmSlice.buffer))
+        await playPcm(new Int16Array(pcmSlice.buffer))
       }
       lo = c.slice(aLen)
     }
   }, [elevenlabsVoiceId, voiceRegistry, playPcm])
 
   const playSfx = useCallback(async (description: string, signal: AbortSignal) => {
+    const sfxHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+    const elKeySfx = userSettingsRef.current?.apiKeys?.elevenLabs?.trim()
+    if (elKeySfx) sfxHeaders['xi-api-key'] = elKeySfx
     const res = await fetch('/api/elevenlabs/sound-effect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: sfxHeaders,
       body: JSON.stringify({ text: description, duration_seconds: 3, prompt_influence: 0.5 }),
       signal,
     })
@@ -1401,7 +1419,7 @@ export function useRealtimeVoice(opts: UseRealtimeVoiceOptions = {}): UseRealtim
       const aLen = c.length - (c.length % 2)
       if (aLen > 0) {
         const pcmSlice = c.slice(0, aLen)
-        playPcm(new Int16Array(pcmSlice.buffer))
+        await playPcm(new Int16Array(pcmSlice.buffer))
       }
       lo = c.slice(aLen)
     }
@@ -1675,6 +1693,13 @@ Assistant: ${ai || ''}`
     streamRef.current = stream
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
     capCtxRef.current = ctx
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume()
+      } catch (e) {
+        console.warn('[voice] capture AudioContext.resume failed:', e)
+      }
+    }
     const captureRate = ctx.sampleRate
     const src = ctx.createMediaStreamSource(stream)
     const proc = ctx.createScriptProcessor(2048, 1, 1) // NOSONAR -- AudioWorklet requires separate module file
@@ -1719,7 +1744,10 @@ Assistant: ${ai || ''}`
       }
     }
     src.connect(proc)
-    proc.connect(ctx.destination)
+    const capMute = ctx.createGain()
+    capMute.gain.value = 0
+    proc.connect(capMute)
+    capMute.connect(ctx.destination)
   }, [sendVoiceAnalysis])
 
   const stopMic = useCallback(() => {
@@ -1808,7 +1836,9 @@ Assistant: ${ai || ''}`
       case 'response.audio.delta':
         if (!isElRef.current && msg.delta) {
           setS('speaking')
-          playPcm(b64ToInt16(msg.delta as string))
+          void playPcm(b64ToInt16(msg.delta as string)).catch((e) =>
+            console.warn('[voice] playPcm failed:', e),
+          )
         }
         break
 
@@ -2183,22 +2213,36 @@ Assistant: ${ai || ''}`
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, limit: 5 }),
           })
-            .then(r => r.json())
-            .then((data: { results?: Array<{ document_title: string; content: string; similarity: number }> }) => {
+            .then(async (r) => {
+              const data = (await r.json()) as {
+                results?: Array<{ document_title: string; content: string; similarity: number }>
+                error?: { message?: string }
+              }
+              if (!r.ok) {
+                const msg =
+                  data.error?.message ||
+                  (r.status === 503
+                    ? 'Knowledge base unavailable — use Jarvis Electron (npm run desktop:dev) with DATABASE_URL, or wait for DB to finish starting.'
+                    : `Knowledge base error (${r.status}).`)
+                return { ok: false as const, output: msg }
+              }
               const results = data.results ?? []
               let output: string
               if (results.length === 0) {
                 output = 'No relevant documents found in the knowledge base for: ' + query
               } else {
                 output = results
-                  .map((r, i) => `${i + 1}. [${r.document_title}] (relevance: ${Math.round(r.similarity * 100)}%)\n${r.content}`)
+                  .map((row, i) => `${i + 1}. [${row.document_title}] (relevance: ${Math.round(row.similarity * 100)}%)\n${row.content}`)
                   .join('\n---\n')
               }
+              return { ok: true as const, output }
+            })
+            .then((payload) => {
+              if (!payload) return
               const ws = wsRef.current
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
-                ws.send(JSON.stringify({ type: 'response.create' }))
-              }
+              if (ws?.readyState !== WebSocket.OPEN) return
+              ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: payload.output } }))
+              ws.send(JSON.stringify({ type: 'response.create' }))
             })
             .catch(() => {
               const ws = wsRef.current

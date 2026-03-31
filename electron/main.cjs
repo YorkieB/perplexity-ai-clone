@@ -1047,6 +1047,44 @@ function loadEnvFromFile() {
   }
 }
 
+/** Child process when `JARVIS_VISION_ENGINE_COMMAND` is set — stopped on app quit. */
+let visionEngineChild = null
+
+function startJarvisVisionEngineIfConfigured() {
+  const cmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  if (!cmd) return
+  if (visionEngineChild && !visionEngineChild.killed) return
+  try {
+    visionEngineChild = spawn(cmd, {
+      cwd: PROJECT_ROOT,
+      stdio: 'inherit',
+      shell: true,
+      env: { ...process.env },
+    })
+    visionEngineChild.on('exit', (code, signal) => {
+      console.warn('[vision-engine] process exited', { code, signal: signal || '' })
+      visionEngineChild = null
+    })
+    visionEngineChild.on('error', (err) => {
+      console.error('[vision-engine] spawn error:', err.message)
+      visionEngineChild = null
+    })
+    console.info('[vision-engine] started (JARVIS_VISION_ENGINE_COMMAND)')
+  } catch (e) {
+    console.error('[vision-engine] failed to start:', e instanceof Error ? e.message : e)
+  }
+}
+
+function stopJarvisVisionEngine() {
+  if (!visionEngineChild || visionEngineChild.killed) return
+  try {
+    visionEngineChild.kill('SIGTERM')
+  } catch (e) {
+    console.warn('[vision-engine] stop:', e instanceof Error ? e.message : e)
+  }
+  visionEngineChild = null
+}
+
 function getEnv() {
   loadEnvFromFile()
   return process.env
@@ -1813,11 +1851,19 @@ async function handleTuneInOpmlProxy(req, res) {
 async function handleElevenLabsStreamingTts(req, res) {
   const env = getEnv()
   const elKey =
+    getXiApiKeyFromReq(req) ||
     (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY in .env' } }))
+    res.end(
+      JSON.stringify({
+        error: {
+          message:
+            'Missing ElevenLabs API key: add ELEVENLABS_API_KEY to .env or paste your key under Settings → API Keys.',
+        },
+      }),
+    )
     return
   }
 
@@ -2308,33 +2354,70 @@ async function handleLearningStatsGet(_req, res) {
   }
 }
 
-/** Proxy /api/vision/* requests to the Jarvis Visual Engine at localhost:5000 */
+/** Base URL for the Jarvis Visual Engine HTTP API (no trailing slash). Override when the engine runs elsewhere. */
+function getVisionEngineBaseUrl() {
+  const raw = String(process.env.VISION_ENGINE_URL || process.env.JARVIS_VISION_ENGINE_URL || 'http://127.0.0.1:5000').trim()
+  return raw.replace(/\/$/, '')
+}
+
+/**
+ * Hint for which webcam to open (substring match on OS device label, e.g. "eMeet").
+ * Order: `VISION_CAMERA_LABEL` / `JARVIS_CAMERA_LABEL` in env → incoming `x-jarvis-camera-label` → `emeet`.
+ * The Visual Engine should read `X-Jarvis-Camera-Label` when selecting a capture device.
+ */
+function resolveVisionCameraLabel(req) {
+  const fromEnv = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || '').trim()
+  if (fromEnv) return fromEnv
+  const incoming = req.headers['x-jarvis-camera-label']
+  if (incoming) {
+    const s = Array.isArray(incoming) ? incoming[0] : String(incoming)
+    const t = s.trim()
+    if (t) return t
+  }
+  return 'emeet'
+}
+
+/**
+ * Proxy `/api/vision/*` → `{base}/api/v1/*` (live engine only — no placeholder responses).
+ * Set `VISION_ENGINE_URL` / `JARVIS_VISION_ENGINE_URL` if the engine is not on 127.0.0.1:5000.
+ */
 async function handleVisionProxy(req, res) {
+  const urlPath = req.url?.split('?')[0] || '/'
+  const q = req.url?.indexOf('?')
+  const search = q !== undefined && q >= 0 ? req.url.slice(q) : ''
+  const targetPath = urlPath.replace(/^\/api\/vision/, '/api/v1')
+  const targetUrl = getVisionEngineBaseUrl() + targetPath + search
+
+  const headers = { ...req.headers, 'X-API-Key': process.env.VISION_API_KEY || 'jarvis-vision-local' }
+  delete headers.host
+  headers['x-jarvis-camera-label'] = resolveVisionCameraLabel(req)
+
+  let body = null
+  if (req.method === 'POST' || req.method === 'PUT') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    body = Buffer.concat(chunks)
+  }
+
+  const fetchOpts = { method: req.method, headers }
+  if (body) fetchOpts.body = body
+
   try {
-    const urlPath = req.url?.split('?')[0] || '/'
-    const targetPath = urlPath.replace(/^\/api\/vision/, '/api/v1')
-    const targetUrl = 'http://localhost:5000' + targetPath
-
-    const headers = { ...req.headers, 'X-API-Key': process.env.VISION_API_KEY || 'jarvis-vision-local' }
-    delete headers.host
-
-    let body = null
-    if (req.method === 'POST' || req.method === 'PUT') {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      body = Buffer.concat(chunks)
-    }
-
-    const fetchOpts = { method: req.method, headers }
-    if (body) fetchOpts.body = body
-
     const upstream = await fetch(targetUrl, fetchOpts)
     res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' })
     const data = await upstream.arrayBuffer()
     res.end(Buffer.from(data))
   } catch (e) {
-    res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Vision proxy error' }))
+    const base = getVisionEngineBaseUrl()
+    console.warn('[vision-proxy] live engine unreachable at', base + ':', e instanceof Error ? e.message : e)
+    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(
+      JSON.stringify({
+        error: {
+          message: `Jarvis Visual Engine not reachable at ${base}. Start the engine and ensure VISION_ENGINE_URL matches.`,
+        },
+      }),
+    )
   }
 }
 
@@ -2640,7 +2723,10 @@ async function handleRagSearch(req, res) {
       return
     }
     const embedding = await ragDb.embedSingle(query)
-    const results = await ragDb.searchSimilar(embedding, body.limit || 5, body.threshold || 0.3)
+    const lim = typeof body.limit === 'number' && body.limit > 0 ? body.limit : 5
+    const thr =
+      typeof body.threshold === 'number' && !Number.isNaN(body.threshold) ? body.threshold : 0.3
+    const results = await ragDb.searchSimilar(embedding, lim, thr)
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ results }))
@@ -2830,9 +2916,11 @@ async function handleRagDocumentDelete(req, res, docId) {
   }
 }
 
-async function handleElevenLabsMyVoices(_req, res) {
+async function handleElevenLabsMyVoices(req, res) {
   const env = getEnv()
-  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey =
+    getXiApiKeyFromReq(req) ||
+    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -2856,7 +2944,9 @@ async function handleElevenLabsMyVoices(_req, res) {
 
 async function handleElevenLabsSharedVoices(req, res) {
   const env = getEnv()
-  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey =
+    getXiApiKeyFromReq(req) ||
+    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -2882,7 +2972,9 @@ async function handleElevenLabsSharedVoices(req, res) {
 
 async function handleElevenLabsSoundEffect(req, res) {
   const env = getEnv()
-  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey =
+    getXiApiKeyFromReq(req) ||
+    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -3685,6 +3777,7 @@ async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP 
 
 const { tokenGenerate } = require('@vonage/jwt')
 const vonageShared = require(path.join(__dirname, '..', 'scripts', 'vonage-voice-shared.cjs'))
+const vonageWebhookVerify = require(path.join(__dirname, '..', 'scripts', 'vonage-webhook-verify.cjs'))
 
 async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-call validation + NCCO branch
   const env = getEnv()
@@ -3785,6 +3878,110 @@ async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-cal
     res.statusCode = 502; res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Vonage Voice error' } }))
   }
+}
+
+/** Log once when inbound Vonage webhooks are accepted without `VONAGE_SIGNATURE_SECRET` (Tier 5). */
+let vonageInboundWebhookUnsignedLogged = false
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @param {Buffer} rawBody
+ * @param {Record<string, string>} env
+ * @returns {{ ok: true } | { ok: false, status: number, body: object }}
+ */
+function checkVonageInboundWebhook(req, rawBody, env) {
+  const secret = (env.VONAGE_SIGNATURE_SECRET || '').trim()
+  const token = vonageWebhookVerify.getVonageWebhookJwt(req)
+  if (!secret) {
+    if (!vonageInboundWebhookUnsignedLogged) {
+      vonageInboundWebhookUnsignedLogged = true
+      console.warn(
+        '[vonage] Inbound webhooks: VONAGE_SIGNATURE_SECRET not set — requests are not verified (Tier 5).',
+      )
+    }
+    return { ok: true }
+  }
+  if (!token) {
+    return {
+      ok: false,
+      status: 401,
+      body: {
+        error: {
+          message: 'Missing signed webhook JWT (Authorization: Bearer or Vonage-Signature).',
+        },
+      },
+    }
+  }
+  const v = vonageWebhookVerify.verifyVonageSignedWebhook({
+    rawBody,
+    token,
+    signatureSecret: secret,
+  })
+  if (!v.ok) {
+    return {
+      ok: false,
+      status: 401,
+      body: { error: { message: `Webhook verification failed: ${v.reason}` } },
+    }
+  }
+  return { ok: true }
+}
+
+async function handleVonageWebhookAnswer(req, res) {
+  const env = getEnv()
+  let rawBody = Buffer.alloc(0)
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    rawBody = await readBodyRaw(req)
+  }
+  const gate = checkVonageInboundWebhook(req, rawBody, env)
+  if (!gate.ok) {
+    res.statusCode = gate.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(gate.body))
+    return
+  }
+  const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
+  /** @type {Array<Record<string, unknown>>} */
+  let ncco
+  if (wsUri) {
+    ncco = [
+      {
+        action: 'connect',
+        endpoint: [
+          {
+            type: 'websocket',
+            uri: wsUri,
+            'content-type': 'audio/l16;rate=16000',
+          },
+        ],
+      },
+    ]
+  } else {
+    ncco = [
+      {
+        action: 'talk',
+        text: 'Jarvis voice bridge is not configured. Set VONAGE_PUBLIC_WS_URL and run the AI voice bridge.',
+        language: 'en-GB',
+      },
+    ]
+  }
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify(ncco))
+}
+
+async function handleVonageWebhookEvent(req, res) {
+  const env = getEnv()
+  const rawBody = await readBodyRaw(req)
+  const gate = checkVonageInboundWebhook(req, rawBody, env)
+  if (!gate.ok) {
+    res.statusCode = gate.status
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(gate.body))
+    return
+  }
+  res.statusCode = 204
+  res.end()
 }
 
 /** @type {{ text: string; at: number } | null} */
@@ -4284,6 +4481,9 @@ async function handleVonageSms(req, res) {
 const exactRoutes = [
   { method: 'POST', path: '/api/vonage/sms', handler: handleVonageSms },
   { method: 'POST', path: '/api/vonage/call', handler: handleVonageVoiceCall },
+  { method: 'GET', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
+  { method: 'POST', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
+  { method: 'POST', path: '/api/vonage/webhook/event', handler: handleVonageWebhookEvent },
   { method: 'POST', path: '/api/x/tweet', handler: handleXTweet },
   { method: 'POST', path: '/api/plaid/link-token', handler: handlePlaidLinkToken },
   { method: 'POST', path: '/api/plaid/exchange', handler: handlePlaidExchange },
@@ -4669,6 +4869,7 @@ app.whenReady().then(() => {
   })
 
   loadEnvFromFile()
+  startJarvisVisionEngineIfConfigured()
   registerJarvisOrchestratorIpc()
   void startJarvisOrchestrator()
   try {
@@ -4715,6 +4916,10 @@ app.on('before-quit', (e) => {
   void shutdownJarvisOrchestratorAsync().finally(() => {
     app.quit()
   })
+})
+
+app.on('will-quit', () => {
+  stopJarvisVisionEngine()
 })
 
 app.on('window-all-closed', () => {

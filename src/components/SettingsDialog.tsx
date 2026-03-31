@@ -219,7 +219,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const loadMyVoices = useCallback(async () => {
     if (myVoicesLoaded) return
     try {
-      const res = await fetch('/api/elevenlabs/my-voices')
+      const el = settings?.apiKeys?.elevenLabs?.trim()
+      const res = await fetch('/api/elevenlabs/my-voices', {
+        headers: el ? { 'xi-api-key': el } : {},
+      })
       if (res.ok) {
         const data = await res.json()
         setMyVoices(data.voices ?? [])
@@ -228,14 +231,17 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     } catch (e) {
       console.warn('Failed to load ElevenLabs voices:', e)
     }
-  }, [myVoicesLoaded])
+  }, [myVoicesLoaded, settings?.apiKeys?.elevenLabs])
 
   const searchSharedVoices = useCallback(async (query: string) => {
     setVoicesLoading(true)
     try {
       const params = new URLSearchParams({ page_size: '20' })
       if (query.trim()) params.set('search', query.trim())
-      const res = await fetch(`/api/elevenlabs/voices?${params}`)
+      const el = settings?.apiKeys?.elevenLabs?.trim()
+      const res = await fetch(`/api/elevenlabs/voices?${params}`, {
+        headers: el ? { 'xi-api-key': el } : {},
+      })
       if (res.ok) {
         const data = await res.json()
         setSearchResults(data.voices ?? [])
@@ -245,7 +251,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     } finally {
       setVoicesLoading(false)
     }
-  }, [])
+  }, [settings?.apiKeys?.elevenLabs])
 
   const handleVoiceSearchChange = useCallback((value: string) => {
     setVoiceSearch(value)

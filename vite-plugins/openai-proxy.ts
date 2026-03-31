@@ -27,10 +27,77 @@ import { tokenGenerate } from '@vonage/jwt'
 
 const requireVonage = createRequire(import.meta.url)
 const _pluginDir = dirname(fileURLToPath(import.meta.url))
+
+/** Same module as Electron — one schema, one `user_facts` / learning store (see `JARVIS_DB_PATH`). */
+const jarvisDb = requireVonage(join(_pluginDir, '..', 'electron', 'jarvis-db.cjs')) as {
+  loadLongTermMemory: (projectRoot?: string) => unknown[]
+  loadShortTermMemory: (projectRoot?: string) => unknown[]
+  loadConversationSummaries: (limit: number, projectRoot?: string) => unknown[]
+  createConversation: (projectRoot?: string) => string
+  addFacts: (facts: Array<{ category: string; fact: string; source?: string }>, projectRoot?: string) => void
+  saveMessages: (
+    conversationId: string,
+    messages: Array<{ role: string; content: string }>,
+    projectRoot?: string,
+  ) => void
+  getConversationMessages: (
+    conversationId: string,
+    projectRoot?: string,
+  ) => Array<{ role: string; content: string }>
+  saveConversationSummary: (
+    conversationId: string,
+    summary: string,
+    topics: string,
+    projectRoot?: string,
+  ) => void
+  buildLearnedContext: (projectRoot?: string) => string
+  savePreference: (domain: string, key: string, value: string, projectRoot?: string) => void
+  saveCorrection: (
+    category: string,
+    mistake: string,
+    correction: string,
+    context: unknown,
+    projectRoot?: string,
+  ) => void
+  savePattern: (
+    patternType: string,
+    description: string,
+    metadata: unknown,
+    projectRoot?: string,
+  ) => void
+  saveKnowledge: (topic: string, content: string, source: string | undefined, projectRoot?: string) => void
+  saveToolOutcome: (
+    toolName: string,
+    queryType: string | null,
+    success: boolean,
+    executionTimeMs: number | null,
+    errorMessage: string | null,
+    projectRoot?: string,
+  ) => void
+  getLearningStats: (projectRoot?: string) => Record<string, number>
+  loadPreferences: (
+    minConfidence: number,
+    projectRoot?: string,
+  ) => Array<{ domain: string; key: string; value: string }>
+  loadCorrections: (limit: number, projectRoot?: string) => unknown[]
+  loadPatterns: (projectRoot?: string) => unknown[]
+  loadAllKnowledge: (limit: number, projectRoot?: string) => unknown[]
+  getToolStats: (projectRoot?: string) => unknown[]
+}
 const vonageShared = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-voice-shared.cjs')) as {
   normalizeVonagePhoneDigits: (raw: string) => string
   loadVonagePrivateKeyPem: (env: Record<string, string>) => string
   buildVonageAiVoiceWebSocketUri: (env: Record<string, string>) => string | null
+}
+
+const vonageWebhookVerify = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-webhook-verify.cjs')) as {
+  getVonageWebhookJwt: (req: Connect.IncomingMessage) => string
+  verifyVonageSignedWebhook: (opts: {
+    rawBody: Buffer
+    token: string
+    signatureSecret: string
+    maxSkewSec?: number
+  }) => { ok: true; payload: Record<string, unknown> } | { ok: false; reason: string }
 }
 
 const elevenLabsSharedVoices = requireVonage(join(_pluginDir, '..', 'scripts', 'elevenlabs-shared-voices-query.cjs')) as {
@@ -192,6 +259,13 @@ function getXiApiKeyFromReqHeader(req: Connect.IncomingMessage): string | null {
   return t || null
 }
 
+/** Prefer client `xi-api-key` (Settings), then server `.env` — same pattern as `/api/tts` ElevenLabs branch. */
+function resolveElevenLabsApiKey(req: Connect.IncomingMessage, env: Record<string, string>): string {
+  return (
+    getXiApiKeyFromReqHeader(req) || (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  )
+}
+
 /** Max chars of upstream error detail exposed to the client (avoid echoing HTML blobs). */
 const TTS_UPSTREAM_ERROR_MAX = 512
 
@@ -305,7 +379,322 @@ function mergeRealtimeSessionBody(raw: string): typeof defaultRealtimeSession {
   return defaultRealtimeSession
 }
 
-function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.Server) {
+/**
+ * Full Jarvis SQLite memory API for Vite dev (parity with `electron/main.cjs`).
+ * Uses `electron/jarvis-db.cjs` so facts, learning, and summaries share one DB file with the desktop app.
+ */
+async function tryHandleJarvisMemoryApi(
+  path: string | undefined,
+  method: string | undefined,
+  req: Connect.IncomingMessage,
+  res: ServerResponse,
+  projectRoot: string,
+  getEnv: () => Record<string, string>,
+): Promise<boolean> {
+  if (!path?.startsWith('/api/jarvis-memory')) return false
+
+  const jsonErr = (status: number, msg: string) => {
+    res.statusCode = status
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: msg } }))
+  }
+
+  try {
+    if (path === '/api/jarvis-memory/learned-context' && method === 'GET') {
+      const context = jarvisDb.buildLearnedContext(projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ context }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory/learn' && method === 'POST') {
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as {
+        preferences?: Array<{ domain?: string; key?: string; value?: string }>
+        corrections?: Array<{ category?: string; mistake?: string; correction?: string; context?: unknown }>
+        patterns?: Array<{ pattern_type?: string; description?: string; metadata?: unknown }>
+        knowledge?: Array<{ topic?: string; content?: string; source?: string }>
+      }
+      if (body.preferences) {
+        for (const p of body.preferences) {
+          if (p.domain && p.key && p.value) jarvisDb.savePreference(p.domain, p.key, p.value, projectRoot)
+        }
+      }
+      if (body.corrections) {
+        for (const c of body.corrections) {
+          if (c.category && c.mistake && c.correction)
+            jarvisDb.saveCorrection(c.category, c.mistake, c.correction, c.context, projectRoot)
+        }
+      }
+      if (body.patterns) {
+        for (const p of body.patterns) {
+          if (p.pattern_type && p.description)
+            jarvisDb.savePattern(p.pattern_type, p.description, p.metadata, projectRoot)
+        }
+      }
+      if (body.knowledge) {
+        for (const k of body.knowledge) {
+          if (k.topic && k.content) jarvisDb.saveKnowledge(k.topic, k.content, k.source, projectRoot)
+        }
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory/track-tool' && method === 'POST') {
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as {
+        tool_name?: string
+        query_type?: string
+        success?: boolean
+        execution_time_ms?: number
+        error_message?: string | null
+      }
+      jarvisDb.saveToolOutcome(
+        body.tool_name || 'unknown',
+        body.query_type || null,
+        body.success !== false,
+        body.execution_time_ms ?? null,
+        body.error_message ?? null,
+        projectRoot,
+      )
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory/learning-stats' && method === 'GET') {
+      const stats = jarvisDb.getLearningStats(projectRoot)
+      const preferences = jarvisDb.loadPreferences(0.2, projectRoot)
+      const corrections = jarvisDb.loadCorrections(15, projectRoot)
+      const patterns = jarvisDb.loadPatterns(projectRoot)
+      const knowledge = jarvisDb.loadAllKnowledge(20, projectRoot)
+      const tool_stats = jarvisDb.getToolStats(projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ stats, preferences, corrections, patterns, knowledge, tool_stats }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory/extract' && method === 'POST') {
+      const env = getEnv()
+      const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+      if (!key) {
+        jsonErr(500, 'Missing OPENAI_API_KEY')
+        return true
+      }
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as { userText?: string; aiText?: string }
+      if (!body.userText) {
+        jsonErr(400, 'userText required')
+        return true
+      }
+      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(
+        /\/$/,
+        '',
+      )
+      const prompt =
+        'You are a fact-extraction engine. Given a user-assistant exchange, extract personal facts about the user (preferences, name, occupation, habits, interests, relationships, etc.). Return ONLY a JSON array of objects with "category" and "fact" fields. If no facts, return [].\n\nUser said: "' +
+        body.userText +
+        '"\nAssistant said: "' +
+        (body.aiText || '') +
+        '"\n\nReturn JSON array only, no markdown, no explanation.'
+      const upstream = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+        }),
+      })
+      if (!upstream.ok) {
+        const errText = await upstream.text().catch(() => '')
+        jsonErr(upstream.status, errText)
+        return true
+      }
+      const result = (await upstream.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      const content = result.choices?.[0]?.message?.content || '[]'
+      let facts: Array<{ category: string; fact: string }> = []
+      try {
+        const parsed = JSON.parse(content) as unknown
+        facts = Array.isArray(parsed) ? (parsed as typeof facts) : ((parsed as { facts?: typeof facts }).facts || [])
+      } catch {
+        /* ignored */
+      }
+      if (facts.length > 0) jarvisDb.addFacts(facts, projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ extracted: facts.length, facts }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory/summarize' && method === 'POST') {
+      const env = getEnv()
+      const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
+      if (!key) {
+        jsonErr(500, 'Missing OPENAI_API_KEY')
+        return true
+      }
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as { conversationId?: string }
+      if (!body.conversationId) {
+        jsonErr(400, 'conversationId required')
+        return true
+      }
+      const msgs = jarvisDb.getConversationMessages(body.conversationId, projectRoot)
+      if (msgs.length === 0) {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify({ ok: true, summary: null }))
+        return true
+      }
+      const transcript = msgs.map((m) => m.role + ': ' + m.content).join('\n')
+      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(
+        /\/$/,
+        '',
+      )
+      const prompt =
+        'Summarize this voice conversation in 2-3 sentences. Also extract 1-5 topic keywords. Return JSON with "summary" (string) and "topics" (comma-separated string).\n\nConversation:\n' +
+        transcript +
+        '\n\nReturn JSON only, no markdown.'
+      const upstream = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2,
+          response_format: { type: 'json_object' },
+        }),
+      })
+      if (!upstream.ok) {
+        const errText = await upstream.text().catch(() => '')
+        jsonErr(upstream.status, errText)
+        return true
+      }
+      const result = (await upstream.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      const content = result.choices?.[0]?.message?.content || '{}'
+      let parsed: { summary?: string; topics?: string } = {}
+      try {
+        parsed = JSON.parse(content) as typeof parsed
+      } catch {
+        /* ignored */
+      }
+      if (parsed.summary)
+        jarvisDb.saveConversationSummary(body.conversationId, parsed.summary, parsed.topics || '', projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true, summary: parsed.summary || null, topics: parsed.topics || '' }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory' && method === 'GET') {
+      const facts = jarvisDb.loadLongTermMemory(projectRoot)
+      const recentTurns = jarvisDb.loadShortTermMemory(projectRoot)
+      const summaries = jarvisDb.loadConversationSummaries(5, projectRoot)
+      const conversationId = jarvisDb.createConversation(projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ conversationId, facts, recentTurns, summaries }))
+      return true
+    }
+
+    if (path === '/api/jarvis-memory' && method === 'POST') {
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as {
+        facts?: Array<{ category: string; fact: string; source?: string }>
+        conversationId?: string
+        messages?: Array<{ role: string; content: string }>
+      }
+      if (Array.isArray(body.facts) && body.facts.length > 0) {
+        jarvisDb.addFacts(body.facts, projectRoot)
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify({ ok: true, saved: body.facts.length }))
+        return true
+      }
+      const { conversationId, messages } = body
+      if (!conversationId || !Array.isArray(messages)) {
+        jsonErr(400, 'conversationId and messages[] required')
+        return true
+      }
+      jarvisDb.saveMessages(conversationId, messages, projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true }))
+      return true
+    }
+
+    res.statusCode = 404
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: 'Unknown jarvis-memory route' } }))
+    return true
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(
+      JSON.stringify({
+        error: { message: e instanceof Error ? e.message : 'Jarvis memory error' },
+      }),
+    )
+    return true
+  }
+}
+
+function attachProxy(
+  getEnv: () => Record<string, string>,
+  middlewares: Connect.Server,
+  projectRoot: string,
+) {
+  let vonageInboundWebhookUnsignedLogged = false
+  function checkVonageInboundWebhook(
+    req: Connect.IncomingMessage,
+    rawBody: Buffer,
+    env: Record<string, string>,
+  ): { ok: true } | { ok: false; status: number; body: { error: { message: string } } } {
+    const secret = (env.VONAGE_SIGNATURE_SECRET || '').trim()
+    const token = vonageWebhookVerify.getVonageWebhookJwt(req)
+    if (!secret) {
+      if (!vonageInboundWebhookUnsignedLogged) {
+        vonageInboundWebhookUnsignedLogged = true
+        console.warn(
+          '[vonage] Inbound webhooks: VONAGE_SIGNATURE_SECRET not set — requests are not verified (Tier 5).',
+        )
+      }
+      return { ok: true }
+    }
+    if (!token) {
+      return {
+        ok: false,
+        status: 401,
+        body: {
+          error: {
+            message: 'Missing signed webhook JWT (Authorization: Bearer or Vonage-Signature).',
+          },
+        },
+      }
+    }
+    const v = vonageWebhookVerify.verifyVonageSignedWebhook({
+      rawBody,
+      token,
+      signatureSecret: secret,
+    })
+    if (!v.ok) {
+      return {
+        ok: false,
+        status: 401,
+        body: { error: { message: `Webhook verification failed: ${v.reason}` } },
+      }
+    }
+    return { ok: true }
+  }
+
   middlewares.use(async (req: Connect.IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => {
     const path = req.url?.split('?')[0]
 
@@ -385,35 +774,83 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       return
     }
 
+    if (await tryHandleJarvisMemoryApi(path, req.method, req, res, projectRoot, getEnv)) return
+
     /**
-     * Electron proxies /api/vision/* to Jarvis Visual Engine :5000. Plain Vite dev has no engine —
-     * return a minimal OK payload so voice mode gets hasVision and does not parrot "camera offline".
+     * RAG (pgvector + Spaces) is implemented only in Electron `main.cjs`.
+     * Plain Vite dev would otherwise fall through to SPA and break JSON clients.
      */
-    if (path === '/api/vision/context' && req.method === 'GET') {
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json')
+    if (path?.startsWith('/api/rag/')) {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
       res.end(
         JSON.stringify({
-          connected: true,
-          camera_connected: true,
-          scene_description:
-            'Vite dev placeholder: start Jarvis Visual Engine (port 5000) or use Electron (npm run desktop) for a live camera feed.',
-          frames_processed: 0,
-          last_updated: new Date().toISOString(),
+          error: {
+            message:
+              'Knowledge base (RAG) API runs in the Jarvis Electron app with DATABASE_URL in .env. Use `npm run desktop:dev` or `npm run desktop` (not plain `npm run dev` in the browser) for rag_search and document tools.',
+          },
+          results: [],
         }),
       )
       return
     }
 
-    if (path === '/api/vision/analyze' && req.method === 'POST') {
-      try {
-        await readBody(req)
-      } catch {
-        /* ignore */
+    /**
+     * Live proxy: `/api/vision/*` → `VISION_ENGINE_URL` (default `http://127.0.0.1:5000`) + `/api/v1/*`.
+     * Same mapping as Electron — no stub responses; start the Jarvis Visual Engine for real frames.
+     */
+    if (path?.startsWith('/api/vision/')) {
+      const env = getEnv()
+      const base = (env.VISION_ENGINE_URL || env.JARVIS_VISION_ENGINE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '')
+      const targetPath = path.replace(/^\/api\/vision/, '/api/v1')
+      const qs = req.url?.includes('?') ? `?${req.url.split('?')[1] || ''}` : ''
+      const targetUrl = `${base}${targetPath}${qs}`
+      const apiKey = env.VISION_API_KEY || 'jarvis-vision-local'
+      const fromEnv = String(env.VISION_CAMERA_LABEL || env.JARVIS_CAMERA_LABEL || '').trim()
+      const incoming = req.headers['x-jarvis-camera-label']
+      const incomingStr = incoming
+        ? String(Array.isArray(incoming) ? incoming[0] : incoming).trim()
+        : ''
+      const cameraLabel = fromEnv || incomingStr || 'emeet'
+      let bodyBuf: Buffer | undefined
+      if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+        try {
+          bodyBuf = await readBodyRaw(req)
+        } catch (e) {
+          if (isRequestBodyTooLargeError(e)) {
+            res.statusCode = 413
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+            return
+          }
+          throw e
+        }
       }
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: true, stub: true }))
+      try {
+        const upstream = await fetch(targetUrl, {
+          method: req.method || 'GET',
+          headers: {
+            ...(req.headers['content-type'] ? { 'Content-Type': String(req.headers['content-type']) } : {}),
+            'X-API-Key': apiKey,
+            'X-Jarvis-Camera-Label': cameraLabel,
+          },
+          body: bodyBuf && bodyBuf.length > 0 ? bodyBuf : undefined,
+        })
+        res.statusCode = upstream.status
+        const ct = upstream.headers.get('content-type')
+        if (ct) res.setHeader('Content-Type', ct)
+        res.end(Buffer.from(await upstream.arrayBuffer()))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(
+          JSON.stringify({
+            error: {
+              message: `Jarvis Visual Engine not reachable at ${base}. Start the engine and set VISION_ENGINE_URL if it runs elsewhere.`,
+            },
+          }),
+        )
+      }
       return
     }
 
@@ -738,7 +1175,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
     // ── ElevenLabs voice library (dev proxy) ──
     if (path === '/api/elevenlabs/my-voices' && req.method === 'GET') {
       const env = getEnv()
-      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+      const elKey = resolveElevenLabsApiKey(req, env)
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -761,7 +1198,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
 
     if (path === '/api/elevenlabs/voices' && req.method === 'GET') {
       const env = getEnv()
-      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+      const elKey = resolveElevenLabsApiKey(req, env)
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -790,7 +1227,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
     // ── ElevenLabs sound effects (dev proxy) ──
     if (path === '/api/elevenlabs/sound-effect' && req.method === 'POST') {
       const env = getEnv()
-      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+      const elKey = resolveElevenLabsApiKey(req, env)
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -841,11 +1278,18 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
     // ── ElevenLabs streaming TTS (PCM) — matches `handleElevenLabsStreamingTts` in electron/main.cjs
     if (path === '/api/elevenlabs-tts' && req.method === 'POST') {
       const env = getEnv()
-      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+      const elKey = resolveElevenLabsApiKey(req, env)
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY' } }))
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                'Missing ElevenLabs API key: add ELEVENLABS_API_KEY to .env or paste your key under Settings → API Keys.',
+            },
+          }),
+        )
         return
       }
       try {
@@ -939,9 +1383,7 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       }
 
       if (parsed?.provider === 'elevenlabs') {
-        const xiKey =
-          getXiApiKeyFromReqHeader(req) ||
-          (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+        const xiKey = resolveElevenLabsApiKey(req, env)
         const voiceId =
           String(parsed.voice_id || '').trim() ||
           (env.ELEVENLABS_VOICE_ID || env.VITE_ELEVENLABS_VOICE_ID || '').trim()
@@ -1609,6 +2051,61 @@ function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.
       return
     }
 
+    // ── Vonage inbound webhooks (Tier 5 — signed JWT) ──
+    if (
+      (path === '/api/vonage/webhook/answer' && (req.method === 'GET' || req.method === 'POST')) ||
+      (path === '/api/vonage/webhook/event' && req.method === 'POST')
+    ) {
+      try {
+        const env = getEnv()
+        let rawBody = Buffer.alloc(0)
+        if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+          rawBody = await readBodyRaw(req)
+        }
+        const gate = checkVonageInboundWebhook(req, rawBody, env)
+        if (!gate.ok) {
+          res.statusCode = gate.status
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(gate.body))
+          return
+        }
+        if (path === '/api/vonage/webhook/event') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+        const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
+        const ncco = wsUri
+          ? [
+              {
+                action: 'connect',
+                endpoint: [
+                  {
+                    type: 'websocket',
+                    uri: wsUri,
+                    'content-type': 'audio/l16;rate=16000',
+                  },
+                ],
+              },
+            ]
+          : [
+              {
+                action: 'talk',
+                text: 'Jarvis voice bridge is not configured. Set VONAGE_PUBLIC_WS_URL and run the AI voice bridge.',
+                language: 'en-GB',
+              },
+            ]
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify(ncco))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
+      }
+      return
+    }
+
     // ── Story library proxy ──
     if (path === '/api/stories/search' && req.method === 'GET') {
       const params = new URL(req.url || '', 'http://localhost').searchParams
@@ -1937,13 +2434,15 @@ export function openaiProxyPlugin(): Plugin {
     configureServer(server) {
       attachProxy(
         () => loadEnv(server.config.mode, server.config.envDir, ''),
-        server.middlewares
+        server.middlewares,
+        server.config.root,
       )
     },
     configurePreviewServer(server) {
       attachProxy(
         () => loadEnv(server.config.mode, server.config.envDir, ''),
-        server.middlewares
+        server.middlewares,
+        server.config.root,
       )
     },
   }

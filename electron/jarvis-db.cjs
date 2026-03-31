@@ -5,7 +5,13 @@ const { mkdirSync, existsSync } = require('node:fs')
 
 let _db = null
 
+/**
+ * Stable path for both Electron and Vite dev. Set `JARVIS_DB_PATH` to an absolute path (or path
+ * relative to `process.cwd()`) so browser dev and desktop always share one file.
+ */
 function dbPath(projectRoot) {
+  const fromEnv = String(process.env.JARVIS_DB_PATH || '').trim()
+  if (fromEnv) return resolve(fromEnv)
   const root = projectRoot || resolve(dirname(__filename), '..')
   return resolve(root, 'data', 'jarvis.db')
 }
@@ -18,6 +24,7 @@ function getDb(projectRoot) {
   _db = new Database(p)
   _db.pragma('journal_mode = WAL')
   _db.pragma('foreign_keys = ON')
+  _db.pragma('busy_timeout = 8000')
   _db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
       id         TEXT PRIMARY KEY,

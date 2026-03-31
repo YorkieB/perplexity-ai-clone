@@ -10,6 +10,9 @@
  *
  * Wire-only (no API key required — checks dev server + proxy routes exist):
  *   SMOKE_WIRE_ONLY=1 npm run smoke
+ *
+ * Also verifies Vonage proxy routes (Tier 5 webhooks + SMS route reachable):
+ *   GET /api/vonage/webhook/answer, POST /api/vonage/webhook/event, POST /api/vonage/sms
  */
 
 import { WebSocket } from 'ws'
@@ -62,6 +65,43 @@ async function smokeVoiceReady() {
     process.exit(1)
   }
   console.log(`✓ GET /api/realtime/voice-ready → ${res.status}`)
+}
+
+/** Vonage routes via Vite proxy / Electron — no carrier credentials required for these checks. */
+async function smokeVonageRoutes() {
+  console.log('\nVonage proxy (SMS + webhooks) …')
+
+  const ans = await fetchJson(`${base}/api/vonage/webhook/answer`, { method: 'GET' })
+  if (!ans.res.ok || !Array.isArray(ans.json)) {
+    console.error('Smoke FAILED — GET /api/vonage/webhook/answer → HTTP', ans.res.status)
+    console.error((ans.text || '').slice(0, 400))
+    process.exit(1)
+  }
+  console.log(`✓ GET /api/vonage/webhook/answer → ${ans.res.status} (NCCO JSON)`)
+
+  const ev = await fetchJson(`${base}/api/vonage/webhook/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (ev.res.status !== 204) {
+    console.error('Smoke FAILED — POST /api/vonage/webhook/event → HTTP', ev.res.status)
+    console.error((ev.text || '').slice(0, 400))
+    process.exit(1)
+  }
+  console.log(`✓ POST /api/vonage/webhook/event → 204`)
+
+  const sms = await fetchJson(`${base}/api/vonage/sms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (sms.res.status !== 401 && sms.res.status !== 400) {
+    console.error('Smoke FAILED — POST /api/vonage/sms → unexpected HTTP', sms.res.status)
+    console.error((sms.text || '').slice(0, 400))
+    process.exit(1)
+  }
+  console.log(`✓ POST /api/vonage/sms → ${sms.res.status} (route reachable)`)
 }
 
 async function smokeLlm() {
@@ -169,6 +209,7 @@ async function main() {
   }
 
   await smokeVoiceReady()
+  await smokeVonageRoutes()
   if (wireOnly) {
     console.log('\nWire-only smoke passed (set OPENAI_API_KEY and omit SMOKE_WIRE_ONLY for full E2E).')
     return

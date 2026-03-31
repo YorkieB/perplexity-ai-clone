@@ -19,6 +19,10 @@ export default defineConfig(({ mode }) => {
       fromFile !== undefined && fromFile !== '' ? fromFile : '1'
   }
 
+  /** `electron/jarvis-db.cjs` reads this for the SQLite file path; must be on `process.env` before the Vite middleware opens the DB. */
+  const jarvisDbPath = env.JARVIS_DB_PATH?.trim()
+  if (jarvisDbPath) process.env.JARVIS_DB_PATH = jarvisDbPath
+
   /** http-proxy does not reliably apply `headers:` to WebSocket upgrades — OpenAI gets no API key and closes the socket. */
   const openaiRealtimeWsProxy: ProxyOptions = {
     target: 'wss://api.openai.com',

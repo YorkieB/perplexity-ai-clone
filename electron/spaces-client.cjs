@@ -1,6 +1,9 @@
 /**
  * DigitalOcean Spaces (S3-compatible) client for document storage.
  * Used by the RAG pipeline to store and retrieve original files.
+ *
+ * Env: accepts `SPACES_*` (legacy) or `DO_SPACES_*` (same as behaviour logger / .env.example).
+ * Precedence: SPACES_* overrides DO_SPACES_* when set.
  */
 const {
   S3Client,
@@ -14,12 +17,28 @@ const { getSignedUrl: awsGetSignedUrl } = require('@aws-sdk/s3-request-presigner
 let _client = null
 let _bucket = null
 
+/** Bucket names cannot contain `/`. If user set `my-bucket/prefix`, use bucket only (prefix belongs in object keys). */
+function normalizeBucketRaw(raw) {
+  const s = (raw || '').trim()
+  if (!s) return ''
+  const i = s.indexOf('/')
+  if (i <= 0) return s
+  const bucket = s.slice(0, i)
+  const suffix = s.slice(i + 1)
+  if (suffix) {
+    console.warn(
+      `[spaces-client] Bucket env had a "/" in it - using "${bucket}" only. Remove "/${suffix}" from .env; use key prefixes (rag-docs/..., jarvis-docs/...) in code, not in the bucket name.`,
+    )
+  }
+  return bucket
+}
+
 function getConfig() {
-  const endpoint = (process.env.SPACES_ENDPOINT || '').trim()
-  const bucket = (process.env.SPACES_BUCKET || '').trim()
-  const accessKey = (process.env.SPACES_ACCESS_KEY || '').trim()
-  const secretKey = (process.env.SPACES_SECRET_KEY || '').trim()
-  const region = (process.env.SPACES_REGION || 'nyc3').trim()
+  const endpoint = (process.env.SPACES_ENDPOINT || process.env.DO_SPACES_ENDPOINT || '').trim()
+  const bucket = normalizeBucketRaw(process.env.SPACES_BUCKET || process.env.DO_SPACES_BUCKET || '')
+  const accessKey = (process.env.SPACES_ACCESS_KEY || process.env.DO_SPACES_KEY || '').trim()
+  const secretKey = (process.env.SPACES_SECRET_KEY || process.env.DO_SPACES_SECRET || '').trim()
+  const region = (process.env.SPACES_REGION || process.env.DO_SPACES_REGION || 'nyc3').trim()
   return { endpoint, bucket, accessKey, secretKey, region }
 }
 
@@ -37,13 +56,16 @@ function getClient() {
   if (_client) return { client: _client, bucket: _bucket }
   const { endpoint, bucket, accessKey, secretKey, region } = getConfig()
   if (!endpoint || !bucket || !accessKey || !secretKey) {
-    throw new Error('DigitalOcean Spaces not configured — set SPACES_ENDPOINT, SPACES_BUCKET, SPACES_ACCESS_KEY, SPACES_SECRET_KEY in .env')
+    throw new Error(
+      'DigitalOcean Spaces not configured — set DO_SPACES_ENDPOINT, DO_SPACES_BUCKET, DO_SPACES_KEY, DO_SPACES_SECRET (or SPACES_* equivalents) in .env',
+    )
   }
   _client = new S3Client({
     endpoint,
     region,
     credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
-    forcePathStyle: false,
+    /** Path-style URLs match DigitalOcean Spaces + the behaviour `SpacesClient` (src/agents/behaviour/spaces-client.ts). */
+    forcePathStyle: true,
   })
   _bucket = bucket
   return { client: _client, bucket: _bucket }

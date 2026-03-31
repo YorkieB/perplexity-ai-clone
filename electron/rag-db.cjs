@@ -246,8 +246,8 @@ async function insertChunks(documentId, chunkTexts, embeddings) {
 
 async function searchSimilar(queryEmbedding, limit, threshold) {
   const pool = getPool()
-  limit = limit || 5
-  threshold = threshold || 0.3
+  limit = typeof limit === 'number' && limit > 0 ? limit : 5
+  threshold = typeof threshold === 'number' && !Number.isNaN(threshold) ? threshold : 0.3
   const embStr = `[${queryEmbedding.join(',')}]`
   const res = await pool.query(
     `SELECT c.id AS chunk_id, c.content, c.chunk_index, c.token_count,

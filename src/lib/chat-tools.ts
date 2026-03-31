@@ -1403,7 +1403,8 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'vonage_send_sms',
-      description: 'Send an SMS text message via Vonage (server must have VONAGE_* env vars). Use for appointment reminders or short notifications the user asked you to send. Respect consent and local rules.',
+      description:
+        'Send an SMS text message via Vonage (server must have VONAGE_* env vars). You are capable of this when configured — use for appointment reminders or short notifications the user asked you to send. Respect consent and local rules.',
       parameters: {
         type: 'object',
         properties: {
@@ -1418,7 +1419,8 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'vonage_voice_call',
-      description: 'Place an outbound phone call via Vonage Voice API. When the person answers, Vonage text-to-speech speaks your message aloud (scripted announcement only). Requires Voice app credentials (VONAGE_APPLICATION_ID + private key) in .env.',
+      description:
+        'Place an outbound phone call via Vonage Voice API. When the person answers, Vonage TTS speaks your message aloud (one-way scripted announcement only — not a live back-and-forth). Requires Voice app credentials in .env.',
       parameters: {
         type: 'object',
         properties: {
@@ -1435,7 +1437,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     function: {
       name: 'vonage_ai_voice_call',
       description:
-        'Start a live two-way AI phone call via Vonage: caller audio is streamed to the server WebSocket bridge (speech-to-text → model → text-to-speech back to the line). Requires Voice app credentials, VONAGE_PUBLIC_WS_URL (public wss:// to your bridge, e.g. ngrok), optional VONAGE_WS_SECRET, and the AI voice bridge enabled/running. Do not use for a simple one-shot spoken script — use vonage_voice_call instead.',
+        'Start a live two-way AI phone call via Vonage: caller audio is streamed to the server WebSocket bridge (speech-to-text → model → text-to-speech). You participate in the conversation as Jarvis. Requires Voice app credentials, VONAGE_PUBLIC_WS_URL (public wss:// to the bridge), optional VONAGE_WS_SECRET, and the AI voice bridge running. For a one-shot spoken script only, use vonage_voice_call instead.',
       parameters: {
         type: 'object',
         properties: {

@@ -4,6 +4,9 @@
  *
  * Plain `npm run dev` serves the SPA with an iframe browser proxy, but full in-app
  * browsing (tabs, downloads, DevTools) needs this Electron wrapper.
+ *
+ * Jarvis Visual Engine: optional auto-start is handled in `electron/main.cjs` via
+ * `JARVIS_VISION_ENGINE_COMMAND` in `.env` (starts with Electron, stops on quit).
  */
 import { spawn } from 'node:child_process'
 import http from 'node:http'

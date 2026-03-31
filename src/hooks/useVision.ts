@@ -98,6 +98,13 @@ const POLL_INTERVAL_MS = 3000
 /** Keep in sync with context polls so scene text refreshes instead of sitting stale for minutes. */
 const ANALYSIS_INTERVAL_MS = 3000
 
+/** Substring matched against the OS camera name (e.g. eMeet). Override with `VITE_VISION_CAMERA_LABEL` in `.env`. */
+function visionCameraHeader(): Record<string, string> {
+  const raw = import.meta.env.VITE_VISION_CAMERA_LABEL
+  const label = typeof raw === 'string' && raw.trim() ? raw.trim() : 'emeet'
+  return { 'X-Jarvis-Camera-Label': label }
+}
+
 export function useVision(active: boolean) {
   const [context, setContext] = useState<VisionContext>(EMPTY_CONTEXT)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -107,7 +114,7 @@ export function useVision(active: boolean) {
     try {
       await fetch('/api/vision/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...visionCameraHeader() },
         /** Jarvis Visual Engine may honor these; unknown fields are typically ignored. */
         body: JSON.stringify({
           include_visible_text: true,
@@ -122,7 +129,7 @@ export function useVision(active: boolean) {
 
   const fetchContext = useCallback(async () => {
     try {
-      const res = await fetch('/api/vision/context')
+      const res = await fetch('/api/vision/context', { headers: visionCameraHeader() })
       if (!res.ok) {
         setContext((prev) => ({ ...prev, connected: false }))
         return
