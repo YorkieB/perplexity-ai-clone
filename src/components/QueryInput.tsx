@@ -11,6 +11,9 @@ import { CloudFile, UploadedFile, UserSettings } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { ragIngestBulk } from '@/lib/rag'
 import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
+import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-models'
+import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
+import { getPreferredChatModel, setPreferredChatModel } from '@/lib/chat-preferences'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
@@ -69,7 +72,7 @@ export function QueryInput({
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [selectedModel, setSelectedModel] = useState(() => getPreferredChatModel('gpt-4o-mini'))
   const [moreExpanded, setMoreExpanded] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
   const [isUploadingFile, setIsUploadingFile] = useState(false)
@@ -86,9 +89,12 @@ export function QueryInput({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [settings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
-  const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
   const doToken = settings?.apiKeys?.digitalOcean?.trim()
-  const useDigitalOcean = Boolean(doToken) || useEnvInference
+  const useDigitalOcean = clientMayUseDigitalOceanInference(doToken)
+
+  useEffect(() => {
+    setPreferredChatModel(selectedModel)
+  }, [selectedModel])
 
   useEffect(() => {
     if (!useDigitalOcean) { setDoModels([]); return }
@@ -110,12 +116,16 @@ export function QueryInput({
       { id: 'gpt-4o', label: 'GPT-4o' },
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
     ]
-    const doItems = doModels.map((m) => ({
+    if (!useDigitalOcean) {
+      return openai
+    }
+    const merged = mergeDigitalOceanInferenceCatalog(doModels)
+    const doItems = merged.map((m) => ({
       id: `do:${m.id}`,
-      label: m.name,
+      label: `DO · ${m.name}`,
     }))
     return [...openai, ...doItems]
-  }, [doModels])
+  }, [doModels, useDigitalOcean])
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)

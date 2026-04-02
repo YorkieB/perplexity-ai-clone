@@ -6,9 +6,12 @@
     "main": "electron/main.cjs",
     "scripts": {
         "dev": "vite",
+        "dev:tunnel": "vite --port 5173 --strictPort",
         "smoke": "node smoketest.mjs",
         "smoke:wire": "node scripts/smoke-wire.mjs",
         "check:kb": "node scripts/check-knowledge-connection.mjs",
+        "verify:vision": "node scripts/verify-jarvis-vision-engine.mjs",
+        "setup:vision-engine": "python -m pip install -e python/jarvis_visual_engine",
         "diagnose:rag": "node scripts/diagnose-rag.mjs",
         "kill": "fuser -k 5000/tcp",
         "build": "tsc -b && vite build",
@@ -25,7 +28,8 @@
         "optimize": "vite optimize",
         "preview": "vite preview",
         "desktop": "npm run build && electron .",
-        "desktop:dev": "node scripts/electron-dev.mjs"
+        "desktop:dev": "node scripts/electron-dev.mjs",
+        "desktop:dev:tunnel": "node scripts/electron-dev.mjs --vite=dev:tunnel"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1016.0",

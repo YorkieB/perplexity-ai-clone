@@ -83,6 +83,8 @@ const jarvisDb = requireVonage(join(_pluginDir, '..', 'electron', 'jarvis-db.cjs
   loadPatterns: (projectRoot?: string) => unknown[]
   loadAllKnowledge: (limit: number, projectRoot?: string) => unknown[]
   getToolStats: (projectRoot?: string) => unknown[]
+  getUiLocalSnapshot: (projectRoot?: string) => { entries: Record<string, string>; updatedAt: string } | null
+  saveUiLocalSnapshot: (projectRoot: string | undefined, entries: Record<string, unknown>) => void
 }
 const vonageShared = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-voice-shared.cjs')) as {
   normalizeVonagePhoneDigits: (raw: string) => string
@@ -381,6 +383,69 @@ function mergeRealtimeSessionBody(raw: string): typeof defaultRealtimeSession {
 }
 
 /**
+ * Persists selected `localStorage` keys to SQLite so browser (`https://…`) and desktop (`localhost`)
+ * share threads/settings when both use the same `JARVIS_DB_PATH` / project `data/jarvis.db`.
+ */
+async function tryHandleUiSyncApi(
+  path: string | undefined,
+  method: string | undefined,
+  req: Connect.IncomingMessage,
+  res: ServerResponse,
+  projectRoot: string,
+): Promise<boolean> {
+  if (path !== '/api/ui-sync') return false
+
+  const jsonErr = (status: number, msg: string) => {
+    res.statusCode = status
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: msg } }))
+  }
+
+  try {
+    if (method === 'GET') {
+      const snap = jarvisDb.getUiLocalSnapshot(projectRoot)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(
+        JSON.stringify({
+          entries: snap?.entries ?? {},
+          updatedAt: snap?.updatedAt ?? null,
+        }),
+      )
+      return true
+    }
+
+    if (method === 'POST') {
+      const bodyStr = await readBody(req)
+      const body = JSON.parse(bodyStr) as { entries?: Record<string, unknown> }
+      if (!body.entries || typeof body.entries !== 'object') {
+        jsonErr(400, 'entries object required')
+        return true
+      }
+      jarvisDb.saveUiLocalSnapshot(projectRoot, body.entries)
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: true }))
+      return true
+    }
+
+    res.statusCode = 405
+    res.setHeader('Allow', 'GET, POST')
+    res.end()
+    return true
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(
+      JSON.stringify({
+        error: { message: e instanceof Error ? e.message : 'UI sync error' },
+      }),
+    )
+    return true
+  }
+}
+
+/**
  * Full Jarvis SQLite memory API for Vite dev (parity with `electron/main.cjs`).
  * Uses `electron/jarvis-db.cjs` so facts, learning, and summaries share one DB file with the desktop app.
  */
@@ -637,6 +702,7 @@ async function tryHandleJarvisMemoryApi(
     res.end(JSON.stringify({ error: { message: 'Unknown jarvis-memory route' } }))
     return true
   } catch (e) {
+    console.error('[jarvis-memory] API error:', e instanceof Error ? e.stack || e.message : e)
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
     res.end(
@@ -775,6 +841,8 @@ function attachProxy(
       return
     }
 
+    if (await tryHandleUiSyncApi(path, req.method, req, res, projectRoot)) return
+
     if (await tryHandleJarvisMemoryApi(path, req.method, req, res, projectRoot, getEnv)) return
 
     /**
@@ -812,6 +880,7 @@ function attachProxy(
       const incomingStr = incoming
         ? String(Array.isArray(incoming) ? incoming[0] : incoming).trim()
         : ''
+      /** Default `emeet` matches eMeet webcams; override `VISION_CAMERA_LABEL` for other devices. */
       const cameraLabel = fromEnv || incomingStr || 'emeet'
       let bodyBuf: Buffer | undefined
       if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {

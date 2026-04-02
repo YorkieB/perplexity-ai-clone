@@ -83,7 +83,7 @@ function SidebarThreadRow({
       onClick={() => onThreadSelect(thread.id)}
       className={cn(
         'w-full justify-start gap-2 h-auto py-2 px-2',
-        activeThreadId === thread.id && 'border-l-2 border-accent rounded-l-none',
+        activeThreadId === thread.id && 'border-r-2 border-accent rounded-r-none',
       )}
     >
       <ChatCircle size={16} className="shrink-0" />
@@ -433,7 +433,7 @@ export function AppSidebar({
   return (
     <div
       className={cn(
-        'h-screen bg-card border-r border-border flex flex-col transition-all duration-300',
+        'h-screen flex-shrink-0 bg-card border-l border-border flex flex-col transition-all duration-300',
         isCollapsed ? 'w-16' : 'w-64',
       )}
     >

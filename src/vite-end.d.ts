@@ -201,7 +201,7 @@ interface ImportMetaEnv {
   readonly VITE_ELEVENLABS_MODEL_ID?: string
   /** Comma-separated chat model ids to hide and clear from preferences (unavailable on your inference provider). */
   readonly VITE_BLOCKED_CHAT_MODEL_IDS?: string
-  /** Substring to prefer when the Jarvis Visual Engine picks a webcam (e.g. emeet). Sent as `X-Jarvis-Camera-Label`; default emeet. */
+  /** Substring to match the OS webcam (sent as `X-Jarvis-Camera-Label`). Defaults to emeet in the client when unset. */
   readonly VITE_VISION_CAMERA_LABEL?: string
   /** Max HTTP attempts for /api/llm on 429/502/503 (default 8). Set 0 or false to disable retries. */
   readonly VITE_LLM_RATE_LIMIT_RETRIES?: string

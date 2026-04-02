@@ -107,7 +107,7 @@ async function initSchema() {
   `)
 
     _schemaReady = true
-    console.log('[rag-db] Schema initialised')
+    console.info('[jarvis] RAG: PostgreSQL schema ready — knowledge base (pgvector) is up')
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     _initFailed = true

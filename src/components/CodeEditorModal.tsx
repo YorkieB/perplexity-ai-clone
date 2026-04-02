@@ -26,6 +26,9 @@ import { ideFsRead, ideFsWrite, ideGit, ideJoinPath, ideRunCommand, ideWalkFiles
 import type { JarvisIdeRunCommandResult } from '@/types/jarvis-ide'
 import { fetchAgentBrowserHealth } from '@/lib/agent-browser-mcp'
 import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
+import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-models'
+import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
+import { getPreferredChatModel, setPreferredChatModel } from '@/lib/chat-preferences'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import type { UserSettings } from '@/lib/types'
 import { JarvisExplorerBadgeStrip } from '@/components/jarvis/JarvisExplorerBadgeStrip'
@@ -536,7 +539,7 @@ export function CodeEditorModal({
   const [workspaceWalkLoading, setWorkspaceWalkLoading] = useState(false)
   const [explorerExpandedDirs, setExplorerExpandedDirs] = useState<Set<string>>(() => new Set())
   const [extensionsPackageJson, setExtensionsPackageJson] = useState<string | null>(null)
-  const [ideChatModel, setIdeChatModel] = useState('gpt-4o-mini')
+  const [ideChatModel, setIdeChatModel] = useState(() => getPreferredChatModel('gpt-4o-mini'))
   const [ideTemp, setIdeTemp] = useState(0.7)
   const [ideMaxTok, setIdeMaxTok] = useState(4096)
   const [ideReasoning, setIdeReasoning] = useState<IdeReasoningMode>('auto')
@@ -544,9 +547,12 @@ export function CodeEditorModal({
   const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
 
   const [userSettings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
-  const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
   const doToken = userSettings?.apiKeys?.digitalOcean?.trim()
-  const useDigitalOcean = Boolean(doToken) || useEnvInference
+  const useDigitalOcean = clientMayUseDigitalOceanInference(doToken)
+
+  useEffect(() => {
+    setPreferredChatModel(ideChatModel)
+  }, [ideChatModel])
 
   useEffect(() => {
     if (!useDigitalOcean) { setDoModels([]); return }
@@ -568,9 +574,13 @@ export function CodeEditorModal({
       { id: 'gpt-4o', label: 'GPT-4o' },
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
     ]
-    const doItems = doModels.map((m) => ({ id: `do:${m.id}`, label: m.name }))
+    if (!useDigitalOcean) {
+      return base
+    }
+    const merged = mergeDigitalOceanInferenceCatalog(doModels)
+    const doItems = merged.map((m) => ({ id: `do:${m.id}`, label: `DO · ${m.name}` }))
     return [...base, ...doItems]
-  }, [doModels])
+  }, [doModels, useDigitalOcean])
 
   const hasElectronFs = globalThis.window?.jarvisIde !== undefined
 
@@ -1859,7 +1869,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
 
   let editorPanelSize: number
   if (showIdeChat && ideChatOnSend && !zenMode) {
-    editorPanelSize = showExplorer ? 58 : 72
+    editorPanelSize = showExplorer ? 52 : 68
   } else if (showExplorer && !zenMode) {
     editorPanelSize = 80
   } else {
@@ -2494,7 +2504,7 @@ try{${code.replaceAll(/<\/script>/gi, String.raw`<\/script>`)}}catch(e){console.
           {showIdeChat && ideChatOnSend && !zenMode && (
             <>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={22} minSize={16} maxSize={42}>
+              <ResizablePanel defaultSize={30} minSize={14} maxSize={52}>
                 <IdeChatPanel
                   messages={ideChatMessages}
                   loading={ideChatLoading}

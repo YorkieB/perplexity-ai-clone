@@ -169,8 +169,10 @@ interface ValidateOptions {
   toolOutputs?: string[]
 }
 
-async function runLlmValidation(opts: ValidateOptions): Promise<HallucinationReport> {
-  const { response, userQuery, sourceEvidence, toolOutputs } = opts
+async function runLlmValidation(
+  opts: ValidateOptions & { auditModel?: string },
+): Promise<HallucinationReport> {
+  const { response, userQuery, sourceEvidence, toolOutputs, auditModel = 'gpt-4o-mini' } = opts
 
   let evidenceBlock = ''
   if (sourceEvidence) {
@@ -193,7 +195,7 @@ ${evidenceBlock}
 Analyse the response for hallucinations. Output ONLY valid JSON.`
 
   try {
-    const raw = await callLlm(prompt, 'gpt-4o-mini', true)
+    const raw = await callLlm(prompt, auditModel, true)
     const parsed = JSON.parse(raw) as {
       passed?: boolean
       confidence?: number
@@ -220,6 +222,8 @@ export interface GuardOptions {
   sourceEvidence?: string
   toolOutputs?: string[]
   strictMode?: boolean
+  /** Defaults to `gpt-4o-mini`. Use the same model as the main turn when auditing DO-backed replies. */
+  auditModel?: string
 }
 
 /**
@@ -237,6 +241,7 @@ export async function validateResponse(opts: GuardOptions): Promise<{
     userQuery: opts.userQuery,
     sourceEvidence: opts.sourceEvidence,
     toolOutputs: opts.toolOutputs,
+    auditModel: opts.auditModel,
   })
 
   const allFlags = [...patternFlags, ...llmReport.flags]

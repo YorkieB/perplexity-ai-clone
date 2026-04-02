@@ -37,6 +37,9 @@ import {
   isValidRealtimeFunctionTool,
 } from '@/lib/desktop-automation-realtime-tools'
 import { hasJarvisNativeBridgeForVoice } from '@/lib/jarvis-native-bridge'
+import { getPreferredChatModel } from '@/lib/chat-preferences'
+import { getLlmProviderHeadersForModel, stripDoPrefix } from '@/lib/llm'
+import { getVisionCameraLabelHeaders } from '@/lib/vision-camera-label'
 
 export type VoicePipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -475,6 +478,8 @@ ABSOLUTE RULES ABOUT VISION — NEVER VIOLATE THESE:
 - When you receive a [VISUAL CONTEXT UPDATE], use that information to describe what you see; treat the server analysis timestamp as how fresh the description is.
 - When asked "what do you see?" or "can you see me?", describe the latest visual context you received. If you haven't received one yet, say "I'm still connecting to my camera, give me a moment."
 - Use visual information naturally: greet people, reference what you observe. Don't narrate every update unprompted.
+- NEVER say you "don't have detailed information" about the room, items, clothing, or layout, or that you "only know they're in a room," when a [VISUAL CONTEXT UPDATE] already includes a **Scene analysis from your camera:** line — that line is your detail. Paraphrase it confidently in natural speech. Only hedge if the update explicitly says the frame was empty, unreadable, or still loading.
+- Do not confuse "I must not invent their **PC monitor** contents" with "I have no room detail" — the scene analysis describes the physical space and person; use it fully.
 
 READING TEXT ON SCREENS AND DOCUMENTS:
 - When a visual update includes a "Readable text visible in the frame" line, that is transcribed text from the camera view (screens, browser windows, printed pages, labels, UI). Quote or read it accurately when the user asks what something says.
@@ -921,6 +926,12 @@ function formatVisionForSession(v: VisionContext): string {
     }
     if (v.sceneDescription) {
       parts.push(`Scene analysis from your camera: ${sanitizeUntrustedInstructionBlob(v.sceneDescription, IPC_VISION_FIELD_MAX)}`)
+      parts.push(
+        'Stay faithful to that scene line: do not invent desks, shelves, monitors, or a generic "office" layout unless those words appear in it.',
+      )
+      parts.push(
+        'This scene analysis is the authoritative room-camera detail for this turn — describe it to the user in full sentences. Do not apologize for lacking detail or say you only see "a room" in general terms if the paragraph above contains specifics.',
+      )
     }
     if (v.visibleText?.trim()) {
       parts.push(
@@ -1447,11 +1458,12 @@ If no personal facts, return {"facts":[]}.
 User: ${user}
 Assistant: ${ai || ''}`
 
+      const memModel = getPreferredChatModel('gpt-4o-mini')
       const res = await fetch('/api/llm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(memModel) },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: stripDoPrefix(memModel),
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           response_format: { type: 'json_object' },
@@ -3527,17 +3539,6 @@ Assistant: ${ai || ''}`
         console.warn('[memory] Failed to load memory, proceeding without it:', e)
       }
 
-      let visionAvailable = !!visionContext?.connected
-      if (!visionAvailable) {
-        try {
-          const vRes = await fetch('/api/vision/context')
-          if (vRes.ok) {
-            const vData = (await vRes.json()) as Record<string, unknown>
-            visionAvailable = (vData.connected as boolean | undefined) !== false
-          }
-        } catch { /* vision engine offline */ }
-      }
-
       try {
         const pre = await fetch('/api/realtime/voice-ready')
         if (!pre.ok) {
@@ -3562,6 +3563,32 @@ Assistant: ${ai || ''}`
 
         ws.onopen = async () => {
         if (wsRef.current !== ws) return
+        /** Resolve after WS connects so the visual engine can finish spawning / HTTP warm-up (avoids baking in "camera offline" instructions). */
+        let visionAvailable = false
+        const retryGapsMs = [0, 1000, 1500, 2500] as const
+        for (let ri = 0; ri < retryGapsMs.length; ri++) {
+          if (retryGapsMs[ri] > 0) {
+            await new Promise((r) => setTimeout(r, retryGapsMs[ri]))
+          }
+          try {
+            const vRes = await fetch('/api/vision/context', { headers: getVisionCameraLabelHeaders() })
+            if (vRes.ok) {
+              const vData = (await vRes.json()) as Record<string, unknown>
+              if ((vData.connected as boolean | undefined) !== false) {
+                visionAvailable = true
+                break
+              }
+            }
+          } catch {
+            /* engine still starting or unreachable — retry */
+          }
+        }
+        if (!visionAvailable) {
+          visionAvailable = !!visionContextRef.current?.connected
+        }
+        if (import.meta.env.DEV) {
+          console.info('[Jarvis voice] vision available for session instructions:', visionAvailable)
+        }
         const hasTuneIn = Boolean(tuneInRef.current)
         const hasRag = true
         const hasBrowser = Boolean(browserRef.current)

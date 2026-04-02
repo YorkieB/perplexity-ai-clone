@@ -12,6 +12,7 @@
  */
 
 import { callLlm } from './llm'
+import { getPreferredChatModel } from './chat-preferences'
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ ${userMessage.slice(0, 2000)}
 ASSISTANT RESPONSE:
 ${assistantResponse.slice(0, 2000)}${toolContext}`
 
-    const raw = await callLlm(prompt, 'gpt-4o-mini', true)
+    const raw = await callLlm(prompt, getPreferredChatModel('gpt-4o-mini'), true)
     const result = JSON.parse(raw) as AnalysisResult
 
     if (!result.preferences) result.preferences = []

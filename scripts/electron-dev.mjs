@@ -7,6 +7,10 @@
  *
  * Jarvis Visual Engine: optional auto-start is handled in `electron/main.cjs` via
  * `JARVIS_VISION_ENGINE_COMMAND` in `.env` (starts with Electron, stops on quit).
+ *
+ * Cloudflare Tunnel: use `npm run desktop:dev:tunnel` (runs `dev:tunnel` = Vite on 5173 + strictPort)
+ * so ingress `http://127.0.0.1:5173` matches `vite.config.ts` (`allowedHosts` for jarvis/voice).
+ * Override: `JARVIS_VITE_NPM_SCRIPT=dev` or pass `--vite=dev:tunnel`.
  */
 import { spawn } from 'node:child_process'
 import http from 'node:http'
@@ -15,9 +19,22 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(__dirname, '..')
+
+function viteNpmScript() {
+  const fromEnv = (process.env.JARVIS_VITE_NPM_SCRIPT || '').trim()
+  if (fromEnv) return fromEnv
+  const arg = process.argv.find((a) => a.startsWith('--vite='))
+  if (arg) {
+    const v = arg.slice('--vite='.length).trim()
+    if (v) return v
+  }
+  return 'dev'
+}
+
 const defaultPort = process.env.JARVIS_VITE_PORT || '5173'
-// Use `localhost` (not `127.0.0.1`) — Vite on Windows binds to IPv6 [::1]
-const viteUrl = (process.env.JARVIS_VITE_URL || `http://localhost:${defaultPort}`).replace(/\/$/, '') + '/'
+// Must match `vite.config.ts` `server.host` (127.0.0.1). Using `localhost` can resolve to [::1]
+// while Vite only listens on IPv4 — breaks the page, `/ws/realtime` (voice), and `/api/*`.
+const viteUrl = (process.env.JARVIS_VITE_URL || `http://127.0.0.1:${defaultPort}`).replace(/\/$/, '') + '/'
 
 function probeUrl(url) {
   return new Promise((resolve) => {
@@ -55,11 +72,12 @@ process.on('SIGTERM', () => shutdown(0))
 ;(async () => {
   const alreadyRunning = await probeUrl(viteUrl)
 
+  const npmScript = viteNpmScript()
   if (alreadyRunning) {
     console.log(`[desktop:dev] Vite already running at ${viteUrl} — reusing it`)
   } else {
-    console.log('[desktop:dev] Starting Vite…')
-    vite = spawn(npmCmd, ['run', 'dev'], {
+    console.log(`[desktop:dev] Starting Vite (npm run ${npmScript})…`)
+    vite = spawn(npmCmd, ['run', npmScript], {
       cwd: root,
       stdio: 'inherit',
       shell: true,

@@ -86,6 +86,10 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      /** Match Cloudflare tunnel ingress `http://127.0.0.1:5173` — avoid Windows binding only on ::1 */
+      host: '127.0.0.1',
+      /** Cloudflare Tunnel public hostnames (Host header) — Vite 6+ blocks unknown hosts by default */
+      allowedHosts: ['jarvis.yorkiebrown.uk', 'voice.yorkiebrown.uk'],
       proxy: {
         /** Jarvis health dashboard (`HealthDashboard.tsx`) — set `VITE_HEALTH_API_PROXY` to your Express bind URL. */
         '/api/health': {

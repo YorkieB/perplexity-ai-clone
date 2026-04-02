@@ -18,10 +18,11 @@ export function stripDoPrefix(model: string): string {
 }
 
 /**
- * Returns extra headers needed to route a model to DigitalOcean Gradient inference.
- * Models prefixed with `do:` (e.g. `do:openai-gpt-5`) or containing `/` are routed to DO.
+ * Returns extra headers for `POST /api/llm` when routing to DigitalOcean Gradient inference.
+ * Models prefixed with `do:` (e.g. `do:openai/gpt-4o-mini`) or containing `/` are routed to DO.
+ * Use this for any manual `fetch('/api/llm', …)` so Electron/Vite proxies match {@link callLlm}.
  */
-function providerHeaders(model: string): Record<string, string> {
+export function getLlmProviderHeadersForModel(model: string): Record<string, string> {
   if (model.startsWith(DO_MODEL_PREFIX) || model.includes('/')) {
     return { 'x-llm-provider': 'digitalocean' }
   }
@@ -58,7 +59,7 @@ export async function callLlm(
 
   const response = await fetch('/api/llm', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
     body: JSON.stringify(body),
   })
 
@@ -140,7 +141,7 @@ export async function callLlmWithTools(
 
   const response = await fetch('/api/llm', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
     signal: options?.signal,
     body: JSON.stringify(body),
   })
@@ -188,7 +189,7 @@ export async function callLlmChat(
 
   const response = await fetch('/api/llm', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
     signal: options?.signal,
     body: JSON.stringify(body),
   })
@@ -296,7 +297,7 @@ export async function* callLlmStream(
 
   const response = await fetch('/api/llm', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...providerHeaders(model) },
+    headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
     signal: opts.signal,
     body: JSON.stringify({
       model: stripDoPrefix(model),

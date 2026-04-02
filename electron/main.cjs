@@ -2089,6 +2089,42 @@ async function handleVideoContent(req, res) {
   }
 }
 
+// ── UI localStorage ↔ SQLite (browser + desktop parity) ───────────────────
+
+async function handleUiSyncGet(_req, res) {
+  try {
+    const snap = jarvisDb.getUiLocalSnapshot()
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ entries: snap?.entries ?? {}, updatedAt: snap?.updatedAt ?? null }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'UI sync error' } }))
+  }
+}
+
+async function handleUiSyncPost(req, res) {
+  try {
+    const bodyStr = await readBody(req)
+    const body = JSON.parse(bodyStr)
+    if (!body.entries || typeof body.entries !== 'object') {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ error: { message: 'entries object required' } }))
+      return
+    }
+    jarvisDb.saveUiLocalSnapshot(undefined, body.entries)
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ ok: true }))
+  } catch (e) {
+    res.statusCode = 500
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'UI sync error' } }))
+  }
+}
+
 // ── Jarvis Memory API Handlers ──────────────────────────────────────────────
 
 async function handleJarvisMemoryGet(req, res) {
@@ -2101,6 +2137,7 @@ async function handleJarvisMemoryGet(req, res) {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ conversationId, facts, recentTurns, summaries }))
   } catch (e) {
+    console.error('[jarvis-memory] GET failed:', e instanceof Error ? e.stack || e.message : e)
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Memory load error' } }))
@@ -2361,9 +2398,8 @@ function getVisionEngineBaseUrl() {
 }
 
 /**
- * Hint for which webcam to open (substring match on OS device label, e.g. "eMeet").
- * Order: `VISION_CAMERA_LABEL` / `JARVIS_CAMERA_LABEL` in env → incoming `x-jarvis-camera-label` → `emeet`.
- * The Visual Engine should read `X-Jarvis-Camera-Label` when selecting a capture device.
+ * Hint for which webcam to open (substring match on OS device label).
+ * Order: `VISION_CAMERA_LABEL` / `JARVIS_CAMERA_LABEL` → incoming `x-jarvis-camera-label` → `emeet` (eMeet webcams).
  */
 function resolveVisionCameraLabel(req) {
   const fromEnv = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || '').trim()
@@ -2419,6 +2455,77 @@ async function handleVisionProxy(req, res) {
       }),
     )
   }
+}
+
+/** One-place startup lines for operators (voice, vision, RAG). */
+function logJarvisStartupBanner() {
+  const openai = Boolean((process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '').trim())
+  const base = getVisionEngineBaseUrl()
+  const spawnCmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  let ragLine
+  if (ragDb.isConfigured()) {
+    ragLine = 'DATABASE_URL set — schema init runs async (see [rag-db])'
+  } else if (['false', '0', 'no'].includes(String(process.env.RAG_DB_ENABLED || '').trim().toLowerCase())) {
+    ragLine = 'off (RAG_DB_ENABLED=false)'
+  } else {
+    ragLine = 'not configured (set DATABASE_URL for knowledge base)'
+  }
+
+  console.info('')
+  console.info('[jarvis] ══════════════════ Jarvis startup ══════════════════')
+  console.info(`[jarvis] Voice (OpenAI Realtime): ${openai ? 'OPENAI_API_KEY OK' : 'OPENAI_API_KEY MISSING — Voice Mode will not work'}`)
+  console.info(`[jarvis] Vision proxy target: ${base}`)
+  console.info(
+    `[jarvis] Vision engine process: ${spawnCmd ? 'auto-start ON (window opens after HTTP is ready)' : 'auto-start OFF — set JARVIS_VISION_ENGINE_COMMAND or run the engine manually'}`,
+  )
+  console.info(`[jarvis] Vision scene+mood (OpenAI): ${openai ? 'enabled' : 'disabled (no OPENAI_API_KEY)'}`)
+  console.info(`[jarvis] RAG (PostgreSQL): ${ragLine}`)
+  console.info('[jarvis] ═════════════════════════════════════════════════════')
+  console.info('')
+}
+
+/**
+ * When `JARVIS_VISION_ENGINE_COMMAND` spawns the engine, Python may take several seconds to bind :5000.
+ * Poll until GET /api/v1/context succeeds so the renderer's first polls are less likely to see ECONNREFUSED.
+ * Set `JARVIS_VISION_ENGINE_READY_TIMEOUT_MS` (default 60000, max 120000).
+ */
+async function waitForVisionEngineHttpReadyIfSpawned() {
+  const cmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  const base = getVisionEngineBaseUrl()
+  if (!cmd) {
+    console.info('[jarvis] Startup: vision engine not auto-spawned — ensure HTTP API is listening at', base)
+    return
+  }
+  const key = process.env.VISION_API_KEY || 'jarvis-vision-local'
+  const label = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || 'emeet').trim() || 'emeet'
+  const rawTimeout = Number(process.env.JARVIS_VISION_ENGINE_READY_TIMEOUT_MS || 60000)
+  const timeoutMs = Math.min(120000, Math.max(5000, Number.isFinite(rawTimeout) ? rawTimeout : 60000))
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    try {
+      const u = `${base}/api/v1/context`
+      const r = await fetch(u, {
+        method: 'GET',
+        headers: { 'X-API-Key': key, 'X-Jarvis-Camera-Label': label },
+      })
+      if (r.ok) {
+        console.info('[vision-engine] HTTP ready after', attempt, 'attempt(s):', u)
+        console.info('[jarvis] Startup: vision pipeline READY —', base, '(room camera + OpenAI analysis when key is set)')
+        return
+      }
+    } catch {
+      /* ECONNREFUSED until the engine listens */
+    }
+    await new Promise((res) => setTimeout(res, 350))
+  }
+  console.warn(
+    '[vision-engine] Timed out waiting for HTTP at',
+    base,
+    '— check JARVIS_VISION_ENGINE_COMMAND and VISION_ENGINE_URL',
+  )
+  console.warn('[jarvis] Startup: vision pipeline NOT READY — UI may show vision errors until the engine responds')
 }
 
 
@@ -4552,6 +4659,8 @@ const exactRoutes = [
   { method: 'POST', path: '/api/elevenlabs-tts', handler: handleElevenLabsStreamingTts },
   { method: 'GET', path: '/api/realtime/voice-ready', handler: handleRealtimeVoiceReady },
   { method: 'POST', path: '/api/realtime/session', handler: handleRealtimeSession },
+  { method: 'GET', path: '/api/ui-sync', handler: handleUiSyncGet },
+  { method: 'POST', path: '/api/ui-sync', handler: handleUiSyncPost },
   { method: 'GET', path: '/api/jarvis-memory', handler: handleJarvisMemoryGet },
   { method: 'POST', path: '/api/jarvis-memory', handler: handleJarvisMemoryPost },
   { method: 'POST', path: '/api/jarvis-memory/extract', handler: handleJarvisMemoryExtract },
@@ -4890,7 +4999,7 @@ async function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Grant microphone + speaker permissions for voice pipeline (STT + TTS)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     const allowed = ['media', 'audioCapture', 'mediaKeySystem']
@@ -4916,7 +5025,19 @@ app.whenReady().then(() => {
   })
 
   loadEnvFromFile()
+  /** Packaged app lives under app.asar — SQLite cannot write inside asar; use a writable userData path. */
+  try {
+    if (app.isPackaged && !String(process.env.JARVIS_DB_PATH || '').trim()) {
+      process.env.JARVIS_DB_PATH = path.join(app.getPath('userData'), 'jarvis.db')
+    }
+  } catch (e) {
+    console.warn('[jarvis-db] could not set JARVIS_DB_PATH for packaged app:', e instanceof Error ? e.message : e)
+  }
+
+  logJarvisStartupBanner()
   startJarvisVisionEngineIfConfigured()
+  await waitForVisionEngineHttpReadyIfSpawned()
+
   registerJarvisOrchestratorIpc()
   void startJarvisOrchestrator()
   try {
@@ -4948,7 +5069,15 @@ app.whenReady().then(() => {
     void ragDb.initSchema()
   }
 
-  void createWindow()
+  try {
+    await createWindow()
+  } catch (e) {
+    console.error('[jarvis] createWindow failed:', e instanceof Error ? e.message : e)
+    app.quit()
+  }
+}).catch((e) => {
+  console.error('[jarvis] app.whenReady failed:', e instanceof Error ? e.message : e)
+  app.quit()
 })
 
 app.on('before-quit', (e) => {

@@ -111,8 +111,92 @@ function getDb(projectRoot) {
       updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_knowledge_topic ON learned_knowledge(topic);
+
+    CREATE TABLE IF NOT EXISTS ui_local_snapshot (
+      id           INTEGER PRIMARY KEY CHECK (id = 1),
+      payload_json TEXT NOT NULL,
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `)
+  migrateJarvisSqliteSchema(_db)
   return _db
+}
+
+/**
+ * Older `data/jarvis.db` files may predate columns used by current queries (e.g. `loadConversationSummaries`).
+ * `CREATE TABLE IF NOT EXISTS` does not add columns to existing tables.
+ */
+function migrateJarvisSqliteSchema(db) {
+  try {
+    const rows = db.prepare('PRAGMA table_info(conversations)').all()
+    if (!Array.isArray(rows) || rows.length === 0) return
+    const names = new Set(rows.map((r) => r.name))
+    if (!names.has('created_at')) {
+      db.exec("ALTER TABLE conversations ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))")
+    }
+    if (!names.has('updated_at')) {
+      db.exec("ALTER TABLE conversations ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))")
+    }
+    if (!names.has('summary')) {
+      db.exec('ALTER TABLE conversations ADD COLUMN summary TEXT')
+    }
+    if (!names.has('topics')) {
+      db.exec('ALTER TABLE conversations ADD COLUMN topics TEXT')
+    }
+  } catch (e) {
+    console.warn('[jarvis-db] migrateJarvisSqliteSchema:', e instanceof Error ? e.message : e)
+  }
+}
+
+/** Same keys as `src/lib/ui-sync-keys.ts` — browser + desktop localStorage parity. */
+const UI_SYNC_ALLOWED_KEYS = new Set(['user-settings', 'threads', 'wake-word-enabled', 'workspaces'])
+const UI_SYNC_MAX_BYTES = 6 * 1024 * 1024
+
+function filterUiSyncEntries(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  const out = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (!UI_SYNC_ALLOWED_KEYS.has(k)) continue
+    if (typeof v !== 'string') continue
+    out[k] = v
+  }
+  return out
+}
+
+/**
+ * @returns {null | { entries: Record<string, string>, updatedAt: string }}
+ */
+function getUiLocalSnapshot(projectRoot) {
+  const db = getDb(projectRoot)
+  const row = db.prepare('SELECT payload_json, updated_at FROM ui_local_snapshot WHERE id = 1').get()
+  if (!row) return null
+  let parsed = {}
+  try {
+    parsed = JSON.parse(row.payload_json)
+  } catch {
+    return null
+  }
+  return { entries: filterUiSyncEntries(parsed), updatedAt: row.updated_at }
+}
+
+/**
+ * @param {Record<string, unknown>} rawEntries
+ */
+function saveUiLocalSnapshot(projectRoot, rawEntries) {
+  const entries = filterUiSyncEntries(rawEntries)
+  const payload = JSON.stringify(entries)
+  const bytes = Buffer.byteLength(payload, 'utf8')
+  if (bytes > UI_SYNC_MAX_BYTES) {
+    throw new Error(`UI sync payload too large (${bytes} bytes, max ${UI_SYNC_MAX_BYTES})`)
+  }
+  const db = getDb(projectRoot)
+  db.prepare(`
+    INSERT INTO ui_local_snapshot (id, payload_json, updated_at)
+    VALUES (1, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at = datetime('now')
+  `).run(payload)
 }
 
 function createConversation(projectRoot) {
@@ -344,4 +428,5 @@ module.exports = {
   saveToolOutcome, getToolStats,
   saveKnowledge, searchKnowledge, loadAllKnowledge,
   getLearningStats, pruneStaleData, buildLearnedContext,
+  getUiLocalSnapshot, saveUiLocalSnapshot,
 }

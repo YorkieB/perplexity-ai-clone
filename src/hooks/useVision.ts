@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { getVisionCameraLabelHeaders } from '@/lib/vision-camera-label'
 
 export interface VisionFace {
   name: string
@@ -97,13 +98,8 @@ const EMPTY_CONTEXT: VisionContext = {
 const POLL_INTERVAL_MS = 3000
 /** Keep in sync with context polls so scene text refreshes instead of sitting stale for minutes. */
 const ANALYSIS_INTERVAL_MS = 3000
-
-/** Substring matched against the OS camera name (e.g. eMeet). Override with `VITE_VISION_CAMERA_LABEL` in `.env`. */
-function visionCameraHeader(): Record<string, string> {
-  const raw = import.meta.env.VITE_VISION_CAMERA_LABEL
-  const label = typeof raw === 'string' && raw.trim() ? raw.trim() : 'emeet'
-  return { 'X-Jarvis-Camera-Label': label }
-}
+/** Extra polls after activation so vision connects soon after app + engine cold start (e.g. eMeet + spawned Python). */
+const STARTUP_WARMUP_DELAYS_MS = [450, 1100, 2200, 4000, 7000, 12000] as const
 
 export function useVision(active: boolean) {
   const [context, setContext] = useState<VisionContext>(EMPTY_CONTEXT)
@@ -114,7 +110,7 @@ export function useVision(active: boolean) {
     try {
       await fetch('/api/vision/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...visionCameraHeader() },
+        headers: { 'Content-Type': 'application/json', ...getVisionCameraLabelHeaders() },
         /** Jarvis Visual Engine may honor these; unknown fields are typically ignored. */
         body: JSON.stringify({
           include_visible_text: true,
@@ -129,7 +125,7 @@ export function useVision(active: boolean) {
 
   const fetchContext = useCallback(async () => {
     try {
-      const res = await fetch('/api/vision/context', { headers: visionCameraHeader() })
+      const res = await fetch('/api/vision/context', { headers: getVisionCameraLabelHeaders() })
       if (!res.ok) {
         setContext((prev) => ({ ...prev, connected: false }))
         return
@@ -191,10 +187,21 @@ export function useVision(active: boolean) {
     triggerAnalysis()
     fetchContext()
 
+    const warmupIds: number[] = []
+    for (const ms of STARTUP_WARMUP_DELAYS_MS) {
+      warmupIds.push(
+        window.setTimeout(() => {
+          void triggerAnalysis()
+          void fetchContext()
+        }, ms),
+      )
+    }
+
     pollTimerRef.current = setInterval(fetchContext, POLL_INTERVAL_MS)
     analysisTimerRef.current = setInterval(triggerAnalysis, ANALYSIS_INTERVAL_MS)
 
     return () => {
+      for (const id of warmupIds) window.clearTimeout(id)
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
       if (analysisTimerRef.current) clearInterval(analysisTimerRef.current)
       pollTimerRef.current = null

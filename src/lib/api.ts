@@ -1,4 +1,5 @@
 import { callLlm, llmPrompt } from './llm'
+import { getPreferredChatModel } from './chat-preferences'
 import { Source, FocusMode } from './types'
 
 export interface TavilySearchResult {
@@ -119,7 +120,7 @@ Sources covered: ${sources.map((s) => s.title).join(', ')}
 
 Return a JSON object only, with this shape: {"questions": ["question1", "question2", "question3"]}. Each question must be specific and actionable.`
 
-    const result = await callLlm(prompt, 'gpt-4o-mini', true)
+    const result = await callLlm(prompt, getPreferredChatModel('gpt-4o-mini'), true)
     const parsed = JSON.parse(result)
 
     if (parsed.questions && Array.isArray(parsed.questions)) {
@@ -228,7 +229,7 @@ Return a JSON object with this structure:
 }`
 
   try {
-    const analysisResult = await callLlm(analysisPrompt, 'gpt-4o-mini', true)
+    const analysisResult = await callLlm(analysisPrompt, getPreferredChatModel('gpt-4o-mini'), true)
     const convergence = JSON.parse(analysisResult)
     
     return {

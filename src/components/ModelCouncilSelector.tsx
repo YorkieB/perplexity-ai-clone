@@ -16,6 +16,8 @@ import { Hammer, CheckCircle } from '@phosphor-icons/react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { fetchDigitalOceanModels } from '@/lib/digitalocean-api'
+import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-models'
+import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
 
 import { ModelBadges } from '@/components/ModelBadges'
 
@@ -59,9 +61,8 @@ export function ModelCouncilSelector({
   defaultSelected = ['gpt-4o', 'claude-3.5-sonnet'],
 }: ModelCouncilSelectorProps) {
   const [userSettings] = useLocalStorage<UserSettings>('user-settings', defaultUserSettings)
-  const useEnvInference = Boolean(import.meta.env.VITE_USE_DO_INFERENCE)
   const doToken = userSettings?.apiKeys?.digitalOcean?.trim()
-  const useDigitalOceanCatalog = Boolean(doToken) || useEnvInference
+  const useDigitalOceanCatalog = clientMayUseDigitalOceanInference(doToken)
 
   const [remoteModels, setRemoteModels] = useState<
     Awaited<ReturnType<typeof fetchDigitalOceanModels>>
@@ -71,16 +72,16 @@ export function ModelCouncilSelector({
   const [selectedModels, setSelectedModels] = useState<string[]>(defaultSelected)
 
   const availableModels: ModelOption[] = useMemo(() => {
-    if (useDigitalOceanCatalog && remoteModels.length > 0) {
-      return remoteModels.map((m, i) => ({
-        id: `do:${m.id}`,
-        name: m.name,
-        description: m.description || 'DigitalOcean serverless model',
-        badge: i < 3 ? 'DO' : undefined,
-        badgeVariant: 'secondary' as const,
-      }))
+    if (!useDigitalOceanCatalog) {
+      return fallbackModels
     }
-    return fallbackModels
+    const merged = mergeDigitalOceanInferenceCatalog(remoteModels)
+    const doOpts: ModelOption[] = merged.map((m) => ({
+      id: `do:${m.id}`,
+      name: m.name,
+      description: m.description || 'DigitalOcean serverless inference',
+    }))
+    return [...fallbackModels, ...doOpts]
   }, [useDigitalOceanCatalog, remoteModels])
 
   useEffect(() => {
@@ -112,13 +113,16 @@ export function ModelCouncilSelector({
   }, [open, useDigitalOceanCatalog, doToken])
 
   useEffect(() => {
-    if (remoteModels.length < 2) return
+    const ids = new Set(availableModels.map((m) => m.id))
+    if (ids.size < 2) return
     setSelectedModels((prev) => {
-      const valid = prev.filter((id) => remoteModels.some((m) => m.id === id))
+      const valid = prev.filter((id) => ids.has(id))
       if (valid.length >= 2) return valid
-      return [remoteModels[0].id, remoteModels[1].id]
+      const a = availableModels[0]?.id
+      const b = availableModels[1]?.id
+      return a && b ? [a, b] : prev
     })
-  }, [remoteModels])
+  }, [availableModels])
 
   const handleToggleModel = (modelId: string) => {
     setSelectedModels((current) =>
@@ -150,8 +154,8 @@ export function ModelCouncilSelector({
           </DialogTitle>
           <DialogDescription>
             {useDigitalOceanCatalog
-              ? 'Models are loaded from your DigitalOcean Gradient™ catalog. Select at least 2.'
-              : 'Add a DigitalOcean API token in Settings (or DIGITALOCEAN_API_KEY in .env) to use the full catalog, or pick from the default list.'}{' '}
+              ? 'OpenAI models plus DigitalOcean Gradient™ inference (API catalog merged with common fallbacks). Select at least 2.'
+              : 'Add a DigitalOcean inference key in Settings (or DIGITALOCEAN_API_KEY in .env) to add DO models alongside the default OpenAI list.'}{' '}
             Models respond in parallel and answers are analyzed for convergence.
           </DialogDescription>
         </DialogHeader>

@@ -39,3 +39,8 @@ data/lessons.json
 data/sessions.json
 data/jarvis.db
 data/
+
+# Python (editable install / local builds)
+*.egg-info/
+**/__pycache__/
+*.pyc

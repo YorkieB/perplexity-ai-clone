@@ -52,6 +52,7 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
+import { shouldPushUiSync } from '@/lib/ui-sync'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -110,6 +111,28 @@ function MainApp() {
     enabled: Boolean(wakeWordEnabled) && !voiceModalOpen,
     onWake: () => setVoiceModalOpen(true),
   })
+
+  useEffect(() => {
+    if (!shouldPushUiSync(threads, workspaces, userSettings, Boolean(wakeWordEnabled))) return
+    const t = window.setTimeout(() => {
+      const entries: Record<string, string> = {}
+      try {
+        entries['user-settings'] = JSON.stringify(userSettings)
+        entries['threads'] = JSON.stringify(threads)
+        entries['wake-word-enabled'] = JSON.stringify(wakeWordEnabled)
+        entries['workspaces'] = JSON.stringify(workspaces)
+      } catch {
+        return
+      }
+      void fetch('/api/ui-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entries }),
+        credentials: 'same-origin',
+      }).catch(() => {})
+    }, 2000)
+    return () => window.clearTimeout(t)
+  }, [threads, userSettings, wakeWordEnabled, workspaces])
 
   const [mainAutopilot, setMainAutopilot] = useState(false)
   const [mainAutopilotRunning, setMainAutopilotRunning] = useState(false)
@@ -925,6 +948,10 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
       <Toaster position="top-center" />
       <ProactiveVisionLoop />
 
+      <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
+        <main className="flex-1 overflow-hidden min-w-0">{renderMainContent()}</main>
+      </AppModuleRails>
+
       <AppSidebar
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
@@ -959,10 +986,6 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
         reasoningDashboardActive={mainView === 'dashboard'}
         onOpenReasoningDashboard={() => setMainView('dashboard')}
       />
-
-      <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
-        <main className="flex-1 overflow-hidden">{renderMainContent()}</main>
-      </AppModuleRails>
 
       <WorkspaceDialog
         open={workspaceDialogOpen}

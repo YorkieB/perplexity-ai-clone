@@ -1466,6 +1466,8 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
 // ── Tool executor ───────────────────────────────────────────────────────────
 
 interface ToolExecutorDeps {
+  /** Model id for nested LLM calls (e.g. browser_task agent) — include `do:` prefix for DigitalOcean. */
+  primaryChatModel?: string
   browserControl: BrowserControl | null
   guideMode: boolean
   onStatus?: (status: string) => void
@@ -1486,6 +1488,7 @@ interface ToolExecutorDeps {
 
 function createToolExecutor(deps: ToolExecutorDeps) {
   const {
+    primaryChatModel,
     browserControl, guideMode, onStatus,
     mediaCanvasControl, onMediaGenerating, onMediaGeneratingLabel, openMediaCanvas,
     openCodeEditor,
@@ -1613,7 +1616,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
           const vgm = deps.userSettings?.voiceGuidanceMode ?? (guideMode ? 'guide' : 'copilot')
           const result = await runBrowserAgent(goal, browserControl, {
             maxSteps: 25,
-            model: 'gpt-4o-mini',
+            model: primaryChatModel?.trim() || 'gpt-4o-mini',
             guideMode: vgm === 'guide',
             voiceGuidanceMode: vgm,
             onSpeakNarration: (text) => {
@@ -3074,6 +3077,7 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
   const toolsUsed: string[] = []
 
   const rawExecutor = createToolExecutor({
+    primaryChatModel: model,
     browserControl, guideMode, onStatus,
     mediaCanvasControl, onMediaGenerating, onMediaGeneratingLabel, openMediaCanvas,
     codeEditorControl, getCodeEditorControl, openCodeEditor,
@@ -3135,6 +3139,7 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
       sourceEvidence,
       toolOutputs,
       strictMode: true,
+      auditModel: model,
     })
     finalContent = validated.response
   } catch { /* use original content */ }
