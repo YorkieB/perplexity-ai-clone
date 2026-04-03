@@ -182,6 +182,10 @@ export function getModelBadges(modelId: string): ModelBadge[] {
 
   const badges: ModelBadge[] = []
 
+  if (id.startsWith('replicate:')) {
+    return [{ kind: 'creative', label: 'Replicate' }]
+  }
+
   if (id.startsWith('a2e-')) {
     if (isA2eVoice(id)) badges.push({ kind: 'voice', label: 'Voice' })
     if (isA2eCreative(id)) badges.push({ kind: 'creative', label: 'Creative' })

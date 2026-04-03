@@ -11,10 +11,29 @@ export type ChatUserContentPart =
   | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
 
 const DO_MODEL_PREFIX = 'do:'
+/** UI/catalog prefix — Replicate slugs are not OpenAI chat models; {@link resolveLlmRoutingModel} maps these for `/api/llm`. */
+const REPLICATE_SELECTOR_PREFIX = 'replicate:'
+
+/**
+ * Map selector entries (e.g. `replicate:owner/model`) to a real OpenAI-compatible chat model.
+ * Replicate catalog entries are for tools and discovery; main chat still uses OpenAI/DO inference.
+ */
+export function resolveLlmRoutingModel(model: string): string {
+  const m = model.trim()
+  if (m.startsWith(REPLICATE_SELECTOR_PREFIX)) {
+    return 'gpt-4o-mini'
+  }
+  return m
+}
 
 /** Strip the `do:` routing prefix (if present) to get the actual model ID for the upstream API. */
 export function stripDoPrefix(model: string): string {
   return model.startsWith(DO_MODEL_PREFIX) ? model.slice(DO_MODEL_PREFIX.length) : model
+}
+
+/** Normalised model id sent in POST `/api/llm` JSON body (OpenAI or DO slug). */
+export function normalizeLlmModelForApiRequest(model: string): string {
+  return stripDoPrefix(resolveLlmRoutingModel(model))
 }
 
 /**
@@ -23,7 +42,8 @@ export function stripDoPrefix(model: string): string {
  * Use this for any manual `fetch('/api/llm', …)` so Electron/Vite proxies match {@link callLlm}.
  */
 export function getLlmProviderHeadersForModel(model: string): Record<string, string> {
-  if (model.startsWith(DO_MODEL_PREFIX) || model.includes('/')) {
+  const routed = resolveLlmRoutingModel(model)
+  if (routed.startsWith(DO_MODEL_PREFIX) || routed.includes('/')) {
     return { 'x-llm-provider': 'digitalocean' }
   }
   return {}
@@ -44,7 +64,7 @@ export async function callLlm(
   jsonMode = false
 ): Promise<string> {
   const body: Record<string, unknown> = {
-    model: stripDoPrefix(model),
+    model: normalizeLlmModelForApiRequest(model),
     messages: [
       { role: 'system', content: 'You are a helpful assistant.' },
       { role: 'user', content: prompt },
@@ -128,7 +148,7 @@ export async function callLlmWithTools(
   options?: CallLlmWithToolsOptions,
 ): Promise<CallLlmToolsResult> {
   const body: Record<string, unknown> = {
-    model: stripDoPrefix(model),
+    model: normalizeLlmModelForApiRequest(model),
     messages,
     temperature: options?.temperature ?? 0.7,
     max_tokens: options?.max_tokens ?? 4096,
@@ -181,7 +201,7 @@ export async function callLlmChat(
   options?: { signal?: AbortSignal; max_tokens?: number; temperature?: number },
 ): Promise<string> {
   const body: Record<string, unknown> = {
-    model: stripDoPrefix(model),
+    model: normalizeLlmModelForApiRequest(model),
     messages,
     temperature: options?.temperature ?? 0.4,
     max_tokens: options?.max_tokens ?? 512,
@@ -300,7 +320,7 @@ export async function* callLlmStream(
     headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
     signal: opts.signal,
     body: JSON.stringify({
-      model: stripDoPrefix(model),
+      model: normalizeLlmModelForApiRequest(model),
       messages: [
         { role: 'system', content: opts.systemPrompt ?? 'You are a helpful assistant.' },
         { role: 'user', content: userContent },

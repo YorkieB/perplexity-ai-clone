@@ -3,7 +3,12 @@
  * Python runs in the main thread via Pyodide WASM; TS/JS is transpiled then run
  * via the indirect Function constructor (avoids direct `new Function`, which
  * static analysis flags as dynamic eval).
+ *
+ * TS/TSX uses **sucrase** (small) instead of the `typescript` package (~3.5MB+)
+ * so production builds stay lean; behaviour is “strip types + JSX” for the runner.
  */
+
+import { transform } from 'sucrase'
 
 import type { CodeRunResult } from '@/contexts/CodeEditorContext'
 
@@ -68,16 +73,11 @@ export async function runPython(code: string): Promise<CodeRunResult> {
   }
 }
 
-async function transpileToJs(source: string): Promise<string> {
-  const ts = await import('typescript')
-  return ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.None,
-      removeComments: false,
-    },
-    reportDiagnostics: false,
-  }).outputText
+function transpileTsLike(source: string, mode: 'ts' | 'tsx'): string {
+  const { code } = transform(source, {
+    transforms: mode === 'tsx' ? ['typescript', 'jsx'] : ['typescript'],
+  })
+  return code
 }
 
 export async function runJavaScript(code: string): Promise<CodeRunResult> {
@@ -119,8 +119,11 @@ export async function runCode(code: string, language: string): Promise<CodeRunRe
   const lang = language.toLowerCase()
   if (lang === 'python' || lang === 'py') return runPython(code)
   if (lang === 'javascript' || lang === 'js') return runJavaScript(code)
-  if (lang === 'typescript' || lang === 'ts' || lang === 'tsx') {
-    return runJavaScript(await transpileToJs(code))
+  if (lang === 'typescript' || lang === 'ts') {
+    return runJavaScript(transpileTsLike(code, 'ts'))
+  }
+  if (lang === 'tsx') {
+    return runJavaScript(transpileTsLike(code, 'tsx'))
   }
   return {
     stdout: '',

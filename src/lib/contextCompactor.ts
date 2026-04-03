@@ -59,6 +59,9 @@ FORMAT:
 
 function modelTokenLimit(model: string): number {
   let m = model.trim()
+  if (m.startsWith('replicate:')) {
+    m = 'gpt-4o-mini'
+  }
   if (m.startsWith('do:')) {
     m = m.slice(3)
   }

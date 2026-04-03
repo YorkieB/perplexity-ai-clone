@@ -93,6 +93,26 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
     description:
       'Generate speech audio from text with configurable voice profiles and emotion parameters.',
   },
+  replicate_search_models: {
+    name: 'replicate_search_models',
+    description: 'Search Replicate’s public model catalogue for model ids and descriptions.',
+  },
+  replicate_generate_image: {
+    name: 'replicate_generate_image',
+    description: 'Generate images via Replicate (many models; default flux-2-pro).',
+  },
+  replicate_transcribe: {
+    name: 'replicate_transcribe',
+    description: 'Transcribe audio from a URL using Whisper on Replicate.',
+  },
+  replicate_generate_video: {
+    name: 'replicate_generate_video',
+    description: 'Generate short videos via Replicate (e.g. WAN i2v).',
+  },
+  replicate_tts: {
+    name: 'replicate_tts',
+    description: 'Text-to-speech via Replicate (Kokoro and similar).',
+  },
 }
 
 /**
@@ -103,9 +123,18 @@ export const TOOLS_BY_INTENT: Record<string, string[]> = {
   clarification_needed: [],
   conversational: [],
   knowledge_lookup: ['web_search', 'rag_search'],
-  task_execution: ['code_runner', 'file_system', 'browser_automation'],
-  image_task: ['image_generation'],
-  voice_task: ['voice_synthesis'],
+  task_execution: [
+    'code_runner',
+    'file_system',
+    'browser_automation',
+    'replicate_search_models',
+    'replicate_generate_image',
+    'replicate_transcribe',
+    'replicate_generate_video',
+    'replicate_tts',
+  ],
+  image_task: ['image_generation', 'replicate_generate_image', 'replicate_search_models'],
+  voice_task: ['voice_synthesis', 'replicate_tts'],
   file_task: ['file_system'],
   browser_task: ['browser_automation'],
   desktop_automation: [

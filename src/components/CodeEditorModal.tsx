@@ -29,6 +29,7 @@ import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/dig
 import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-models'
 import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
 import { getPreferredChatModel, setPreferredChatModel } from '@/lib/chat-preferences'
+import { useReplicateModelCatalog } from '@/hooks/useReplicateModelCatalog'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import type { UserSettings } from '@/lib/types'
 import { JarvisExplorerBadgeStrip } from '@/components/jarvis/JarvisExplorerBadgeStrip'
@@ -545,6 +546,7 @@ export function CodeEditorModal({
   const [ideReasoning, setIdeReasoning] = useState<IdeReasoningMode>('auto')
   const [debugLogLines, setDebugLogLines] = useState<string[]>([])
   const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
+  const { selectorOptions: replicateModelOptions } = useReplicateModelCatalog(2000)
 
   const [userSettings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
   const doToken = userSettings?.apiKeys?.digitalOcean?.trim()
@@ -574,13 +576,14 @@ export function CodeEditorModal({
       { id: 'gpt-4o', label: 'GPT-4o' },
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
     ]
+    const rep = replicateModelOptions.map((m) => ({ id: m.id, label: m.label }))
     if (!useDigitalOcean) {
-      return base
+      return [...base, ...rep]
     }
     const merged = mergeDigitalOceanInferenceCatalog(doModels)
     const doItems = merged.map((m) => ({ id: `do:${m.id}`, label: `DO · ${m.name}` }))
-    return [...base, ...doItems]
-  }, [doModels, useDigitalOcean])
+    return [...base, ...doItems, ...rep]
+  }, [doModels, useDigitalOcean, replicateModelOptions])
 
   const hasElectronFs = globalThis.window?.jarvisIde !== undefined
 

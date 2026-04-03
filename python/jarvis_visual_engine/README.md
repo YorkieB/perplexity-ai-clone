@@ -32,7 +32,7 @@ JARVIS_VISION_ENGINE_COMMAND=python -m jarvis_visual_engine
 
 If multiple Pythons exist, use the full path to `python.exe` in `JARVIS_VISION_ENGINE_COMMAND`.
 
-If the wrong camera opens, set `JARVIS_VISION_CAMERA_INDEX` to `0`, `1`, etc. (OpenCV device index; try `1` if eMeet is the second camera).
+If the wrong camera opens, set `JARVIS_VISION_CAMERA_INDEX` to `0`–`3` (OpenCV device index). eMeet is often **`2`** when other devices (integrated, IR, virtual) occupy `0` and `1`.
 
 ## API key
 

@@ -222,6 +222,11 @@ interface ImportMetaEnv {
   readonly VITE_JARVIS_BROWSER_SEARCH_NAME?: string
   /** Home / “Home” button URL (default: current app origin). */
   readonly VITE_JARVIS_BROWSER_HOMEPAGE?: string
+  /**
+   * Optional direct base URL for the Replicate FastAPI bridge (default: same-origin `/api/replicate` via proxy).
+   * Example: `http://127.0.0.1:18865` (must match `REPLICATE_BRIDGE_URL` / bridge stdout)
+   */
+  readonly VITE_REPLICATE_BRIDGE_URL?: string
 }
 
 export {}

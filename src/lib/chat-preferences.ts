@@ -92,6 +92,11 @@ export function isNonGenerativeChatModelId(id: string): boolean {
 }
 
 export function isInvalidChatModelId(id: string): boolean {
+  const s = id.trim()
+  /** Replicate catalog entries (`replicate:owner/model`) are valid in the selector; chat routing uses {@link resolveLlmRoutingModel} in `llm.ts`. */
+  if (s.startsWith('replicate:')) {
+    return isRemovedChatModelId(s)
+  }
   return isRemovedChatModelId(id) || isNonGenerativeChatModelId(id)
 }
 

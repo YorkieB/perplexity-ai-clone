@@ -31,6 +31,65 @@ export interface VisionContext {
  * The visual engine often omits `camera_connected` or returns it late. Infer "camera path active"
  * from any real frame/scene signal so voice instructions and UI stay aligned with reality.
  */
+/** Nested envelopes some vision engines use (`data`, `result`, …). */
+function nestedVisionRecord(data: Record<string, unknown>): Record<string, unknown> | null {
+  for (const k of ['data', 'result', 'payload', 'context'] as const) {
+    const v = data[k]
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
+  }
+  return null
+}
+
+/**
+ * First non-empty scene source from engine JSON (top-level + nested).
+ * Exported for voice session bootstrap — must match {@link visionContextFromEnginePayload}.
+ */
+export function pickSceneRawFromPayload(data: Record<string, unknown>): unknown {
+  const nested = nestedVisionRecord(data)
+  const candidates: unknown[] = [
+    data.scene_description,
+    data.scene_summary,
+    data.room_description,
+    typeof data.description === 'string' ? data.description : undefined,
+    data.analysis,
+    typeof data.scene === 'string' ? data.scene : undefined,
+  ]
+  if (nested) {
+    candidates.push(
+      nested.scene_description,
+      nested.scene_summary,
+      nested.room_description,
+      typeof nested.description === 'string' ? nested.description : undefined,
+      nested.analysis,
+      typeof nested.scene === 'string' ? nested.scene : undefined,
+    )
+  }
+  for (const c of candidates) {
+    if (c !== undefined && c !== null && c !== '') return c
+  }
+  return undefined
+}
+
+function normalizeEmotionFromPayload(raw: unknown): VisionEmotion | null {
+  if (raw == null) return null
+  if (typeof raw === 'string' && raw.trim()) {
+    return { primary: raw.trim().slice(0, 80), confidence: 0.5 }
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const primaryRaw = o.primary ?? o.label ?? o.dominant ?? o.mood
+  if (typeof primaryRaw !== 'string' || !primaryRaw.trim()) return null
+  let conf = 0.5
+  const c = o.confidence ?? o.score
+  if (typeof c === 'number' && !Number.isNaN(c)) {
+    conf = c > 1 ? Math.min(1, c / 100) : Math.max(0, Math.min(1, c))
+  }
+  const out: VisionEmotion = { primary: primaryRaw.trim().slice(0, 80), confidence: conf }
+  const sec = o.secondary
+  if (typeof sec === 'string' && sec.trim()) out.secondary = sec.trim().slice(0, 80)
+  return out
+}
+
 function inferCameraActiveFromPayload(data: Record<string, unknown>): boolean {
   const frames =
     (data.frames_processed as number | undefined) ??
@@ -38,7 +97,7 @@ function inferCameraActiveFromPayload(data: Record<string, unknown>): boolean {
     0
   if (frames > 0) return true
 
-  const sceneRaw = data.scene_description ?? data.analysis
+  const sceneRaw = pickSceneRawFromPayload(data)
   const sceneStr =
     typeof sceneRaw === 'string'
       ? sceneRaw
@@ -48,8 +107,12 @@ function inferCameraActiveFromPayload(data: Record<string, unknown>): boolean {
   if (sceneStr.trim().length > 0) return true
 
   if (pickVisibleText(data)) return true
+  const nestedForInfer = nestedVisionRecord(data)
+  if (nestedForInfer && pickVisibleText(nestedForInfer)) return true
   if (Array.isArray(data.faces) && data.faces.length > 0) return true
+  if (nestedForInfer && Array.isArray(nestedForInfer.faces) && nestedForInfer.faces.length > 0) return true
   if (data.emotion != null) return true
+  if (nestedForInfer?.emotion != null) return true
   if (((data.motion_detections as number | undefined) ?? 0) > 0) return true
   return false
 }
@@ -79,6 +142,78 @@ function pickVisibleText(data: Record<string, unknown>): string | null {
     if (nested) return nested
   }
   return null
+}
+
+/**
+ * Maps a `/api/vision/context` JSON body to {@link VisionContext}.
+ * Used by {@link useVision} polling and by voice Realtime bootstrap so the first
+ * [VISUAL CONTEXT UPDATE] matches the same HTTP response (React state can lag by a poll interval).
+ */
+export function visionContextFromEnginePayload(data: Record<string, unknown>): VisionContext {
+  const sceneRaw = pickSceneRawFromPayload(data)
+  const sceneDescription =
+    typeof sceneRaw === 'string'
+      ? sceneRaw
+      : sceneRaw && typeof sceneRaw === 'object' && 'description' in sceneRaw && typeof (sceneRaw as { description?: unknown }).description === 'string'
+        ? (sceneRaw as { description: string }).description
+        : typeof sceneRaw === 'object' && sceneRaw !== null && 'text' in sceneRaw && typeof (sceneRaw as { text?: unknown }).text === 'string'
+          ? (sceneRaw as { text: string }).text
+          : null
+
+  const nested = nestedVisionRecord(data)
+  const visibleFromTop = pickVisibleText(data) ?? (nested ? pickVisibleText(nested) : null)
+  const visibleFromScene =
+    typeof sceneRaw === 'object' && sceneRaw !== null
+      ? pickVisibleText(sceneRaw as Record<string, unknown>)
+      : null
+
+  const emotionRaw = data.emotion ?? nested?.emotion
+  const emotion = normalizeEmotionFromPayload(emotionRaw)
+
+  const stats = (data.stats as { frames_processed?: number } | undefined) ?? (nested?.stats as { frames_processed?: number } | undefined)
+
+  const svcUp = (data.connected as boolean | undefined) ?? true
+  const explicitCam = data.camera_connected as boolean | undefined
+  const inferredCam = inferCameraActiveFromPayload(data)
+  /** True when we have any grounded pixels/text for the LLM (faces, frames, scene copy, OCR). */
+  const hasRenderableScene =
+    Boolean(sceneDescription?.trim()) ||
+    Boolean(visibleFromTop ?? visibleFromScene) ||
+    (Array.isArray(data.faces) && data.faces.length > 0) ||
+    (nested && Array.isArray(nested.faces) && nested.faces.length > 0) ||
+    emotion != null ||
+    ((data.frames_processed as number | undefined) ?? stats?.frames_processed ?? 0) > 0
+  /**
+   * If the engine sets `camera_connected: false` but still returns scene/error text or frame stats,
+   * keep "camera path" true for prompts so the model does not deny vision while describing the payload.
+   */
+  const cameraConnected =
+    svcUp && (explicitCam === true || explicitCam === undefined || inferredCam || hasRenderableScene)
+
+  const facesRec =
+    (data.faces_recognized as number | undefined) ??
+    (nested?.faces_recognized as number | undefined) ??
+    (stats as { faces_recognized?: number } | undefined)?.faces_recognized ??
+    0
+  const motionDet =
+    (data.motion_detections as number | undefined) ??
+    (nested?.motion_detections as number | undefined) ??
+    (stats as { motion_detections?: number } | undefined)?.motion_detections ??
+    0
+
+  return {
+    connected: svcUp,
+    cameraConnected,
+    faces: Array.isArray(data.faces) ? (data.faces as VisionFace[]) : nested && Array.isArray(nested.faces) ? (nested.faces as VisionFace[]) : [],
+    sceneDescription,
+    visibleText: visibleFromTop ?? visibleFromScene,
+    emotion,
+    framesProcessed: (data.frames_processed as number | undefined) ?? stats?.frames_processed ?? 0,
+    facesRecognized: facesRec,
+    motionDetections: motionDet,
+    apiCalls: (data.api_calls as number | undefined) ?? (nested?.api_calls as number | undefined) ?? 0,
+    lastUpdated: (data.last_updated as string | undefined) ?? (data.timestamp as string | undefined) ?? new Date().toISOString(),
+  }
 }
 
 const EMPTY_CONTEXT: VisionContext = {
@@ -131,44 +266,7 @@ export function useVision(active: boolean) {
         return
       }
       const data = (await res.json()) as Record<string, unknown>
-
-      const sceneRaw = data.scene_description ?? data.analysis
-      const sceneDescription =
-        typeof sceneRaw === 'string'
-          ? sceneRaw
-          : sceneRaw && typeof sceneRaw === 'object' && 'description' in sceneRaw && typeof (sceneRaw as { description?: unknown }).description === 'string'
-            ? (sceneRaw as { description: string }).description
-            : typeof sceneRaw === 'object' && sceneRaw !== null && 'text' in sceneRaw && typeof (sceneRaw as { text?: unknown }).text === 'string'
-              ? (sceneRaw as { text: string }).text
-              : null
-
-      const visibleFromTop = pickVisibleText(data)
-      const visibleFromScene =
-        typeof sceneRaw === 'object' && sceneRaw !== null
-          ? pickVisibleText(sceneRaw as Record<string, unknown>)
-          : null
-
-      const svcUp = (data.connected as boolean | undefined) ?? true
-      const explicitCam = data.camera_connected as boolean | undefined
-      const inferredCam = inferCameraActiveFromPayload(data)
-      /** Service must be up; then accept explicit OK, inferred signals, or unknown camera flag (engine often omits camera_connected). */
-      const cameraConnected =
-        svcUp &&
-        (inferredCam || explicitCam === true || explicitCam !== false)
-
-      setContext({
-        connected: svcUp,
-        cameraConnected,
-        faces: Array.isArray(data.faces) ? (data.faces as VisionFace[]) : [],
-        sceneDescription,
-        visibleText: visibleFromTop ?? visibleFromScene,
-        emotion: (data.emotion as VisionEmotion | null) ?? null,
-        framesProcessed: (data.frames_processed as number | undefined) ?? (data.stats as { frames_processed?: number } | undefined)?.frames_processed ?? 0,
-        facesRecognized: (data.faces_recognized as number | undefined) ?? (data.stats as { faces_recognized?: number } | undefined)?.faces_recognized ?? 0,
-        motionDetections: (data.motion_detections as number | undefined) ?? (data.stats as { motion_detections?: number } | undefined)?.motion_detections ?? 0,
-        apiCalls: (data.api_calls as number | undefined) ?? (data.stats as { api_calls?: number } | undefined)?.api_calls ?? 0,
-        lastUpdated: (data.last_updated as string | undefined) ?? (data.timestamp as string | undefined) ?? new Date().toISOString(),
-      })
+      setContext(visionContextFromEnginePayload(data))
     } catch {
       setContext((prev) => ({ ...prev, connected: false }))
     }

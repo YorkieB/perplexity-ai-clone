@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import type { VisionContext } from './useVision'
+import { visionContextFromEnginePayload, type VisionContext } from './useVision'
 import type { TuneInControl } from '@/contexts/TuneInControlContext'
 import type { BrowserControl } from '@/contexts/BrowserControlContext'
 import type { MediaCanvasControl } from '@/contexts/MediaCanvasContext'
@@ -38,7 +38,14 @@ import {
 } from '@/lib/desktop-automation-realtime-tools'
 import { hasJarvisNativeBridgeForVoice } from '@/lib/jarvis-native-bridge'
 import { getPreferredChatModel } from '@/lib/chat-preferences'
-import { getLlmProviderHeadersForModel, stripDoPrefix } from '@/lib/llm'
+import { getLlmProviderHeadersForModel, normalizeLlmModelForApiRequest } from '@/lib/llm'
+import {
+  generateImage as replicateBridgeGenerateImage,
+  transcribeAudio as replicateBridgeTranscribeAudio,
+  generateVideo as replicateBridgeGenerateVideo,
+  synthesizeSpeech as replicateBridgeSynthesizeSpeech,
+  searchModels as replicateBridgeSearchModels,
+} from '@/lib/replicate-service'
 import { getVisionCameraLabelHeaders } from '@/lib/vision-camera-label'
 
 export type VoicePipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -672,6 +679,20 @@ When the user asks for a video or animation, use generate_video.
 When the user asks to edit, modify, adjust, enhance, or change the current image, use edit_image.
 Always tell the user what you're creating before calling the tool. After generation, let them know the result is in the Media Canvas.`
   }
+
+  base += `
+
+=== REPLICATE (Jarvis bridge) ===
+You can search and run public models on Replicate. The bridge must be running with REPLICATE_API_TOKEN (e.g. npm run replicate-bridge).
+- replicate_search_models: Search the model index by keyword to find model ids.
+- replicate_generate_image: Text-to-image (default black-forest-labs/flux-2-pro). Optional Replicate model id.
+- replicate_transcribe: Transcribe audio from a public HTTPS URL (Whisper on Replicate).
+- replicate_generate_video: Short video (default WAN 2.1 image-to-video); optional image_url.
+- replicate_tts: Text-to-speech (Kokoro); returns an audio URL.
+
+Use these when the user names Replicate, a specific model slug (owner/name), or asks for capabilities beyond the built-in media tools.
+=== END REPLICATE ===
+`
 
   base += `
 
@@ -1463,7 +1484,7 @@ Assistant: ${ai || ''}`
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(memModel) },
         body: JSON.stringify({
-          model: stripDoPrefix(memModel),
+          model: normalizeLlmModelForApiRequest(memModel),
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           response_format: { type: 'json_object' },
@@ -3136,6 +3157,165 @@ Assistant: ${ai || ''}`
             }
           })
 
+        } else if (fnName === 'replicate_search_models') {
+          let args: { query?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const q = args.query?.trim()
+          if (!callId || !q) break
+
+          setS('thinking')
+          runVoiceToolJob(async () => {
+            const sessionWs = wsRef.current
+            try {
+              const { results } = await replicateBridgeSearchModels({ query: q })
+              const output =
+                results.length === 0
+                  ? 'No models found.'
+                  : results
+                      .map(
+                        (r, i) =>
+                          `[${i + 1}] ${r.name}\n${r.description.length > 400 ? `${r.description.slice(0, 400)}…` : r.description}\nlatest: ${r.latest_version_id ?? '(unknown)'}`,
+                      )
+                      .join('\n\n')
+              const ws = wsRef.current
+              if (!isOpenRef.current || ws !== sessionWs) return
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            } catch (e) {
+              const ws = wsRef.current
+              if (!isOpenRef.current || ws !== sessionWs) return
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: `Replicate search failed: ${e instanceof Error ? e.message : String(e)}` } }))
+                ws.send(JSON.stringify({ type: 'response.create' }))
+              }
+            }
+          })
+
+        } else if (fnName === 'replicate_generate_image') {
+          let args: { prompt?: string; model?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const prompt = args.prompt?.trim()
+          if (!callId || !prompt) break
+
+          setS('thinking')
+          onMediaGeneratingRef.current?.(true)
+          onMediaGeneratingLabelRef.current?.('Replicate image...')
+          openMediaCanvasRef.current?.()
+
+          runVoiceToolJob(async () => {
+            try {
+              const model =
+                typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
+              const result = await replicateBridgeGenerateImage({ prompt, model })
+              if (!isOpenRef.current) return
+              const mc = mediaCanvasRef.current
+              const u = result.url
+              if (u && mc) mc.showImage(u, prompt)
+              const extra = result.local_path ? ` Saved locally: ${result.local_path}` : ''
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                u ? `Image generated. URL: ${u}.${extra}` : 'Image generation returned no URL.',
+              )
+            } catch (e) {
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                `Replicate image failed: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            } finally {
+              onMediaGeneratingRef.current?.(false)
+              onMediaGeneratingLabelRef.current?.('')
+            }
+          })
+
+        } else if (fnName === 'replicate_transcribe') {
+          let args: { audio_url?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const audioUrl = args.audio_url?.trim()
+          if (!callId || !audioUrl) break
+
+          setS('thinking')
+          runVoiceToolJob(async () => {
+            try {
+              const { text } = await replicateBridgeTranscribeAudio({ audio_url: audioUrl })
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, text?.trim() || '(empty transcript)')
+            } catch (e) {
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                `Replicate transcribe failed: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
+          })
+
+        } else if (fnName === 'replicate_generate_video') {
+          let args: { prompt?: string; image_url?: string; model?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const prompt = args.prompt?.trim()
+          if (!callId || !prompt) break
+
+          setS('thinking')
+          onMediaGeneratingRef.current?.(true)
+          onMediaGeneratingLabelRef.current?.('Replicate video...')
+          openMediaCanvasRef.current?.()
+
+          runVoiceToolJob(async () => {
+            try {
+              const imageUrl =
+                typeof args.image_url === 'string' && args.image_url.trim() !== ''
+                  ? args.image_url.trim()
+                  : undefined
+              const model =
+                typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
+              const result = await replicateBridgeGenerateVideo({ prompt, image_url: imageUrl, model })
+              if (!isOpenRef.current) return
+              const mc = mediaCanvasRef.current
+              const u = result.url
+              if (u && mc) mc.showVideo(u, prompt)
+              const extra = result.local_path ? ` Saved locally: ${result.local_path}` : ''
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                u ? `Video generated. URL: ${u}.${extra}` : 'Video generation returned no URL.',
+              )
+            } catch (e) {
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                `Replicate video failed: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            } finally {
+              onMediaGeneratingRef.current?.(false)
+              onMediaGeneratingLabelRef.current?.('')
+            }
+          })
+
+        } else if (fnName === 'replicate_tts') {
+          let args: { text?: string; voice?: string } = {}
+          try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
+          const text = args.text?.trim()
+          if (!callId || !text) break
+
+          setS('thinking')
+          runVoiceToolJob(async () => {
+            try {
+              const voice =
+                typeof args.voice === 'string' && args.voice.trim() !== '' ? args.voice.trim() : undefined
+              const result = await replicateBridgeSynthesizeSpeech({ text, voice })
+              const u = result.url
+              sendVoiceToolOutputWithCancel(wsRef.current, callId, u ? `Speech synthesized. URL: ${u}` : 'Speech synthesis returned no URL.')
+            } catch (e) {
+              sendVoiceToolOutputWithCancel(
+                wsRef.current,
+                callId,
+                `Replicate TTS failed: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
+          })
+
         } else if (fnName === 'get_account_balances' || fnName === 'get_transactions' || fnName === 'get_spending_summary') {
           let args: { start_date?: string; end_date?: string } = {}
           try { args = JSON.parse(msg.arguments as string) } catch { /* ignored */ }
@@ -3565,6 +3745,8 @@ Assistant: ${ai || ''}`
         if (wsRef.current !== ws) return
         /** Resolve after WS connects so the visual engine can finish spawning / HTTP warm-up (avoids baking in "camera offline" instructions). */
         let visionAvailable = false
+        /** Same JSON as HTTP context — React vision state often lags by one poll; inject this first. */
+        let freshVisionForInject: VisionContext | undefined
         const retryGapsMs = [0, 1000, 1500, 2500] as const
         for (let ri = 0; ri < retryGapsMs.length; ri++) {
           if (retryGapsMs[ri] > 0) {
@@ -3576,6 +3758,7 @@ Assistant: ${ai || ''}`
               const vData = (await vRes.json()) as Record<string, unknown>
               if ((vData.connected as boolean | undefined) !== false) {
                 visionAvailable = true
+                freshVisionForInject = visionContextFromEnginePayload(vData)
                 break
               }
             }
@@ -3948,6 +4131,76 @@ Assistant: ${ai || ''}`
             },
           )
         }
+
+        tools.push(
+          {
+            type: 'function',
+            name: 'replicate_search_models',
+            description:
+              'Search Replicate’s public model index (top matches). Use to discover model ids before running a specific model.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query (e.g. flux, whisper, video)' },
+              },
+              required: ['query'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'replicate_generate_image',
+            description:
+              'Generate an image via Replicate (default black-forest-labs/flux-2-pro). Returns a URL; shown in the Media Canvas when available.',
+            parameters: {
+              type: 'object',
+              properties: {
+                prompt: { type: 'string', description: 'Text prompt for the image' },
+                model: { type: 'string', description: 'Optional Replicate model id (e.g. black-forest-labs/flux-2-pro)' },
+              },
+              required: ['prompt'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'replicate_transcribe',
+            description: 'Transcribe audio from a public URL using OpenAI Whisper on Replicate.',
+            parameters: {
+              type: 'object',
+              properties: {
+                audio_url: { type: 'string', description: 'HTTPS URL of the audio file' },
+              },
+              required: ['audio_url'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'replicate_generate_video',
+            description:
+              'Generate a short video via Replicate (default WAN 2.1 i2v). Optional image_url for image-conditioned video.',
+            parameters: {
+              type: 'object',
+              properties: {
+                prompt: { type: 'string', description: 'Text prompt for the video' },
+                image_url: { type: 'string', description: 'Optional image URL for image-to-video' },
+                model: { type: 'string', description: 'Optional Replicate model id (e.g. wan-video/wan-2.1-i2v-720p)' },
+              },
+              required: ['prompt'],
+            },
+          },
+          {
+            type: 'function',
+            name: 'replicate_tts',
+            description: 'Synthesize speech from text using Kokoro TTS on Replicate. Returns an audio URL.',
+            parameters: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'Text to speak' },
+                voice: { type: 'string', description: 'Voice id (default af_heart)' },
+              },
+              required: ['text'],
+            },
+          },
+        )
 
         // Code editor tools — always available
         tools.push(
@@ -4567,7 +4820,7 @@ Assistant: ${ai || ''}`
         isOpenRef.current = true
         setS('listening')
 
-        const vcOpen = visionContextRef.current
+        const vcOpen = freshVisionForInject ?? visionContextRef.current
         if (vcOpen && ws.readyState === WebSocket.OPEN) {
           const summary = formatVisionForSession(vcOpen)
           prevVisionRef.current = summary

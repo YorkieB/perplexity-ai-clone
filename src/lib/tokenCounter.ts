@@ -36,6 +36,9 @@ const DEFAULT_MODEL = 'gpt-4o'
  */
 function normalizeModelId(model: string): string {
   let m = model.trim()
+  if (m.startsWith('replicate:')) {
+    return 'gpt-4o-mini'
+  }
   if (m.startsWith('do:')) {
     m = m.slice(3)
   }

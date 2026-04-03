@@ -1049,11 +1049,46 @@ function loadEnvFromFile() {
 
 /** Child process when `JARVIS_VISION_ENGINE_COMMAND` is set — stopped on app quit. */
 let visionEngineChild = null
+/** True while we intentionally kill the child (quit) — suppress auto-restart. */
+let visionEngineStopIntended = false
 
-function startJarvisVisionEngineIfConfigured() {
+function getJarvisVisionEngineCommand() {
   const cmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  if (cmd) return cmd
+  const a = String(process.env.JARVIS_VISION_AUTOSTART || '').trim().toLowerCase()
+  if (a === '1' || a === 'true' || a === 'yes') {
+    return 'python -m jarvis_visual_engine'
+  }
+  return ''
+}
+
+async function visionEngineHttpProbeOk() {
+  const base = getVisionEngineBaseUrl()
+  const key = process.env.VISION_API_KEY || 'jarvis-vision-local'
+  const label = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || 'emeet').trim() || 'emeet'
+  try {
+    const r = await fetch(`${base}/api/v1/context`, {
+      headers: { 'X-API-Key': key, 'X-Jarvis-Camera-Label': label },
+    })
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
+async function startJarvisVisionEngineIfConfigured() {
+  const cmd = getJarvisVisionEngineCommand()
   if (!cmd) return
   if (visionEngineChild && !visionEngineChild.killed) return
+  if (await visionEngineHttpProbeOk()) {
+    console.info(
+      '[vision-engine] HTTP already up at',
+      getVisionEngineBaseUrl(),
+      '— not spawning (Vite or another process is serving the engine)',
+    )
+    return
+  }
+  visionEngineStopIntended = false
   try {
     visionEngineChild = spawn(cmd, {
       cwd: PROJECT_ROOT,
@@ -1064,18 +1099,34 @@ function startJarvisVisionEngineIfConfigured() {
     visionEngineChild.on('exit', (code, signal) => {
       console.warn('[vision-engine] process exited', { code, signal: signal || '' })
       visionEngineChild = null
+      if (visionEngineStopIntended) return
+      setTimeout(() => {
+        void (async () => {
+          if (visionEngineStopIntended) return
+          if (await visionEngineHttpProbeOk()) {
+            console.info('[vision-engine] HTTP recovered elsewhere — not restarting local child')
+            return
+          }
+          console.info('[vision-engine] restarting…')
+          await startJarvisVisionEngineIfConfigured()
+        })()
+      }, 1500)
     })
     visionEngineChild.on('error', (err) => {
       console.error('[vision-engine] spawn error:', err.message)
       visionEngineChild = null
+      if (!visionEngineStopIntended) {
+        setTimeout(() => void startJarvisVisionEngineIfConfigured(), 2500)
+      }
     })
-    console.info('[vision-engine] started (JARVIS_VISION_ENGINE_COMMAND)')
+    console.info('[vision-engine] started:', cmd)
   } catch (e) {
     console.error('[vision-engine] failed to start:', e instanceof Error ? e.message : e)
   }
 }
 
 function stopJarvisVisionEngine() {
+  visionEngineStopIntended = true
   if (!visionEngineChild || visionEngineChild.killed) return
   try {
     visionEngineChild.kill('SIGTERM')
@@ -2457,11 +2508,59 @@ async function handleVisionProxy(req, res) {
   }
 }
 
+/**
+ * Proxy `/api/replicate/*` → Replicate FastAPI bridge (default `http://127.0.0.1:18865`; screen agent uses 8765).
+ * Set `REPLICATE_BRIDGE_URL` to match the bridge if it picked another port (see bridge stdout).
+ */
+function getReplicateBridgeBaseUrl() {
+  const u = String(process.env.REPLICATE_BRIDGE_URL || process.env.VITE_REPLICATE_BRIDGE_URL || 'http://127.0.0.1:18865').trim().replace(/\/$/, '')
+  return u || 'http://127.0.0.1:18865'
+}
+
+async function handleReplicateProxy(req, res) {
+  const urlPath = req.url?.split('?')[0] || '/'
+  const q = req.url?.indexOf('?')
+  const search = q !== undefined && q >= 0 ? req.url.slice(q) : ''
+  const targetPath = urlPath.replace(/^\/api\/replicate/, '') || '/'
+  const targetUrl = getReplicateBridgeBaseUrl() + targetPath + search
+
+  const headers = { ...req.headers }
+  delete headers.host
+
+  let body = null
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    body = Buffer.concat(chunks)
+  }
+
+  const fetchOpts = { method: req.method, headers }
+  if (body && body.length > 0) fetchOpts.body = body
+
+  try {
+    const upstream = await fetch(targetUrl, fetchOpts)
+    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' })
+    const data = await upstream.arrayBuffer()
+    res.end(Buffer.from(data))
+  } catch (e) {
+    const base = getReplicateBridgeBaseUrl()
+    console.warn('[replicate-proxy] bridge unreachable at', base + ':', e instanceof Error ? e.message : e)
+    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(
+      JSON.stringify({
+        error: {
+          message: `Replicate bridge not reachable at ${base}. Run npm run replicate-bridge with REPLICATE_API_TOKEN set.`,
+        },
+      }),
+    )
+  }
+}
+
 /** One-place startup lines for operators (voice, vision, RAG). */
 function logJarvisStartupBanner() {
   const openai = Boolean((process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '').trim())
   const base = getVisionEngineBaseUrl()
-  const spawnCmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  const spawnCmd = getJarvisVisionEngineCommand()
   let ragLine
   if (ragDb.isConfigured()) {
     ragLine = 'DATABASE_URL set — schema init runs async (see [rag-db])'
@@ -2490,7 +2589,7 @@ function logJarvisStartupBanner() {
  * Set `JARVIS_VISION_ENGINE_READY_TIMEOUT_MS` (default 60000, max 120000).
  */
 async function waitForVisionEngineHttpReadyIfSpawned() {
-  const cmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
+  const cmd = getJarvisVisionEngineCommand()
   const base = getVisionEngineBaseUrl()
   if (!cmd) {
     console.info('[jarvis] Startup: vision engine not auto-spawned — ensure HTTP API is listening at', base)
@@ -2518,7 +2617,7 @@ async function waitForVisionEngineHttpReadyIfSpawned() {
     } catch {
       /* ECONNREFUSED until the engine listens */
     }
-    await new Promise((res) => setTimeout(res, 350))
+    await new Promise((res) => setTimeout(res, 200))
   }
   console.warn(
     '[vision-engine] Timed out waiting for HTTP at',
@@ -4701,6 +4800,7 @@ const patternRoutes = [
 
 const prefixRoutes = [
   { prefix: '/api/email/', methods: ['POST'], handler: handleEmailProxy },
+  { prefix: '/api/replicate/', handler: handleReplicateProxy },
   { prefix: '/api/vision/', handler: handleVisionProxy },
   { prefix: '/api/reliability/', handler: handleReliabilityProxy },
   { prefix: '/api/a2e/', handler: handleA2eProxy },
@@ -5035,7 +5135,7 @@ app.whenReady().then(async () => {
   }
 
   logJarvisStartupBanner()
-  startJarvisVisionEngineIfConfigured()
+  await startJarvisVisionEngineIfConfigured()
   await waitForVisionEngineHttpReadyIfSpawned()
 
   registerJarvisOrchestratorIpc()

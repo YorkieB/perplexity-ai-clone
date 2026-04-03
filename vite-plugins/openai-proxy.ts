@@ -14,6 +14,7 @@
  *
  * - `POST /api/elevenlabs-tts` — streaming PCM TTS (same behaviour as Electron’s handler).
  * - `POST /api/tts` — OpenAI `audio/speech` or ElevenLabs (same behaviour as Electron’s handler).
+ * - `/api/replicate/*` — Replicate FastAPI bridge (`npm run replicate-bridge`, `REPLICATE_API_TOKEN`).
  */
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
@@ -22,6 +23,7 @@ import { randomInt } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { attachJarvisVisionAutostart } from './jarvis-vision-autostart'
 import { pipeline, Readable } from 'node:stream'
 import { tokenGenerate } from '@vonage/jwt'
 
@@ -917,6 +919,56 @@ function attachProxy(
           JSON.stringify({
             error: {
               message: `Jarvis Visual Engine not reachable at ${base}. Start the engine and set VISION_ENGINE_URL if it runs elsewhere.`,
+            },
+          }),
+        )
+      }
+      return
+    }
+
+    /**
+     * Replicate bridge: `/api/replicate/*` → `REPLICATE_BRIDGE_URL` (default `http://127.0.0.1:18865`) + `/*`.
+     * Run `npm run replicate-bridge` with `REPLICATE_API_TOKEN` set (default port 18865+; not 8765).
+     */
+    if (path?.startsWith('/api/replicate/')) {
+      const env = getEnv()
+      const base = (env.REPLICATE_BRIDGE_URL || env.VITE_REPLICATE_BRIDGE_URL || 'http://127.0.0.1:18865').replace(/\/$/, '')
+      const targetPath = path.replace(/^\/api\/replicate/, '') || '/'
+      const qs = req.url?.includes('?') ? `?${req.url.split('?')[1] || ''}` : ''
+      const targetUrl = `${base}${targetPath}${qs}`
+      let bodyBuf: Buffer | undefined
+      if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+        try {
+          bodyBuf = await readBodyRaw(req)
+        } catch (e) {
+          if (isRequestBodyTooLargeError(e)) {
+            res.statusCode = 413
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
+            return
+          }
+          throw e
+        }
+      }
+      try {
+        const upstream = await fetch(targetUrl, {
+          method: req.method || 'GET',
+          headers: {
+            ...(req.headers['content-type'] ? { 'Content-Type': String(req.headers['content-type']) } : {}),
+          },
+          body: bodyBuf && bodyBuf.length > 0 ? bodyBuf : undefined,
+        })
+        res.statusCode = upstream.status
+        const ct = upstream.headers.get('content-type')
+        if (ct) res.setHeader('Content-Type', ct)
+        res.end(Buffer.from(await upstream.arrayBuffer()))
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(
+          JSON.stringify({
+            error: {
+              message: `Replicate bridge not reachable at ${base}. Run npm run replicate-bridge and set REPLICATE_API_TOKEN.`,
             },
           }),
         )
@@ -2567,18 +2619,26 @@ export function openaiProxyPlugin(): Plugin {
   return {
     name: 'openai-proxy',
     configureServer(server) {
-      attachProxy(
-        () => loadEnv(server.config.mode, server.config.envDir, ''),
-        server.middlewares,
-        server.config.root,
-      )
+      const loaded = loadEnv(server.config.mode, server.config.envDir, '')
+      attachProxy(() => ({ ...loaded }), server.middlewares, server.config.root)
+      const stopVision = attachJarvisVisionAutostart({
+        projectRoot: server.config.root,
+        loadedEnv: loaded,
+      })
+      return () => {
+        stopVision()
+      }
     },
     configurePreviewServer(server) {
-      attachProxy(
-        () => loadEnv(server.config.mode, server.config.envDir, ''),
-        server.middlewares,
-        server.config.root,
-      )
+      const loaded = loadEnv(server.config.mode, server.config.envDir, '')
+      attachProxy(() => ({ ...loaded }), server.middlewares, server.config.root)
+      const stopVision = attachJarvisVisionAutostart({
+        projectRoot: server.config.root,
+        loadedEnv: loaded,
+      })
+      return () => {
+        stopVision()
+      }
     },
   }
 }

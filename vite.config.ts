@@ -44,7 +44,8 @@ export default defineConfig(({ mode }) => {
     // Dev `data-j-source` on JSX: see `src/browser/types-layout.ts`, `DevSourceMarker`, and a future Vite/Babel plugin.
     plugins: [react(), tailwindcss(), openaiProxyPlugin() as PluginOption, browserProxyPlugin() as PluginOption],
     build: {
-      chunkSizeWarningLimit: 1000,
+      /** Monaco editor is ~4MB minified; expected. TS/TSX runner uses sucrase, not `typescript`. */
+      chunkSizeWarningLimit: 5000,
       rollupOptions: {
         external: ['faiss-node'],
         output: {
@@ -60,6 +61,7 @@ export default defineConfig(({ mode }) => {
               if (id.includes('/recharts/') || id.includes('/d3')) return 'vendor-charts'
               if (id.includes('/framer-motion/')) return 'vendor-motion'
               if (id.includes('/three/')) return 'vendor-three'
+              if (id.includes('/sucrase/')) return 'vendor-sucrase'
               if (id.includes('monaco-editor/') || id.includes('@monaco-editor/')) return 'vendor-monaco'
               if (id.includes('@codemirror/lang-') || id.includes('@lezer/lang')) return 'vendor-cm-langs'
               if (id.includes('@codemirror') || id.includes('@uiw/react-codemirror') || id.includes('@lezer')) return 'vendor-codemirror'
@@ -102,6 +104,12 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
         '/ws/realtime': openaiRealtimeWsProxy,
+        /** Jarvis Replicate FastAPI bridge — `npm run replicate-bridge` (default 18865+; screen agent uses 8765). */
+        '/api/replicate': {
+          target: env.REPLICATE_BRIDGE_URL || env.VITE_REPLICATE_BRIDGE_URL || 'http://127.0.0.1:18865',
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/api\/replicate/, '') || '/',
+        },
       },
     },
   }

@@ -36,6 +36,13 @@ import { trackToolOutcome, analyzeExchangeAsync, getLearningStats } from './lear
 import { DESKTOP_AUTOMATION_TOOLS } from './chat-tools-desktop-automation-tools'
 import { runDesktopAutomationTool } from './desktop-automation-tool-runner'
 import { playTts, getEffectiveTtsVoice } from './tts'
+import {
+  generateImage as replicateBridgeGenerateImage,
+  transcribeAudio as replicateBridgeTranscribeAudio,
+  generateVideo as replicateBridgeGenerateVideo,
+  synthesizeSpeech as replicateBridgeSynthesizeSpeech,
+  searchModels as replicateBridgeSearchModels,
+} from './replicate-service'
 
 // ── Tool definitions ────────────────────────────────────────────────────────
 
@@ -741,6 +748,86 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
           path: { type: 'string', description: 'File path within the repo' },
         },
         required: ['owner', 'repo', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replicate_search_models',
+      description:
+        'Search Replicate’s public model index (top matches). Use to discover model ids before running a specific model.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query (e.g. "flux", "whisper", "video")' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replicate_generate_image',
+      description:
+        'Generate an image via Replicate (default black-forest-labs/flux-2-pro). Returns a URL; image is shown in the Media Canvas when available.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'Text prompt for the image' },
+          model: {
+            type: 'string',
+            description: 'Optional Replicate model id (e.g. black-forest-labs/flux-2-pro)',
+          },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replicate_transcribe',
+      description: 'Transcribe audio from a public URL using OpenAI Whisper on Replicate.',
+      parameters: {
+        type: 'object',
+        properties: {
+          audio_url: { type: 'string', description: 'HTTPS URL of the audio file' },
+        },
+        required: ['audio_url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replicate_generate_video',
+      description:
+        'Generate a short video via Replicate (default WAN 2.1 i2v). Optionally pass image_url for image-to-video.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'Text prompt for the video' },
+          image_url: { type: 'string', description: 'Optional image URL for image-conditioned video' },
+          model: { type: 'string', description: 'Optional Replicate model id (e.g. wan-video/wan-2.1-i2v-720p)' },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replicate_tts',
+      description: 'Synthesize speech from text using Kokoro TTS on Replicate. Returns an audio URL.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to speak' },
+          voice: { type: 'string', description: 'Voice id (default af_heart)' },
+        },
+        required: ['text'],
       },
     },
   },
@@ -2971,6 +3058,103 @@ function createToolExecutor(deps: ToolExecutorDeps) {
           return messages.map(m => `From ${m.from} (${m.receivedAt}): ${m.text}`).join('\n')
         } catch (e) {
           return `Failed to read SMS: ${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+
+      case 'replicate_search_models': {
+        const query = String(args.query ?? '').trim()
+        if (!query) return 'Missing query.'
+        onStatus?.('Searching Replicate models...')
+        try {
+          const { results } = await replicateBridgeSearchModels({ query })
+          if (results.length === 0) return 'No models found.'
+          return results
+            .map(
+              (r, i) =>
+                `[${i + 1}] ${r.name}\n${r.description.slice(0, 400)}${r.description.length > 400 ? '…' : ''}\nlatest: ${r.latest_version_id ?? '(unknown)'}`,
+            )
+            .join('\n\n')
+        } catch (e) {
+          return `Replicate search failed: ${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+
+      case 'replicate_generate_image': {
+        const prompt = String(args.prompt ?? '').trim()
+        if (!prompt) return 'Missing prompt.'
+        onStatus?.('Replicate: generating image...')
+        onMediaGenerating?.(true)
+        onMediaGeneratingLabel?.('Replicate image...')
+        openMediaCanvas?.()
+        try {
+          const model =
+            typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
+          const result = await replicateBridgeGenerateImage({ prompt, model })
+          const u = result.url
+          if (u && mediaCanvasControl) {
+            mediaCanvasControl.showImage(u, prompt)
+          }
+          const extra = result.local_path ? `\nSaved locally: ${result.local_path}` : ''
+          return `Image generated.${u ? ` URL: ${u}` : ''}${extra}`
+        } catch (e) {
+          return `Replicate image failed: ${e instanceof Error ? e.message : String(e)}`
+        } finally {
+          onMediaGenerating?.(false)
+          onMediaGeneratingLabel?.('')
+        }
+      }
+
+      case 'replicate_transcribe': {
+        const audioUrl = String(args.audio_url ?? '').trim()
+        if (!audioUrl) return 'Missing audio_url.'
+        onStatus?.('Replicate: transcribing audio...')
+        try {
+          const { text } = await replicateBridgeTranscribeAudio({ audio_url: audioUrl })
+          return text || '(empty transcript)'
+        } catch (e) {
+          return `Replicate transcribe failed: ${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+
+      case 'replicate_generate_video': {
+        const prompt = String(args.prompt ?? '').trim()
+        if (!prompt) return 'Missing prompt.'
+        onStatus?.('Replicate: generating video...')
+        onMediaGenerating?.(true)
+        onMediaGeneratingLabel?.('Replicate video...')
+        openMediaCanvas?.()
+        try {
+          const imageUrl =
+            typeof args.image_url === 'string' && args.image_url.trim() !== '' ? args.image_url.trim() : undefined
+          const model =
+            typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
+          const result = await replicateBridgeGenerateVideo({ prompt, image_url: imageUrl, model })
+          const u = result.url
+          if (u && mediaCanvasControl) {
+            mediaCanvasControl.showVideo(u, prompt)
+          }
+          const extra = result.local_path ? `\nSaved locally: ${result.local_path}` : ''
+          return `Video generated.${u ? ` URL: ${u}` : ''}${extra}`
+        } catch (e) {
+          return `Replicate video failed: ${e instanceof Error ? e.message : String(e)}`
+        } finally {
+          onMediaGenerating?.(false)
+          onMediaGeneratingLabel?.('')
+        }
+      }
+
+      case 'replicate_tts': {
+        const text = String(args.text ?? '').trim()
+        if (!text) return 'Missing text.'
+        onStatus?.('Replicate: synthesizing speech...')
+        try {
+          const voice =
+            typeof args.voice === 'string' && args.voice.trim() !== '' ? args.voice.trim() : undefined
+          const result = await replicateBridgeSynthesizeSpeech({ text, voice })
+          const u = result.url
+          return u ? `Speech synthesized. URL: ${u}` : 'Speech synthesis returned no URL.'
+        } catch (e) {
+          return `Replicate TTS failed: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 

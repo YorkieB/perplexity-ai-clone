@@ -44,6 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { useReplicateModelCatalog } from '@/hooks/useReplicateModelCatalog'
 
 interface QueryInputProps {
   readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilot?: boolean) => void
@@ -85,6 +86,7 @@ export function QueryInput({
   const [fileAnalysisOpen, setFileAnalysisOpen] = useState(false)
   const [fileToAnalyze, setFileToAnalyze] = useState<UploadedFile | null>(null)
   const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
+  const { selectorOptions: replicateModelOptions } = useReplicateModelCatalog(2000)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -116,16 +118,17 @@ export function QueryInput({
       { id: 'gpt-4o', label: 'GPT-4o' },
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
     ]
+    const rep = replicateModelOptions.map((m) => ({ id: m.id, label: m.label }))
     if (!useDigitalOcean) {
-      return openai
+      return [...openai, ...rep]
     }
     const merged = mergeDigitalOceanInferenceCatalog(doModels)
     const doItems = merged.map((m) => ({
       id: `do:${m.id}`,
       label: `DO · ${m.name}`,
     }))
-    return [...openai, ...doItems]
-  }, [doModels, useDigitalOcean])
+    return [...openai, ...doItems, ...rep]
+  }, [doModels, useDigitalOcean, replicateModelOptions])
 
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)

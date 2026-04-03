@@ -20,6 +20,7 @@ import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-
 import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
 
 import { ModelBadges } from '@/components/ModelBadges'
+import { useReplicateModelCatalog } from '@/hooks/useReplicateModelCatalog'
 
 interface ModelOption {
   id: string
@@ -68,12 +69,18 @@ export function ModelCouncilSelector({
     Awaited<ReturnType<typeof fetchDigitalOceanModels>>
   >([])
   const [modelsLoading, setModelsLoading] = useState(false)
+  const { selectorOptions: replicateModelOptions } = useReplicateModelCatalog(2000)
 
   const [selectedModels, setSelectedModels] = useState<string[]>(defaultSelected)
 
   const availableModels: ModelOption[] = useMemo(() => {
+    const rep: ModelOption[] = replicateModelOptions.map((o) => ({
+      id: o.id,
+      name: o.label,
+      description: o.description || 'Replicate public model (chat uses GPT-4o mini; run models via tools)',
+    }))
     if (!useDigitalOceanCatalog) {
-      return fallbackModels
+      return [...fallbackModels, ...rep]
     }
     const merged = mergeDigitalOceanInferenceCatalog(remoteModels)
     const doOpts: ModelOption[] = merged.map((m) => ({
@@ -81,8 +88,8 @@ export function ModelCouncilSelector({
       name: m.name,
       description: m.description || 'DigitalOcean serverless inference',
     }))
-    return [...fallbackModels, ...doOpts]
-  }, [useDigitalOceanCatalog, remoteModels])
+    return [...fallbackModels, ...doOpts, ...rep]
+  }, [useDigitalOceanCatalog, remoteModels, replicateModelOptions])
 
   useEffect(() => {
     setSelectedModels(defaultSelected)

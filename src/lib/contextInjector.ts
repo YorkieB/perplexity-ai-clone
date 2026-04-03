@@ -56,6 +56,9 @@ export interface AssembledContext {
 
 function normalizeModelId(model: string): string {
   let m = model.trim()
+  if (m.startsWith('replicate:')) {
+    return 'gpt-4o-mini'
+  }
   if (m.startsWith('do:')) {
     m = m.slice(3)
   }

@@ -15,6 +15,9 @@ import { callLlmStream, type ChatUserContentPart } from '@/lib/llm'
 import { executeWebSearch } from '@/lib/api'
 import { getEffectiveTtsVoice, playTts } from '@/lib/tts'
 import { getPreferredChatModel } from '@/lib/chat-preferences'
+import { formatVisionContextBlockForLlm } from '@/lib/vision-context-for-llm'
+import { fetchVisionContextForPrompt } from '@/lib/vision-fetch'
+import { useVision } from '@/hooks/useVision'
 import type { FocusMode, TimeRange } from '@/lib/types'
 
 type VoicePhase = 'listening' | 'thinking' | 'speaking'
@@ -34,6 +37,7 @@ export function VoiceConversationModal({
   timeRange,
   workspaceSystemPrompt,
 }: VoiceConversationModalProps) {
+  const { context: visionCtx } = useVision(open)
   const [phase, setPhase] = useState<VoicePhase>('listening')
   const [useVoiceSearch, setUseVoiceSearch] = useState(false)
   const [lastHeard, setLastHeard] = useState('')
@@ -113,9 +117,23 @@ export function VoiceConversationModal({
       }
 
       const { focusMode: fm, useVoiceSearch: uvs, workspaceSystemPrompt: ws } = voiceCtxRef.current
-      const systemPrompt = ws?.trim()
+      const visionNow = await fetchVisionContextForPrompt()
+      const visionBlock = formatVisionContextBlockForLlm(visionNow)
+      const baseSystem = ws?.trim()
         ? `You are a helpful assistant. ${ws.trim()}`
         : 'You are a helpful assistant.'
+      /** Offline copy is non-empty and self-contained — avoids the model claiming the browser webcam is unplugged. */
+      const systemPrompt = visionNow.connected
+        ? `${baseSystem}
+
+[LIVE WEBCAM — Jarvis Visual Engine]
+${visionBlock}
+
+When the "Scene:" line below contains a real description (including live webcam stats like resolution or brightness), you ARE seeing them through the Jarvis engine — describe it confidently. Only say you cannot see them if the status block says the engine is offline or the scene explicitly says the frame failed.
+When the user asks what you see in the room, how they look, mood, clothing, or objects around them, answer from this webcam context. This is the room camera, not their monitor — for desktop/app content they would use screen-specific tools in the main Jarvis app.`
+        : `${baseSystem}
+
+${visionBlock}`
 
       const ac = new AbortController()
       abortRef.current = ac
