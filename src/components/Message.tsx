@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { Message as MessageType, UploadedFile } from '@/lib/types'
 import { CaretDown, MagnifyingGlass, Question, Sparkle, User } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
@@ -24,19 +24,17 @@ interface MessageProps {
   isGenerating?: boolean
 }
 
-export function Message({
-  message,
-  onFollowUpClick,
-  onRegenerateAssistant,
-  isGenerating = false,
-}: MessageProps) {
-  const isUser = message.role === 'user'
-  const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
-  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
-  const [previewOpen, setPreviewOpen] = useState(false)
+type SearchTrace = NonNullable<MessageType['searchTrace']>
+
+interface AssistantSourcesProps {
+  readonly sources: MessageType['sources']
+  readonly highlightedSource: number | null
+}
+
+function AssistantSources({ sources, highlightedSource }: AssistantSourcesProps) {
   const sourceDomainGroups = useMemo(
-    () => groupSourcesByRegistrableDomain(message.sources || []),
-    [message.sources]
+    () => groupSourcesByRegistrableDomain(sources || []),
+    [sources]
   )
   const singleSourceItems = useMemo(
     () => sourceDomainGroups.filter((group) => group.items.length === 1).flatMap((group) => group.items),
@@ -47,26 +45,138 @@ export function Message({
     [sourceDomainGroups]
   )
 
-  const handleFilePreview = (file: UploadedFile) => {
-    setPreviewFile(file)
-    setPreviewOpen(true)
+  if (!sources || sources.length === 0) {
+    return null
   }
 
-  const hasAnswerPreview = message.content.trim().length > 0
-  let thinkingPhase: ThinkingPhase = 'done'
-  if (message.isStreaming) {
-    thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Sources
+      </p>
+      <div className="space-y-2">
+        {singleSourceItems.length > 0 ? (
+          <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+            {singleSourceItems.map(({ source, index }) => (
+              <SourceCard
+                key={index}
+                source={source}
+                index={index + 1}
+                isHighlighted={highlightedSource === index + 1}
+              />
+            ))}
+          </div>
+        ) : null}
+        {groupedSourceClusters.map((group) => (
+          <Collapsible
+            key={group.domain}
+            defaultOpen={false}
+            className="rounded-lg border border-border/70 bg-muted/20"
+          >
+            <CollapsibleTrigger
+              className={cn(
+                'flex w-full items-center justify-between gap-2 px-3 py-2 text-left',
+                'text-xs font-medium text-foreground',
+                'hover:bg-muted/40 transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'data-[state=open]:[&_.caret-icon]:rotate-180'
+              )}
+            >
+              <span>{group.domain} ({group.items.length})</span>
+              <CaretDown size={14} weight="bold" className="caret-icon shrink-0 transition-transform duration-200" aria-hidden />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="px-2 pb-2">
+              <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                {group.items.map(({ source, index }) => (
+                  <SourceCard
+                    key={index}
+                    source={source}
+                    index={index + 1}
+                    isHighlighted={highlightedSource === index + 1}
+                  />
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+interface SearchTracePanelProps {
+  readonly searchTrace?: SearchTrace
+}
+
+function SearchTracePanel({ searchTrace }: SearchTracePanelProps) {
+  if (!searchTrace) {
+    return null
   }
 
-  let mainContent: ReactNode
+  return (
+    <Collapsible className="space-y-2" defaultOpen={false}>
+      <CollapsibleTrigger
+        className={cn(
+          'flex w-full items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-left',
+          'text-xs font-medium text-foreground transition-colors hover:bg-muted/40',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'data-[state=open]:[&_.caret-icon]:rotate-180'
+        )}
+      >
+        <span className="inline-flex items-center gap-2">
+          <MagnifyingGlass size={14} aria-hidden />
+          How we searched
+        </span>
+        <CaretDown size={14} weight="bold" className="caret-icon shrink-0 transition-transform duration-200" aria-hidden />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs">
+          <dl className="space-y-2">
+            <div className="grid grid-cols-[5.5rem_1fr] gap-2">
+              <dt className="text-muted-foreground">Query sent</dt>
+              <dd className="text-foreground break-all">{searchTrace.query}</dd>
+            </div>
+            <div className="grid grid-cols-[5.5rem_1fr] gap-2">
+              <dt className="text-muted-foreground">Focus mode</dt>
+              <dd className="text-foreground">{searchTrace.focusModeLabel}</dd>
+            </div>
+            <div className="grid grid-cols-[5.5rem_1fr] gap-2">
+              <dt className="text-muted-foreground">Advanced</dt>
+              <dd className="text-foreground">{searchTrace.advancedMode ? 'On' : 'Off'}</dd>
+            </div>
+            {searchTrace.executedAt ? (
+              <div className="grid grid-cols-[5.5rem_1fr] gap-2">
+                <dt className="text-muted-foreground">Time</dt>
+                <dd className="text-foreground">
+                  {new Date(searchTrace.executedAt).toLocaleTimeString()}
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+interface MessageBodyProps {
+  readonly isUser: boolean
+  readonly message: MessageType
+  readonly thinkingPhase: ThinkingPhase
+  readonly onCitationHover: (citation: number | null) => void
+}
+
+function MessageBody({ isUser, message, thinkingPhase, onCitationHover }: MessageBodyProps) {
   if (isUser) {
-    mainContent = (
+    return (
       <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
         {message.content}
       </p>
     )
-  } else if (message.metadata?.type === 'clarification_required') {
-    mainContent = (
+  }
+
+  if (message.metadata?.type === 'clarification_required') {
+    return (
       <div
         className="rounded-lg border border-amber-500/45 bg-amber-500/[0.07] px-4 py-3 shadow-sm"
         role="note"
@@ -85,44 +195,69 @@ export function Message({
             </p>
             <MarkdownRenderer
               content={message.content}
-              onCitationHover={setHighlightedSource}
+              onCitationHover={onCitationHover}
             />
           </div>
         </div>
       </div>
     )
-  } else if (message.isModelCouncil && message.modelResponses) {
-    mainContent = (
+  }
+
+  if (message.isModelCouncil && message.modelResponses) {
+    return (
       <ModelCouncilResponse
         modelResponses={message.modelResponses}
         convergenceScore={message.modelResponses[0]?.convergenceScore}
         commonThemes={[]}
         divergentPoints={[]}
-        onCitationHover={setHighlightedSource}
+        onCitationHover={onCitationHover}
       />
     )
-  } else {
-    mainContent = (
-      <>
-        {!isUser && message.reasoning && (
-          <ThinkingProcessPanel
-            thinking={message.reasoning}
-            phase={thinkingPhase}
-            showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
-          />
-        )}
-        <MarkdownRenderer
-          content={message.content}
-          onCitationHover={setHighlightedSource}
+  }
+
+  return (
+    <>
+      {!isUser && message.reasoning && (
+        <ThinkingProcessPanel
+          thinking={message.reasoning}
+          phase={thinkingPhase}
+          showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
         />
-        {message.isStreaming && (
-          <span
-            className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
-            aria-hidden
-          />
-        )}
-      </>
-    )
+      )}
+      <MarkdownRenderer
+        content={message.content}
+        onCitationHover={onCitationHover}
+      />
+      {message.isStreaming && (
+        <span
+          className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
+          aria-hidden
+        />
+      )}
+    </>
+  )
+}
+
+export function Message({
+  message,
+  onFollowUpClick,
+  onRegenerateAssistant,
+  isGenerating = false,
+}: MessageProps) {
+  const isUser = message.role === 'user'
+  const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
+  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+
+  const handleFilePreview = (file: UploadedFile) => {
+    setPreviewFile(file)
+    setPreviewOpen(true)
+  }
+
+  const hasAnswerPreview = message.content.trim().length > 0
+  let thinkingPhase: ThinkingPhase = 'done'
+  if (message.isStreaming) {
+    thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
   }
 
   return (
@@ -170,104 +305,14 @@ export function Message({
 
         {!isUser && message.a2eTask && <A2EMediaResult task={message.a2eTask} />}
 
-        {!isUser && message.sources && message.sources.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Sources
-            </p>
-            <div className="space-y-2">
-              {singleSourceItems.length > 0 ? (
-                <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                  {singleSourceItems.map(({ source, index }) => (
-                    <SourceCard
-                      key={index}
-                      source={source}
-                      index={index + 1}
-                      isHighlighted={highlightedSource === index + 1}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {groupedSourceClusters.map((group) => (
-                <Collapsible
-                  key={group.domain}
-                  defaultOpen={false}
-                  className="rounded-lg border border-border/70 bg-muted/20"
-                >
-                  <CollapsibleTrigger
-                    className={cn(
-                      'flex w-full items-center justify-between gap-2 px-3 py-2 text-left',
-                      'text-xs font-medium text-foreground',
-                      'hover:bg-muted/40 transition-colors',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      'data-[state=open]:[&_.caret-icon]:rotate-180'
-                    )}
-                  >
-                    <span>{group.domain} ({group.items.length})</span>
-                    <CaretDown size={14} weight="bold" className="caret-icon shrink-0 transition-transform duration-200" aria-hidden />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="px-2 pb-2">
-                    <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                      {group.items.map(({ source, index }) => (
-                        <SourceCard
-                          key={index}
-                          source={source}
-                          index={index + 1}
-                          isHighlighted={highlightedSource === index + 1}
-                        />
-                      ))}
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              ))}
-            </div>
-          </div>
-        )}
+        {!isUser ? (
+          <AssistantSources
+            sources={message.sources}
+            highlightedSource={highlightedSource}
+          />
+        ) : null}
 
-        {!isUser && message.searchTrace && (
-          <Collapsible className="space-y-2" defaultOpen={false}>
-            <CollapsibleTrigger
-              className={cn(
-                'flex w-full items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-left',
-                'text-xs font-medium text-foreground transition-colors hover:bg-muted/40',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                'data-[state=open]:[&_.caret-icon]:rotate-180'
-              )}
-            >
-              <span className="inline-flex items-center gap-2">
-                <MagnifyingGlass size={14} aria-hidden />
-                How we searched
-              </span>
-              <CaretDown size={14} weight="bold" className="caret-icon shrink-0 transition-transform duration-200" aria-hidden />
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs">
-                <dl className="space-y-2">
-                  <div className="grid grid-cols-[5.5rem_1fr] gap-2">
-                    <dt className="text-muted-foreground">Query sent</dt>
-                    <dd className="text-foreground break-all">{message.searchTrace.query}</dd>
-                  </div>
-                  <div className="grid grid-cols-[5.5rem_1fr] gap-2">
-                    <dt className="text-muted-foreground">Focus mode</dt>
-                    <dd className="text-foreground">{message.searchTrace.focusModeLabel}</dd>
-                  </div>
-                  <div className="grid grid-cols-[5.5rem_1fr] gap-2">
-                    <dt className="text-muted-foreground">Advanced</dt>
-                    <dd className="text-foreground">{message.searchTrace.advancedMode ? 'On' : 'Off'}</dd>
-                  </div>
-                  {message.searchTrace.executedAt ? (
-                    <div className="grid grid-cols-[5.5rem_1fr] gap-2">
-                      <dt className="text-muted-foreground">Time</dt>
-                      <dd className="text-foreground">
-                        {new Date(message.searchTrace.executedAt).toLocaleTimeString()}
-                      </dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        )}
+        {!isUser ? <SearchTracePanel searchTrace={message.searchTrace} /> : null}
 
         {!isUser && message.images && message.images.length > 0 && (
           <ImageGallery images={message.images} />
@@ -284,7 +329,12 @@ export function Message({
           )}
           style={{ overflowWrap: 'break-word', wordBreak: 'break-word', overflow: 'hidden' }}
         >
-          {mainContent}
+          <MessageBody
+            isUser={isUser}
+            message={message}
+            thinkingPhase={thinkingPhase}
+            onCitationHover={setHighlightedSource}
+          />
         </div>
 
         {!isUser &&
