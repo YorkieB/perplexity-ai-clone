@@ -1,6 +1,11 @@
 import { callLlm, llmPrompt } from './llm'
 import { getPreferredChatModel } from './chat-preferences'
 import { Source, FocusMode } from './types'
+import {
+  buildSearchQueryForFocusMode,
+  dedupeSourcesByNormalizedUrl,
+  sanitizeFollowUpQuestions,
+} from './search-transparency'
 
 export interface TavilySearchResult {
   url: string
@@ -19,24 +24,6 @@ export interface SearchError {
   message: string
 }
 
-function getFocusModeSearchModifier(focusMode: FocusMode): string {
-  switch (focusMode) {
-    case 'academic':
-      return ' site:edu OR site:arxiv.org OR site:scholar.google.com'
-    case 'reddit':
-      return ' site:reddit.com'
-    case 'youtube':
-      return ' site:youtube.com'
-    case 'news':
-      return ' (news OR latest OR breaking)'
-    case 'code':
-      return ' site:github.com OR site:stackoverflow.com OR site:docs OR (code OR api OR library)'
-    case 'all':
-    default:
-      return ''
-  }
-}
-
 export async function executeWebSearch(
   query: string,
   focusMode: FocusMode = 'all',
@@ -53,8 +40,7 @@ export async function executeWebSearch(
       }
     }
 
-    const focusModifier = getFocusModeSearchModifier(focusMode)
-    const enhancedQuery = query + focusModifier
+    const enhancedQuery = buildSearchQueryForFocusMode(query, focusMode)
 
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -83,7 +69,7 @@ export async function executeWebSearch(
     const sources: Source[] = data.results.map((result) => {
       const url = new URL(result.url)
       const domain = url.hostname.replace('www.', '')
-      
+
       return {
         url: result.url,
         title: result.title,
@@ -94,7 +80,7 @@ export async function executeWebSearch(
       }
     })
 
-    return sources
+    return dedupeSourcesByNormalizedUrl(sources)
   } catch (error) {
     console.error('Web search error:', error)
     return {
@@ -124,9 +110,10 @@ Return a JSON object only, with this shape: {"questions": ["question1", "questio
     const parsed = JSON.parse(result)
 
     if (parsed.questions && Array.isArray(parsed.questions)) {
-      return parsed.questions.slice(0, 3)
+      const questionStrings = parsed.questions.filter((question: unknown): question is string => typeof question === 'string')
+      return sanitizeFollowUpQuestions(questionStrings, response)
     }
-    
+
     return []
   } catch (error) {
     console.error('Failed to generate follow-up questions:', error)

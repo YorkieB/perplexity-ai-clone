@@ -97,6 +97,13 @@ export interface Message {
   focusMode?: FocusMode
   isDeepResearch?: boolean
   followUpQuestions?: string[]
+  searchTrace?: {
+    query: string
+    focusMode: FocusMode
+    focusModeLabel: string
+    advancedMode: boolean
+    executedAt?: number
+  }
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]
   modality?: 'text' | 'voice'

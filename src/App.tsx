@@ -53,6 +53,7 @@ import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
 import { shouldPushUiSync } from '@/lib/ui-sync'
+import { buildSearchQueryForFocusMode, dedupeSourcesByNormalizedUrl, getFocusModeLabel } from '@/lib/search-transparency'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -400,13 +401,32 @@ function MainApp() {
       }
 
       let webSources: Source[] = []
+      let searchTrace: MessageType['searchTrace']
 
       if (useWebSearchForQuery) {
+        const searchQuery = buildSearchQueryForFocusMode(query, focusMode)
+        if (import.meta.env.DEV) {
+          console.debug('[search] executeWebSearch params', {
+            query: searchQuery,
+            focusMode,
+            advancedMode: useAdvancedMode,
+            threadId: thread.id,
+          })
+        }
         const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
         if ('error' in searchResult) {
           toast.error(searchResult.message)
         } else {
-          webSources = searchResult
+          webSources = dedupeSourcesByNormalizedUrl(searchResult)
+          if (webSources.length > 0) {
+            searchTrace = {
+              query: searchQuery,
+              focusMode,
+              focusModeLabel: getFocusModeLabel(focusMode),
+              advancedMode: useAdvancedMode,
+              executedAt: Date.now(),
+            }
+          }
         }
       }
 
@@ -471,14 +491,20 @@ function MainApp() {
           systemPrompt + modeInstruction,
           selectedModels
         )
-        
+        const councilForFollowUps = councilResult.models
+          .map((model, index) => `Model ${String(index + 1)} (${model.model}): ${model.content}`)
+          .join('\n\n')
+        const followUpQuestions = await generateFollowUpQuestions(query, councilForFollowUps, webSources)
+
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
           content: 'Model Council Response',
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           focusMode,
+          followUpQuestions,
           isModelCouncil: true,
           modelResponses: councilResult.models.map(m => ({
             ...m,
@@ -598,6 +624,7 @@ ${sourceGuidance}${autopilotHint}`
           content: response,
           reasoning: reasoning || undefined,
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           modelUsed: chatModel,
           focusMode,
