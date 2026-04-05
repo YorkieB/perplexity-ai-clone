@@ -27,11 +27,9 @@ import type { JarvisIdeRunCommandResult } from '@/types/jarvis-ide'
 import { fetchAgentBrowserHealth } from '@/lib/agent-browser-mcp'
 import {
   fetchDigitalOceanModels,
-  getDigitalOceanInferenceTokenFromSettings,
   type DigitalOceanModelOption,
 } from '@/lib/digitalocean-api'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { useDigitalOceanCatalogEnabled } from '@/hooks/useDigitalOceanCatalogEnabled'
 import type { UserSettings } from '@/lib/types'
 import { JarvisExplorerBadgeStrip } from '@/components/jarvis/JarvisExplorerBadgeStrip'
 import {
@@ -551,9 +549,21 @@ export function CodeEditorModal({ // NOSONAR legacy IDE shell intentionally cent
   const [debugLogLines, setDebugLogLines] = useState<string[]>([])
   const [doModels, setDoModels] = useState<DigitalOceanModelOption[]>([])
 
-  const [userSettings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
-  const doToken = getDigitalOceanInferenceTokenFromSettings(userSettings ?? undefined)
-  const useDigitalOcean = useDigitalOceanCatalogEnabled(userSettings ?? undefined)
+  const [userSettings] = useLocalStorage<UserSettings>('user-settings', {
+    apiKeys: {},
+    oauthTokens: {},
+    oauthClientIds: {},
+    oauthClientSecrets: {},
+    connectedServices: {
+      googledrive: false,
+      onedrive: false,
+      github: false,
+      dropbox: false,
+      spotify: false,
+    },
+  })
+  const doToken = userSettings?.apiKeys?.digitalOcean?.trim() ?? ''
+  const useDigitalOcean = doToken.length > 0
 
   useEffect(() => {
     if (!useDigitalOcean) { setDoModels([]); return }

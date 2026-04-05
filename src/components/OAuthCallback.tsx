@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import type { OAuthToken, UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
-import { safeReturnUrl } from '@/lib/oauthReturnUrl'
 import { exchangeSpotifyCodeForToken } from '@/lib/spotify-oauth'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -13,6 +12,7 @@ export function OAuthCallback() {
     apiKeys: {},
     oauthTokens: {},
     oauthClientIds: {},
+    oauthClientSecrets: {},
     connectedServices: {
       googledrive: false,
       onedrive: false,
@@ -30,6 +30,19 @@ export function OAuthCallback() {
 
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [message, setMessage] = useState('Processing OAuth callback...')
+
+  function safeReturnUrl(rawReturnUrl: string | null | undefined): string {
+    if (typeof rawReturnUrl !== 'string' || rawReturnUrl.length === 0) return '/'
+    if (rawReturnUrl.startsWith('/') && !rawReturnUrl.startsWith('//')) return rawReturnUrl
+    if (rawReturnUrl.startsWith('#')) return rawReturnUrl
+    try {
+      const url = new URL(rawReturnUrl, globalThis.location.origin)
+      if (url.origin !== globalThis.location.origin) return '/'
+      return `${url.pathname}${url.search}${url.hash}`
+    } catch {
+      return '/'
+    }
+  }
 
   function navigateToSanitizedReturnUrl(rawReturnUrl: string | null | undefined): void {
     const safePath = safeReturnUrl(rawReturnUrl)
@@ -87,14 +100,15 @@ export function OAuthCallback() {
         } else {
           providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
           const clientId = settingsRef.current?.oauthClientIds[providerKey]?.trim()
+          const clientSecret = settingsRef.current?.oauthClientSecrets[providerKey]?.trim()
 
-          if (!clientId) {
+          if (!clientId || !clientSecret) {
             setStatus('error')
-            setMessage('OAuth client ID not found. Please configure it in settings.')
+            setMessage('OAuth client credentials not found. Please configure them in settings.')
             return
           }
 
-          token = await exchangeCodeForToken(state.provider, code, clientId)
+          token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
         }
 
         if (!token) {

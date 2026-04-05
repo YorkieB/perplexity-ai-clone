@@ -622,11 +622,10 @@ export default class ManagerWorkerOrchestrator {
       config.taskType,
       'gpt-4o',
       this.sessionId,
-      {
-        orchestratorBasePrompt: config.activeBasePrompt,
-        complexityScore: config.complexityScore,
-        skipConfidenceEvaluation: true,
-      },
+      config.activeBasePrompt,
+      config.complexityScore,
+      undefined,
+      true,
     )
 
     telemetry.record('worker_executed', this.sessionId, {
