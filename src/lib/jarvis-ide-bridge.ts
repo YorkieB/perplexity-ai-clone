@@ -182,6 +182,6 @@ export async function ideRunCommand(cwd: string, command: string): Promise<Jarvi
 
 export function ideJoinPath(root: string, ...parts: string[]): string {
   const sep = root.includes('\\') ? '\\' : '/'
-  const clean = (s: string) => s.replaceAll(/^[\\/]+|[\\/]+$/g, '')
+  const clean = (s: string) => s.replace(/^[/\\]{1,500}/, '').replace(/[/\\]{1,500}$/, '')
   return [clean(root), ...parts.map(clean)].filter(Boolean).join(sep)
 }

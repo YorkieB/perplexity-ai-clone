@@ -77,7 +77,18 @@ export async function runStartupIngestion(index: LongTermIndex): Promise<void> {
     )
     console.info(`${LOG} Ingestion complete.`)
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
+    let message = 'Unknown startup ingestion error'
+    if (err instanceof Error) {
+      message = err.message
+    } else if (typeof err === 'string') {
+      message = err
+    } else {
+      try {
+        message = JSON.stringify(err)
+      } catch {
+        message = Object.prototype.toString.call(err)
+      }
+    }
     console.error(`[StartupIngestion] Failed: ${message}`)
     console.warn(
       '[StartupIngestion] Skipping ingestion due to error — Jarvis will still work without long-term index',

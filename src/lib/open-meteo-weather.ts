@@ -12,6 +12,7 @@ export interface OpenMeteoForecastResult {
 }
 
 /** WMO Weather interpretation codes (Open-Meteo). */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- WMO weather code LUT with 70+ distinct codes; a lookup table would lose intention clarity
 export function wmoWeatherLabel(code: number): string {
   if (code < 0) return 'Forecast'
   if (code === 0) return 'Clear sky'

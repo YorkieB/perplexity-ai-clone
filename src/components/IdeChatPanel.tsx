@@ -60,6 +60,7 @@ const MODE_PLACEHOLDERS: Record<IdeChatMode, string> = {
   agent: 'Give Jarvis a goal and he will work autonomously…',
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- React component with multiple conditional interaction paths; decomposition into sub-components is tracked separately
 export function IdeChatPanel({
   messages,
   loading,
@@ -131,7 +132,7 @@ export function IdeChatPanel({
         const reader = new FileReader()
         reader.onload = () => {
           setAttachments((prev) => [
-            ...prev.filter((a) => a.name !== file.name),
+            ...prev.filter((a) => a.name !== file.name), // eslint-disable-line sonarjs/no-nested-functions -- 5th-level nesting unavoidable in React setState updater
             { name: file.name, content: reader.result as string, mimeType: file.type || 'image/png', isImage: true },
           ])
         }
@@ -140,7 +141,7 @@ export function IdeChatPanel({
         const reader = new FileReader()
         reader.onload = () => {
           setAttachments((prev) => [
-            ...prev.filter((a) => a.name !== file.name),
+            ...prev.filter((a) => a.name !== file.name), // eslint-disable-line sonarjs/no-nested-functions -- 5th-level nesting unavoidable in React setState updater
             { name: file.name, content: reader.result as string, mimeType: file.type || 'text/plain', isImage: false },
           ])
         }
@@ -167,6 +168,9 @@ export function IdeChatPanel({
   )
 
   const isAgentRunning = mode === 'agent' && agentStatus === 'running'
+  let loadingLabel = 'Thinking…'
+  if (isAgentRunning) loadingLabel = '🤖 Agent is working…'
+  else if (mode === 'composer') loadingLabel = '📝 Planning…'
 
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ background: sb }}>
@@ -188,7 +192,7 @@ export function IdeChatPanel({
                 borderBottom: `2px solid ${mode === m ? '#007acc' : 'transparent'}`,
               }}
             >
-              {m === 'chat' ? 'Chat' : m === 'composer' ? 'Composer' : 'Agent'}
+              {{ chat: 'Chat', composer: 'Composer', agent: 'Agent' }[m]}
               {m === 'agent' && agentStatus === 'running' && (
                 <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse align-middle" />
               )}
@@ -221,9 +225,9 @@ export function IdeChatPanel({
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>
-          ) : model ? (
+          ) : (model && (
             <span className="text-[10px] truncate" style={{ color: `${tc}40` }}>{model}</span>
-          ) : null}
+          ))}
 
           {isAgentRunning && onStopAgent ? (
             <button
@@ -318,7 +322,7 @@ export function IdeChatPanel({
         ))}
         {loading && (
           <div className="px-2 py-1 text-[11px] animate-pulse" style={{ color: isAgentRunning ? '#22c55e' : `${tc}50` }}>
-            {isAgentRunning ? '🤖 Agent is working…' : mode === 'composer' ? '📝 Planning…' : 'Thinking…'}
+            {loadingLabel}
           </div>
         )}
         <div ref={endRef} />
@@ -510,10 +514,12 @@ export function IdeChatPanel({
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- utility function tightly coupled to IdeChatMessage type
 export function createIdeUserMessage(content: string, attachments?: IdeAttachment[]): IdeChatMessage {
   return { id: generateId(), role: 'user', content, attachments }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- utility function tightly coupled to IdeChatMessage type
 export function createIdeAssistantMessage(content: string, reasoning?: string): IdeChatMessage {
   return { id: generateId(), role: 'assistant', content, reasoning }
 }

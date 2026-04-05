@@ -259,7 +259,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     searchTimeoutRef.current = setTimeout(() => searchSharedVoices(value), 400)
   }, [searchSharedVoices])
 
-  const previewVoice = useCallback((previewUrl: string, voiceId: string) => {
+  const previewVoice = useCallback((previewUrl: string | undefined, voiceId: string) => {
+    if (!previewUrl) return
     if (previewAudio) {
       previewAudio.pause()
       previewAudio.src = ''

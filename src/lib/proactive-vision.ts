@@ -42,7 +42,7 @@ export async function runProactiveVisionObservation(signal?: AbortSignal): Promi
 export function parseProactiveSuggestion(raw: string): string | null {
   const t = raw.trim()
   if (!t || /^NONE\b/i.test(t)) return null
-  const m = t.match(/^SUGGEST:\s*(.+)$/i)
+  const m = t.match(/^SUGGEST:\s*(.{1,500})$/i)
   if (m?.[1]) return m[1].trim()
   if (/^suggest\b/i.test(t)) return t.replace(/^SUGGEST:\s*/i, '').trim()
   return null

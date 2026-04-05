@@ -24,15 +24,11 @@ type MockSocket = {
 
 function createMockSocket(url: string): MockSocket {
   const messageHandlers: Array<(data: unknown) => void> = []
-  const closeHandlers: Array<() => void> = []
   const socket: MockSocket = {
     url,
     on(ev: string, fn: (...args: unknown[]) => void) {
       if (ev === 'message') {
         messageHandlers.push(fn as (data: unknown) => void)
-      }
-      if (ev === 'close') {
-        closeHandlers.push(fn as () => void)
       }
     },
     once(ev: string, fn: (...args: unknown[]) => void) {

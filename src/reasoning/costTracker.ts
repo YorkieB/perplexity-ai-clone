@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { telemetry } from '@/lib/observability/telemetryCollector'
 
 import type { ModelTier } from './modelRegistry'
-import { MODEL_REGISTRY, estimateCost } from './modelRegistry'
+import { estimateCost } from './modelRegistry'
 
 const LOG = '[CostTracker]'
 
@@ -96,7 +96,6 @@ export default class CostTracker {
     actualOutputTokens: number,
     taskType: string,
   ): CostRecord {
-    void MODEL_REGISTRY[tier]
     const actualCostUSD = estimateCost(tier, actualInputTokens, actualOutputTokens)
     const beforeTotal = this.getSessionTotalUSD(sessionId)
 

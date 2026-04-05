@@ -15,7 +15,7 @@ The **Electron in-app Web browser** (`Web browser` in the sidebar) remains a hum
 
 ## Running locally
 
-1. Start the MCP HTTP bridge (listens on `127.0.0.1:3847` by default):
+1. Start the MCP HTTPS bridge (listens on `127.0.0.1:3847` by default):
 
    ```bash
    npm run agent:mcp
@@ -52,6 +52,6 @@ The bridge spawns Playwright MCP with **`--browser chromium --headless`** so aut
 
 ## Files
 
-- [`scripts/agent-mcp-bridge.mjs`](../scripts/agent-mcp-bridge.mjs) — HTTP bridge to Playwright MCP (stdio).
+- [`scripts/agent-mcp-bridge.mjs`](../scripts/agent-mcp-bridge.mjs) — HTTPS bridge to Playwright MCP (stdio).
 - [`src/lib/agent-browser-mcp.ts`](../src/lib/agent-browser-mcp.ts) — Browser client for `/api/agent-browser/*`.
 - [`src/components/AgentBrowserPanel.tsx`](../src/components/AgentBrowserPanel.tsx) — UI panel.

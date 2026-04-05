@@ -67,6 +67,7 @@ export default class ReflexionController {
   /**
    * Quick check, optional fast-path, full critique, persistence, telemetry, and brief assembly.
    */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- orchestrates quick-check, full critique, history persistence, and brief assembly in one coordinated flow
   async reflect(
     originalBrief: string,
     output: string,
@@ -145,13 +146,13 @@ export default class ReflexionController {
 
     if (critique.passed) {
       for (const id of activeLessonIds) {
-        void lessonsStore.recordApplied(id, true).catch((err: unknown) => {
+        lessonsStore.recordApplied(id, true).catch((err: unknown) => {
           console.error(`${LOG} recordApplied failed`, err)
         })
       }
     } else if (!shouldRetry) {
       for (const id of activeLessonIds) {
-        void lessonsStore.recordApplied(id, false).catch((err: unknown) => {
+        lessonsStore.recordApplied(id, false).catch((err: unknown) => {
           console.error(`${LOG} recordApplied failed`, err)
         })
       }

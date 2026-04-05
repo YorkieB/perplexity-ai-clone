@@ -11,6 +11,7 @@ export interface ParseSseResult {
  * Parse buffered SSE text: complete lines become deltas; incomplete last line stays in `rest`.
  * Supports both content and reasoning_content (e.g. OpenAI o1, extended APIs).
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- SSE line parser handles data/event/id fields, content + reasoning_content, and tool_calls in one streaming pass
 export function parseSseLines(buffer: string): ParseSseResult {
   const lines = buffer.split('\n')
   const rest = lines.pop() ?? ''

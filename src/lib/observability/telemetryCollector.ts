@@ -492,12 +492,14 @@ export default class TelemetryCollector {
     if (conf !== undefined && Number.isFinite(conf) && conf < 0.6) {
       pt.lowConfidenceCount++
     }
-    const v =
-      conf !== undefined && Number.isFinite(conf)
-        ? conf
-        : n === 1
-          ? 0
-          : pt.avgPreTaskConfidence
+    let v: number
+    if (conf !== undefined && Number.isFinite(conf)) {
+      v = conf
+    } else if (n === 1) {
+      v = 0
+    } else {
+      v = pt.avgPreTaskConfidence
+    }
     pt.avgPreTaskConfidence = (pt.avgPreTaskConfidence * (n - 1) + v) / n
   }
 
@@ -769,6 +771,7 @@ export default class TelemetryCollector {
   /**
    * Cross-session aggregates for dashboards.
    */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- aggregates cross-session reasoning, routing, cost, and verification metrics in one pass
   getSystemStats(): SystemStats {
     const summaries = [...this.sessionSummaries.values()]
     let globalVerScoreSum = 0

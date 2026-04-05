@@ -78,6 +78,7 @@ const SELF_CLOSE_TEXTS: Record<string, string> = {
  * Parse behavioral markup from LLM text output.
  * Returns typed chunks, each carrying optional voiceId/voiceSettings overrides.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- tag/emotion/SFX parser with multi-branch markup grammar; splitting would replicate iteration context
 export function parseBehavioralMarkup(
   text: string,
   voiceMap: Map<string, VoiceProfile>,

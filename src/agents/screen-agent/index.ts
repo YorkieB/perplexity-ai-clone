@@ -78,14 +78,15 @@ export class ScreenAgent extends BaseAgent {
     console.info('Screen agent disconnected')
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- screen state normalization handles many raw field types and fallbacks from Python bridge payload
   private readonly handleScreenChange = async (raw: Record<string, unknown>): Promise<void> => {
     const frameId = raw.frame_id
-    const description =
-      typeof raw.description === 'string'
-        ? raw.description
-        : typeof raw.windowTitle === 'string' && raw.windowTitle
-          ? raw.windowTitle
-          : ''
+    let description = ''
+    if (typeof raw.description === 'string') {
+      description = raw.description
+    } else if (typeof raw.windowTitle === 'string' && raw.windowTitle) {
+      description = raw.windowTitle
+    }
     const w = raw.width
     const h = raw.height
     const width = typeof w === 'number' && Number.isFinite(w) ? w : 0
@@ -95,12 +96,11 @@ export class ScreenAgent extends BaseAgent {
         typeof frameId === 'number' || typeof frameId === 'string' ? String(frameId) : '0',
       timestamp: normalizeTimestamp(raw.timestamp),
       activeApp: typeof raw.app === 'string' ? raw.app : null,
-      windowTitle:
-        typeof raw.window === 'string'
-          ? raw.window
-          : typeof raw.windowTitle === 'string'
-            ? raw.windowTitle
-            : null,
+      windowTitle: (() => {
+        if (typeof raw.window === 'string') return raw.window
+        if (typeof raw.windowTitle === 'string') return raw.windowTitle
+        return null
+      })(),
       fullText: description,
       errorDetected: Boolean(raw.error_detected),
       url: null,

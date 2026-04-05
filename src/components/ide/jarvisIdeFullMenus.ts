@@ -215,6 +215,7 @@ export function buildJarvisIdeMenusFromOptions(opts: JarvisIdeMenusFlatOptions):
   })
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- builds menu data structures from context; one branch per menu section is the minimum required structure
 export function buildJarvisIdeMenus(ctx: JarvisIdeMenuContext): Record<string, MenuRow[]> {
   const { file, edit, view, go, run, terminal, help, jarvisAi, model, rules, skills, agents } = ctx
 

@@ -62,7 +62,7 @@ import {
   syncBrowserSettingsToMain,
 } from '@/browser/electron-browser-bridge'
 import { resolveOmniboxInput, normalizeNavigationUrl, resolvedLiveWebHomepage } from '@/browser/omnibox'
-import { proxyUrlForIframe, isProxiedUrl, extractOriginalUrl } from '@/browser/iframe-proxy'
+import { proxyUrlForIframe } from '@/browser/iframe-proxy'
 import { isEmbeddableBrowserNavigationUrl } from '@/browser/embed-url-guard'
 import { MAX_TABS } from '@/browser/constants'
 

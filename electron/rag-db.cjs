@@ -26,7 +26,7 @@ function getPool() {
   if (!rawUrl) throw new Error('DATABASE_URL not set — add your DigitalOcean Managed PostgreSQL connection string to .env')
   // Strip sslmode from the URL — we handle SSL via the ssl option to avoid
   // pg treating sslmode=require as verify-full (which rejects DO's self-signed certs)
-  const url = rawUrl.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
+  const url = rawUrl.replaceAll(/[?&]sslmode=[^&]*/g, '').replaceAll(/\?$/, '')
   _pool = new Pool({
     connectionString: url,
     ssl: { rejectUnauthorized: false },
@@ -158,9 +158,12 @@ function estimateTokens(text) {
   return Math.ceil(text.length / 4)
 }
 
-function chunkText(text) {
-  if (!text || text.trim().length === 0) return []
+function tailWithOverlap(text) {
+  const overlapStart = Math.max(0, text.length - CHUNK_OVERLAP_CHARS)
+  return text.slice(overlapStart)
+}
 
+function buildParagraphChunks(text) {
   const paragraphs = text.split(/\n{2,}/)
   const chunks = []
   let current = ''
@@ -171,36 +174,50 @@ function chunkText(text) {
 
     if (current.length + trimmed.length + 1 > CHUNK_MAX_CHARS && current.length > 0) {
       chunks.push(current.trim())
-      // Overlap: keep the tail of the current chunk
-      const overlapStart = Math.max(0, current.length - CHUNK_OVERLAP_CHARS)
-      current = current.slice(overlapStart) + '\n\n' + trimmed
+      current = `${tailWithOverlap(current)}\n\n${trimmed}`
     } else {
-      current = current ? current + '\n\n' + trimmed : trimmed
+      current = current ? `${current}\n\n${trimmed}` : trimmed
     }
   }
-  if (current.trim()) chunks.push(current.trim())
 
-  // If a single chunk is still too long, split by sentences
+  if (current.trim()) chunks.push(current.trim())
+  return chunks
+}
+
+function splitLargeChunk(chunk) {
+  const sentences = chunk.split(/(?<=[.!?])\s+/)
+  const parts = []
+  let buffer = ''
+
+  for (const sentence of sentences) {
+    if (buffer.length + sentence.length + 1 > CHUNK_MAX_CHARS && buffer.length > 0) {
+      parts.push(buffer.trim())
+      buffer = `${tailWithOverlap(buffer)} ${sentence}`
+    } else {
+      buffer = buffer ? `${buffer} ${sentence}` : sentence
+    }
+  }
+
+  if (buffer.trim()) parts.push(buffer.trim())
+  return parts
+}
+
+function expandOversizedChunks(chunks) {
   const finalChunks = []
   for (const chunk of chunks) {
     if (chunk.length <= CHUNK_MAX_CHARS * 1.5) {
       finalChunks.push(chunk)
-    } else {
-      const sentences = chunk.split(/(?<=[.!?])\s+/)
-      let buf = ''
-      for (const s of sentences) {
-        if (buf.length + s.length + 1 > CHUNK_MAX_CHARS && buf.length > 0) {
-          finalChunks.push(buf.trim())
-          const overlapStart = Math.max(0, buf.length - CHUNK_OVERLAP_CHARS)
-          buf = buf.slice(overlapStart) + ' ' + s
-        } else {
-          buf = buf ? buf + ' ' + s : s
-        }
-      }
-      if (buf.trim()) finalChunks.push(buf.trim())
+      continue
     }
+    finalChunks.push(...splitLargeChunk(chunk))
   }
   return finalChunks
+}
+
+function chunkText(text) {
+  if (!text || text.trim().length === 0) return []
+  const chunks = buildParagraphChunks(text)
+  return expandOversizedChunks(chunks)
 }
 
 // ── Document CRUD ───────────────────────────────────────────────────────────

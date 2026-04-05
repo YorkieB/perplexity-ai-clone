@@ -1,5 +1,6 @@
 import { OAuthToken } from './oauth'
 import { CloudFile } from './types'
+import { isPathTraversalAttempt } from './url-validation'
 
 interface DropboxListEntry {
   readonly '.tag': string
@@ -36,6 +37,55 @@ interface GitHubContentItem {
   name: string
   size: number
   path: string
+}
+
+function validateOpaqueFileId(fileId: string, provider: string): void {
+  const normalized = fileId.trim()
+  if (!normalized) {
+    throw new Error(`${provider} download error: invalid file id`)
+  }
+  if (normalized.includes('/') || normalized.includes('\\') || normalized.includes('?') || normalized.includes('#')) {
+    throw new Error(`${provider} download error: invalid file id`)
+  }
+  if (isPathTraversalAttempt(normalized) || normalized.includes('\u0000')) {
+    throw new Error(`${provider} download error: invalid file id`)
+  }
+}
+
+function validateDropboxPath(path: string): void {
+  const normalized = path.trim()
+  if (!normalized) {
+    throw new Error('Dropbox download error: invalid file path')
+  }
+  if (!normalized.startsWith('/')) {
+    throw new Error('Dropbox download error: invalid file path')
+  }
+  if (isPathTraversalAttempt(normalized) || normalized.includes('\u0000')) {
+    throw new Error('Dropbox download error: invalid file path')
+  }
+}
+
+function validateGitHubRepoPath(path: string): void {
+  const normalized = path.trim()
+  if (!normalized) {
+    throw new Error('GitHub download error: invalid repository path')
+  }
+  if (normalized.startsWith('/') || normalized.includes('?') || normalized.includes('#')) {
+    throw new Error('GitHub download error: invalid repository path')
+  }
+  if (isPathTraversalAttempt(normalized) || normalized.includes('\\') || normalized.includes('\u0000')) {
+    throw new Error('GitHub download error: invalid repository path')
+  }
+
+  const segments = normalized.split('/').filter(Boolean)
+  if (segments.length < 2) {
+    throw new Error('GitHub download error: invalid repository path')
+  }
+
+  const safeSegmentPattern = /^[a-zA-Z0-9._-]+$/
+  if (!segments.every((segment) => safeSegmentPattern.test(segment))) {
+    throw new Error('GitHub download error: invalid repository path')
+  }
 }
 
 export async function fetchDropboxFiles(token: OAuthToken): Promise<CloudFile[]> {
@@ -212,6 +262,9 @@ export async function fetchGitHubFiles(token: OAuthToken): Promise<CloudFile[]> 
 
 export async function downloadDropboxFile(fileId: string, path: string, token: OAuthToken): Promise<string> {
   try {
+    validateOpaqueFileId(fileId, 'Dropbox')
+    validateDropboxPath(path)
+
     const response = await fetch('https://content.dropboxapi.com/2/files/download', {
       method: 'POST',
       headers: {
@@ -234,6 +287,8 @@ export async function downloadDropboxFile(fileId: string, path: string, token: O
 
 export async function downloadGoogleDriveFile(fileId: string, token: OAuthToken): Promise<string> {
   try {
+    validateOpaqueFileId(fileId, 'Google Drive')
+
     const response = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       {
@@ -256,6 +311,8 @@ export async function downloadGoogleDriveFile(fileId: string, token: OAuthToken)
 
 export async function downloadOneDriveFile(fileId: string, token: OAuthToken): Promise<string> {
   try {
+    validateOpaqueFileId(fileId, 'OneDrive')
+
     const response = await fetch(
       `https://graph.microsoft.com/v1.0/me/drive/items/${fileId}/content`,
       {
@@ -278,6 +335,8 @@ export async function downloadOneDriveFile(fileId: string, token: OAuthToken): P
 
 export async function downloadGitHubFile(path: string, token: OAuthToken): Promise<string> {
   try {
+    validateGitHubRepoPath(path)
+
     const response = await fetch(
       `https://api.github.com/repos/${path}`,
       {

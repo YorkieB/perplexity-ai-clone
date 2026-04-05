@@ -36,6 +36,7 @@ export type HallucinationType =
   | 'false_confidence'
   | 'invented_capability'
   | 'fictional_reference'
+  | 'validation_error'
 
 // ── Pattern detectors (fast, no LLM call) ───────────────────────────────────
 
@@ -169,10 +170,8 @@ interface ValidateOptions {
   toolOutputs?: string[]
 }
 
-async function runLlmValidation(
-  opts: ValidateOptions & { auditModel?: string },
-): Promise<HallucinationReport> {
-  const { response, userQuery, sourceEvidence, toolOutputs, auditModel = 'gpt-4o-mini' } = opts
+async function runLlmValidation(opts: ValidateOptions): Promise<HallucinationReport> {
+  const { response, userQuery, sourceEvidence, toolOutputs } = opts
 
   let evidenceBlock = ''
   if (sourceEvidence) {
@@ -195,7 +194,7 @@ ${evidenceBlock}
 Analyse the response for hallucinations. Output ONLY valid JSON.`
 
   try {
-    const raw = await callLlm(prompt, auditModel, true)
+    const raw = await callLlm(prompt, 'gpt-4o-mini', true)
     const parsed = JSON.parse(raw) as {
       passed?: boolean
       confidence?: number
@@ -209,8 +208,23 @@ Analyse the response for hallucinations. Output ONLY valid JSON.`
       flags: parsed.flags ?? [],
       correctedResponse: parsed.corrected_response ?? undefined,
     }
-  } catch {
-    return { passed: true, confidence: 0, flags: [] }
+  } catch (error) {
+    // SECURITY (WARN-036): Fail closed — when LLM validation is unavailable the response
+    // is marked unverified (passed: false) rather than silently approved (passed: true).
+    console.error('[hallucination-guard] LLM validation failed; response is NOT verified.', error)
+    // Provide an explicit high-severity flag so callers can surface validation bypass risk.
+    return {
+      passed: false,
+      confidence: 0,
+      flags: [
+        {
+          type: 'validation_error',
+          severity: 'high',
+          claim: 'VALIDATION_ERROR',
+          reason: `Hallucination guard failed: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+    }
   }
 }
 
@@ -222,8 +236,6 @@ export interface GuardOptions {
   sourceEvidence?: string
   toolOutputs?: string[]
   strictMode?: boolean
-  /** Defaults to `gpt-4o-mini`. Use the same model as the main turn when auditing DO-backed replies. */
-  auditModel?: string
 }
 
 /**
@@ -241,7 +253,6 @@ export async function validateResponse(opts: GuardOptions): Promise<{
     userQuery: opts.userQuery,
     sourceEvidence: opts.sourceEvidence,
     toolOutputs: opts.toolOutputs,
-    auditModel: opts.auditModel,
   })
 
   const allFlags = [...patternFlags, ...llmReport.flags]
@@ -299,7 +310,7 @@ ABSOLUTE PROHIBITIONS:
 4. NEVER cite studies, papers, or reports by name unless they appear in your search results or knowledge base.
 5. NEVER claim something happened on a specific date unless that date is in your evidence.
 6. NEVER present your inferences or speculation as established fact. Use qualifiers: "I believe", "it's likely", "based on what I know".
-7. NEVER claim capabilities you do not have. You cannot access the internet without using web_search or browser tools. You cannot see the user's screen without vision/desktop tools. You **can** send SMS and place phone calls **only** via the **vonage_** tools when the server has Vonage configured — do not deny those; if a call or SMS fails, report the tool error rather than claiming telephony is impossible.
+7. NEVER claim capabilities you do not have. You cannot access the internet without using web_search or browser tools. You cannot see the user's screen. You cannot make phone calls.
 8. NEVER fill gaps in your knowledge with plausible-sounding fabrications. Say "I don't have that specific information" instead.
 
 MANDATORY BEHAVIOURS:

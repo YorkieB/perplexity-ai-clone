@@ -1,4 +1,5 @@
 import { JarvisBrowser } from '@/browser/jarvis-browser-runtime'
+import { sanitizeRedirectUrl } from '@/lib/url-validation'
 import { showBrowserToast } from '@/ui/toast/toast-helpers'
 
 export const BROWSER_ACT_GOAL_CONTINUE = 'continue where you left off in your browser'
@@ -58,11 +59,19 @@ export const ScreenBrowserAct = {
   },
 
   async openUrl(url: string, openBrowserModal: () => void): Promise<void> {
+    // Validate URL before navigation — reject cross-origin or dangerous schemes
+    const safeUrl = sanitizeRedirectUrl(url, [])
+    if (!safeUrl) {
+      const LOG_PREFIX = '[BrowserAct]'
+      console.warn(`${LOG_PREFIX} Rejected unsafe URL for navigation: ${String(url).slice(0, 100)}`)
+      throw new Error(`Invalid or unsafe URL: ${String(url).slice(0, 50)}…`)
+    }
+
     openBrowserModal()
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 120)
     })
-    await JarvisBrowser.openUrl(url, { inNewTab: true })
+    await JarvisBrowser.openUrl(safeUrl, { inNewTab: true })
   },
 }
 
@@ -79,7 +88,7 @@ export async function handleBrowserActGoal(
   if (shouldDelegateJarvisBrowserActGoal(goal)) {
     const result = await ScreenBrowserAct.continueWhereLeftOff(openBrowserModal)
     if (result.mode === 'restored') {
-      const tabWord = result.tabCount !== 1 ? 's' : ''
+      const tabWord = result.tabCount === 1 ? '' : 's'
       showBrowserToast(
         `Restored your last browser session (${String(result.tabCount)} tab${tabWord}).`,
         'success'

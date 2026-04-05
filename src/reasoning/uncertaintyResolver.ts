@@ -9,7 +9,7 @@
 
 import OpenAI from 'openai'
 
-import type { ConfidenceScore, ConfidenceVector, ConfidenceAction } from './confidenceTypes'
+import type { ConfidenceScore } from './confidenceTypes'
 import { CONFIDENCE_THRESHOLDS } from './confidenceTypes'
 import { lessonsStore } from './lessonsStore'
 import { modelRouter } from './modelRouter'
@@ -140,7 +140,7 @@ export default class UncertaintyResolver {
     )
     const confidenceImproved = newConfidence > confidence.scalar + 0.1
     for (const id of lessonIds) {
-      void lessonsStore.recordApplied(id, confidenceImproved).catch((err: unknown) => {
+      lessonsStore.recordApplied(id, confidenceImproved).catch((err: unknown) => {
         console.error(`${LOG} recordApplied failed`, err)
       })
     }

@@ -42,6 +42,7 @@ export class SignificanceDetector {
   private readonly cooldowns = new Map<string, number>()
   private readonly COOLDOWN_MS = SAME_EVENT_COOLDOWN_MS
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- evaluates multiple candidate signals for screen significance scoring; branches map 1:1 to distinct screen events
   detect(curr: ScreenState, prev: ScreenState | null): SignificanceResult {
     if (curr.errorDetected && prev?.errorDetected) {
       return this.applyCooldown({ score: 0.3, reason: 'error_ongoing', shouldSpeak: false })
@@ -88,7 +89,7 @@ export class SignificanceDetector {
       return this.applyCooldown({ score: 0.1, reason: 'no_change', shouldSpeak: false })
     }
 
-    const best = candidates.reduce((a, b) => (a.score >= b.score ? a : b))
+    const best = candidates.reduce((a, b) => (a.score >= b.score ? a : b), candidates[0])
     return this.applyCooldown(best)
   }
 
@@ -105,7 +106,8 @@ export class SignificanceDetector {
   }
 
   private applyCooldown(result: SignificanceResult): SignificanceResult {
-    let { score, reason, shouldSpeak } = result
+    const { score, reason } = result
+    let { shouldSpeak } = result
     if (shouldSpeak && this.isOnCooldown(reason)) {
       shouldSpeak = false
     }

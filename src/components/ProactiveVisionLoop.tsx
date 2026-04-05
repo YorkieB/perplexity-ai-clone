@@ -30,6 +30,7 @@ export function ProactiveVisionLoop() {
       if (now - lastEndRef.current < MIN_GAP_MS) return
 
       inFlightRef.current = true
+
       void (async () => {
         try {
           const raw = await runProactiveVisionObservation()
@@ -39,6 +40,7 @@ export function ProactiveVisionLoop() {
           if (!tip) return
           toast.info('Jarvis', { description: tip, duration: 12_000 })
           if (!isRendererVoiceModeOpen()) {
+            // eslint-disable-next-line sonarjs/no-nested-functions -- .catch arrow is unavoidable in fire-and-forget async IIFE inside setInterval
             playTts(`Suggestion: ${tip}`).done.catch(() => {})
           }
         } catch {

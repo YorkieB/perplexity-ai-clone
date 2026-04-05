@@ -11,8 +11,8 @@ export function markdownToPlainText(md: string): string {
     .replace(/__([^_]+)__/g, '$1')
     .replace(/_([^_]+)_/g, '$1')
     .replace(/^#+\s+/gm, '')
-    .replace(/^\s*[-*]\s+/gm, '• ')
-    .replace(/\[(.*?)\]\([^)]*\)/g, '$1')
+    .replace(/^[ \t]{0,20}[-*][ \t]+/gm, '• ')
+    .replace(/\[([^\]]{0,500})\]\([^)]{0,500}\)/g, '$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }

@@ -237,6 +237,10 @@ export function QueryInput({
     else toast.info('Voice mode is not available in this view.')
   }
 
+  const handleComingSoon = (featureName: string) => {
+    toast.info(`${featureName} is coming soon.`)
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -324,7 +328,7 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => handleComingSoon('Connectors and sources')}
                 >
                   <Plugs size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Connectors and sources</span>
@@ -333,7 +337,7 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => handleComingSoon('Deep research')}
                 >
                   <MagnifyingGlass size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Deep research</span>
@@ -381,7 +385,7 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => handleComingSoon('Create files and apps')}
                 >
                   <FilePlus size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Create files and apps</span>
@@ -392,7 +396,7 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => {}}
+                  onClick={() => handleComingSoon('Learn step by step')}
                 >
                   <GraduationCap size={18} className="text-muted-foreground" />
                   <span className="flex-1 text-left">Learn step by step</span>

@@ -57,7 +57,7 @@ function copilotNarration(action: string, args: Record<string, unknown>): string
     case 'browser_go_back':
       return 'Going back'
     case 'browser_new_tab':
-      return (args.url as string) ? 'Opening a new tab' : 'Opening a new tab'
+      return 'Opening a new tab'
     case 'browser_switch_tab':
       return 'Switching tabs'
     case 'browser_close_tab':
@@ -283,8 +283,8 @@ GUIDE MODE: Before each action, briefly explain what you are about to do in a "t
 }
 
 // ── Tool executor ───────────────────────────────────────────────────────────
-
-async function executeBrowserTool(
+// eslint-disable-next-line sonarjs/cognitive-complexity -- central browser-tool dispatcher; each case is a named agent action
+async function executeBrowserTool( // NOSONAR intentional central tool dispatcher for browser-agent actions
   name: string,
   args: Record<string, unknown>,
   bc: BrowserControl,
@@ -398,7 +398,8 @@ async function executeBrowserTool(
 
 // ── Main agent loop ─────────────────────────────────────────────────────────
 
-export async function runBrowserAgent(
+// eslint-disable-next-line sonarjs/cognitive-complexity -- main agent ReAct loop; branches across guideMode, voice, and retry logic are co-dependent
+export async function runBrowserAgent( // NOSONAR intentional orchestration loop coordinating plan-execute-observe flow
   goal: string,
   browserControl: BrowserControl,
   options?: AgentRunOptions,
@@ -466,7 +467,22 @@ export async function runBrowserAgent(
       if (signal?.aborted) break
 
       let args: Record<string, unknown> = {}
-      try { args = JSON.parse(tc.function.arguments) } catch { /* */ }
+      try {
+        args = JSON.parse(tc.function.arguments)
+      } catch (error) {
+        console.error('[BrowserAgent] Failed to parse tool arguments; skipping tool call.', {
+          toolName: tc.function.name,
+          arguments: tc.function.arguments,
+          error,
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          name: tc.function.name,
+          content: 'Error: Could not parse tool arguments (invalid JSON). Please retry with valid JSON arguments.',
+        })
+        continue
+      }
 
       const toolName = tc.function.name
       if (clearsGuideHighlight.has(toolName)) {
@@ -476,7 +492,7 @@ export async function runBrowserAgent(
         browserControl.highlightRef &&
         (toolName === 'browser_click' || toolName === 'browser_type')
       ) {
-        const ref = args.ref as string | undefined
+        const ref = typeof args.ref === 'string' ? args.ref : undefined
         if (ref) {
           await browserControl.highlightRef(ref, toolName === 'browser_click' ? 'Click' : 'Type here')
         }
@@ -486,7 +502,7 @@ export async function runBrowserAgent(
 
       if (toolName === 'task_complete') {
         await browserControl.highlightRef?.(null)
-        finalSummary = (args.summary as string) || 'Task completed.'
+        finalSummary = (typeof args.summary === 'string' && args.summary.trim()) || 'Task completed.'
         completed = true
         messages.push({ role: 'tool', tool_call_id: tc.id, name: toolName, content: finalSummary })
         const step: AgentStep = {

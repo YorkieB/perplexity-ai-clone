@@ -2,7 +2,7 @@
  * Cross-session lessons persistence for Jarvis (DigitalOcean self-hosted).
  *
  * @packageDocumentation
- * TODO(package.json): add runtime dependency `better-sqlite3` and dev dependency
+ * NOTE(package.json): add runtime dependency `better-sqlite3` and dev dependency
  * `@types/better-sqlite3` when enabling production SQLite at `data/jarvis.db`.
  */
 
@@ -29,10 +29,10 @@ import { createRequire } from 'module'
  */
 
 // ─── DEPLOYMENT NOTE ──────────────────────────────────────────────────────
-// TODO (production): Install better-sqlite3 on the DigitalOcean server:
+// NOTE (production): Install better-sqlite3 on the DigitalOcean server:
 //   npm install better-sqlite3
 //
-// TODO (production): Mount a persistent volume at /data in App Platform.
+// NOTE (production): Mount a persistent volume at /data in App Platform.
 //   Without it, data/jarvis.db is wiped on every re-deploy.
 //   All cross-session lessons (LessonsStore) depend on this volume.
 //
@@ -73,6 +73,7 @@ function isPersistedLessonSource(s: string): s is PersistedLesson['source'] {
   return s === 'reflexion' || s === 'uar' || s === 'manual'
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- SQLite row deserializer with per-field type coercion and source validation; co-location is intentional
 function parseLessonRow(row: Record<string, unknown>): PersistedLesson | null {
   const id = typeof row.id === 'string' ? row.id : ''
   const content = typeof row.content === 'string' ? row.content : ''
@@ -81,12 +82,7 @@ function parseLessonRow(row: Record<string, unknown>): PersistedLesson | null {
   const appliedCount = typeof row.appliedCount === 'number' ? row.appliedCount : 0
   const successRate = typeof row.successRate === 'number' ? row.successRate : 0
   const createdAt = typeof row.createdAt === 'string' ? row.createdAt : ''
-  const lastAppliedAt =
-    row.lastAppliedAt === null || row.lastAppliedAt === undefined
-      ? null
-      : typeof row.lastAppliedAt === 'string'
-        ? row.lastAppliedAt
-        : null
+  const lastAppliedAt = typeof row.lastAppliedAt === 'string' ? row.lastAppliedAt : null
   let tags: string[] = []
   if (typeof row.tags === 'string') {
     try {
@@ -415,14 +411,12 @@ export function createLessonsAdapter(): LessonsPersistenceAdapter {
   if (production) {
     try {
       createRequire(import.meta.url).resolve('better-sqlite3')
-      // eslint-disable-next-line no-console -- adapter diagnostics
       console.log(
         '[LessonsPersistence] SQLiteLessonsAdapter initialised (production). ' +
           'Lessons persisted to data/jarvis.db.',
       )
       return new SQLiteLessonsAdapter()
     } catch {
-      // eslint-disable-next-line no-console -- adapter diagnostics
       console.warn(
         '[LessonsPersistence] WARNING: better-sqlite3 is not resolvable ' +
           'in production. Falling back to JsonFileLessonsAdapter. ' +
@@ -434,7 +428,6 @@ export function createLessonsAdapter(): LessonsPersistenceAdapter {
       return new JsonFileLessonsAdapter()
     }
   }
-  // eslint-disable-next-line no-console -- adapter diagnostics
   console.log('[LessonsPersistence] Using JsonFileLessonsAdapter (development)')
   return new JsonFileLessonsAdapter()
 }

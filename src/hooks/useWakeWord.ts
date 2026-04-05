@@ -179,6 +179,7 @@ export function useWakeWord(opts: UseWakeWordOptions): UseWakeWordReturn {
       // Retry resume periodically if still suspended
       const resumeInterval = setInterval(() => {
         if (audioCtx && audioCtx.state === 'suspended') {
+          // eslint-disable-next-line sonarjs/no-nested-functions -- .catch arrow required for fire-and-forget AudioContext resume inside setInterval
           audioCtx.resume().catch(() => {})
         } else {
           clearInterval(resumeInterval)

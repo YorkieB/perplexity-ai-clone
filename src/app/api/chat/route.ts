@@ -148,7 +148,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       )
     }
 
-    let sessionId =
+    const sessionId =
       typeof rec.sessionId === 'string' && rec.sessionId.trim().length > 0
         ? rec.sessionId.trim()
         : randomUUID()

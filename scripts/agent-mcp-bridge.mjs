@@ -1,10 +1,11 @@
 /**
- * Dev-time HTTP bridge to Playwright MCP (stdio). Run: npm run agent:mcp
+ * Dev-time HTTPS bridge to Playwright MCP (stdio). Run: npm run agent:mcp
  * The Vite dev server proxies /api/agent-browser → this server.
  */
-import { createServer } from 'node:http'
+import { createServer } from 'node:https'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
 import process from 'node:process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -12,6 +13,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
 const cliPath = path.join(root, 'node_modules', '@playwright', 'mcp', 'cli.js')
+const TLS_KEY_PATH = path.join(root, 'config', 'security', 'localhost.key.pem')
+const TLS_CERT_PATH = path.join(root, 'config', 'security', 'localhost.cert.pem')
 
 const PORT = Number(process.env.AGENT_MCP_BRIDGE_PORT ?? 3847)
 
@@ -46,7 +49,15 @@ function corsAllowOrigin(req) {
   if (typeof origin === 'string' && LOCAL_DEV_ORIGIN_RE.test(origin)) {
     return origin
   }
-  return `http://127.0.0.1:${PORT}`
+  return `https://127.0.0.1:${PORT}`
+}
+
+function getLocalTlsOptions() {
+  return {
+    key: fs.readFileSync(TLS_KEY_PATH),
+    cert: fs.readFileSync(TLS_CERT_PATH),
+    minVersion: 'TLSv1.2',
+  }
 }
 
 let mcpClient = null
@@ -89,8 +100,8 @@ function readBody(req) {
       try {
         const raw = Buffer.concat(chunks).toString('utf8')
         resolve(raw ? JSON.parse(raw) : {})
-      } catch (e) {
-        reject(e)
+      } catch {
+        reject(new Error('Malformed JSON body'))
       }
     })
     req.on('error', reject)
@@ -101,10 +112,10 @@ async function handleHealth(req, res) {
   try {
     await getMcpClient()
     sendJson(res, req, 200, { ok: true, mcp: 'connected' })
-  } catch (e) {
+  } catch {
     sendJson(res, req, 503, {
       ok: false,
-      error: e instanceof Error ? e.message : String(e),
+      error: 'MCP bridge unavailable',
     })
   }
 }
@@ -114,8 +125,8 @@ async function handleTools(req, res) {
     const client = await getMcpClient()
     const listed = await client.listTools()
     sendJson(res, req, 200, { tools: listed.tools ?? [] })
-  } catch (e) {
-    sendJson(res, req, 500, { error: e instanceof Error ? e.message : String(e) })
+  } catch {
+    sendJson(res, req, 500, { error: 'Failed to list tools' })
   }
 }
 
@@ -136,7 +147,7 @@ async function handleCall(req, res) {
   sendJson(res, req, 200, { result })
 }
 
-const server = createServer(async (req, res) => {
+const server = createServer(getLocalTlsOptions(), async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': corsAllowOrigin(req),
@@ -147,7 +158,7 @@ const server = createServer(async (req, res) => {
     return
   }
 
-  const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
+  const url = new URL(req.url ?? '/', `https://127.0.0.1:${PORT}`)
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
@@ -162,8 +173,8 @@ const server = createServer(async (req, res) => {
       await handleCall(req, res)
       return
     }
-  } catch (e) {
-    sendJson(res, req, 500, { error: e instanceof Error ? e.message : String(e) })
+  } catch {
+    sendJson(res, req, 500, { error: 'Bridge request failed' })
     return
   }
 
@@ -171,7 +182,7 @@ const server = createServer(async (req, res) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[agent-mcp-bridge] http://127.0.0.1:${PORT} (POST /call, GET /health, GET /tools)`)
+  console.log(`[agent-mcp-bridge] https://127.0.0.1:${PORT} (POST /call, GET /health, GET /tools)`)
 })
 
 server.on('error', (err) => {

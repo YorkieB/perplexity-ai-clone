@@ -3,29 +3,246 @@
  * dev/preview proxies: POST /api/llm (SSE when stream:true), POST /api/tts, /api/a2e/*, etc.
  */
 const { randomInt, randomBytes } = require('node:crypto')
-const http = require('node:http')
 const https = require('node:https')
 const fs = require('node:fs')
 const path = require('node:path')
-const { execFile, exec, spawn } = require('node:child_process')
+const { execFile, spawn } = require('node:child_process')
 const os = require('node:os')
+const { isIP, createConnection } = require('node:net')
 const { promisify } = require('node:util')
 const { Readable } = require('node:stream')
 const execFileAsync = promisify(execFile)
-const execAsync = promisify(exec)
-const { app, BrowserWindow, dialog, ipcMain, session, shell, clipboard, desktopCapturer, screen, webContents } =
-  require('electron')
+
+/**
+ * SECURITY: Parse command string into executable + args array, preventing shell injection.
+ * Handles quoted arguments and basic shell token parsing without executing shell metacharacters.
+ * @param {string} cmd - Command string like "npm install" or "git commit -m 'message'"
+ * @returns {{exe: string, args: string[]}} Safe tokenized command
+ */
+function tokenizeCommand(cmd) {
+  const tokens = []
+  let current = ''
+  let inQuote = null
+
+  const pushCurrent = () => {
+    if (current) {
+      tokens.push(current)
+      current = ''
+    }
+  }
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    const next = cmd[i + 1]
+
+    if (ch === '\\' && inQuote) {
+      current += next || ''
+      i++
+      continue
+    }
+
+    const isQuote = ch === '"' || ch === "'"
+    if (isQuote && (inQuote === null || inQuote === ch)) {
+      inQuote = inQuote === null ? ch : null
+      continue
+    }
+
+    if (/\s/.test(ch) && !inQuote) {
+      pushCurrent()
+      continue
+    }
+
+    current += ch
+  }
+
+  pushCurrent()
+  return tokens
+}
+
+function assertNoDangerousMetacharacters(tokens) {
+  const dangerous = /[;&|`$(){}[\]<>]|&&|\|\||>>|<</
+  for (const token of tokens) {
+    if (dangerous.test(token)) {
+      throw new Error(`Potentially dangerous command: shell metacharacters detected in "${token}"`)
+    }
+  }
+}
+
+function parseCommandSafe(cmd) {
+  if (!cmd || typeof cmd !== 'string') throw new Error('Invalid command')
+  const tokens = tokenizeCommand(cmd)
+  if (!tokens.length) throw new Error('Empty command after parsing')
+  assertNoDangerousMetacharacters(tokens)
+  return { exe: tokens[0], args: tokens.slice(1) }
+}
+const { app, BrowserWindow, dialog, ipcMain, session, shell, webContents } = require('electron')
 const jarvisDb = require('./jarvis-db.cjs')
 const ragDb = require('./rag-db.cjs')
 const spacesClient = require('./spaces-client.cjs')
 
 const PROJECT_ROOT = path.join(__dirname, '..')
-const { buildAllowedElevenLabsSharedVoicesQuery } = require(path.join(PROJECT_ROOT, 'scripts', 'elevenlabs-shared-voices-query.cjs'))
-const { buildAllowedSunoGenerateBody } = require(path.join(PROJECT_ROOT, 'scripts', 'suno-generate-body.cjs'))
-const { normalizeLlmChatCompletionBody } = require(path.join(PROJECT_ROOT, 'scripts', 'llm-chat-completion-body.cjs'))
-const { normalizeOpenAiAudioSpeechBody } = require(path.join(PROJECT_ROOT, 'scripts', 'openai-tts-speech-body.cjs'))
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs')
+const LOCAL_TLS_KEY_PATH = path.join(PROJECT_ROOT, 'config', 'security', 'localhost.key.pem')
+const LOCAL_TLS_CERT_PATH = path.join(PROJECT_ROOT, 'config', 'security', 'localhost.cert.pem')
+
+function getLocalTlsOptions() {
+  return {
+    key: fs.readFileSync(LOCAL_TLS_KEY_PATH),
+    cert: fs.readFileSync(LOCAL_TLS_CERT_PATH),
+    minVersion: 'TLSv1.2',
+  }
+}
+
+/** Room-camera pipeline: `C:\jarvis-vision\vision_service.py` (uvicorn :8002). Not the legacy :5000 engine. */
+const JARVIS_VISION_URL = (process.env.JARVIS_VISION_URL || 'http://127.0.0.1:8002').replace(/\/$/, '')
+/** Scene text from last POST /describe (filled by /api/vision/analyze). */
+let lastJarvisVisionScene = { description: null, at: 0 }
+
+/** Spawned `uvicorn vision_service:app` child process — auto-started with the desktop app. */
+let jarvisVisionProcess = null
+
+function checkVisionHealth(port, timeout = 3000) {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port })
+
+    socket.setTimeout(timeout)
+    socket.once('connect', () => {
+      socket.end()
+      resolve(true)
+    })
+    socket.once('timeout', () => {
+      socket.destroy()
+      resolve(false)
+    })
+    socket.once('error', () => {
+      socket.destroy()
+      resolve(false)
+    })
+  })
+}
+
+function resolveCondaExecutable() {
+  const candidates = [
+    path.win32.join('C:', 'ProgramData', 'anaconda3', 'Scripts', 'conda.exe'),
+    path.win32.join('C:', 'ProgramData', 'anaconda3', 'condabin', 'conda.bat'),
+    path.join(os.homedir(), 'anaconda3', 'Scripts', 'conda.exe'),
+    path.join(os.homedir(), 'anaconda3', 'condabin', 'conda.bat'),
+    path.join(os.homedir(), 'miniconda3', 'Scripts', 'conda.exe'),
+    path.join(os.homedir(), 'miniconda3', 'condabin', 'conda.bat'),
+  ]
+  return candidates.find((p) => fs.existsSync(p)) || null
+}
+
+/**
+ * Launches `C:\jarvis-vision\vision_service.py` via conda so the camera pipeline
+ * is ready by the time the renderer polls `/api/vision/context`.  Mirrors the
+ * environment set up by `C:\jarvis-vision\start_vision.bat`.
+ */
+function spawnJarvisVision() {
+  const VISION_DIR = path.win32.join('C:', 'jarvis-vision')
+  const VISION_PORT = 8002
+  if (!fs.existsSync(path.join(VISION_DIR, 'vision_service.py'))) {
+    console.warn('[jarvis-vision] vision_service.py not found at', VISION_DIR, '- skipping auto-start')
+    return
+  }
+  // Prevent double-spawn if already alive
+  if (jarvisVisionProcess && !jarvisVisionProcess.killed) {
+    console.info('[jarvis-vision] process already running (pid', jarvisVisionProcess.pid + ') - skipping')
+    return
+  }
+  checkVisionHealth(VISION_PORT)
+    .then((healthy) => {
+      if (healthy) {
+        console.info('[jarvis-vision] healthy service already running on port', VISION_PORT, '- reusing')
+        return
+      }
+      doSpawnVision(VISION_DIR, VISION_PORT)
+    })
+    .catch(() => {
+      doSpawnVision(VISION_DIR, VISION_PORT)
+    })
+}
+
+function doSpawnVision(VISION_DIR, VISION_PORT) {
+  const condaExe = resolveCondaExecutable()
+  if (!condaExe) {
+    console.warn('[jarvis-vision] conda executable not found; skipping auto-start')
+    return
+  }
+
+  const visionEnv = {
+    ...process.env,
+    TF_USE_LEGACY_KERAS: '1',
+    CAMERA_INDEX: process.env.CAMERA_INDEX || '2',
+    FACES_DB: path.join(VISION_DIR, 'faces_db').trim(),
+    OLLAMA_URL: process.env.OLLAMA_URL || 'http://localhost:11434',
+    // Pass OpenAI key so GPT-4o cloud vision (use_cloud: true) works in describe endpoint
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+  }
+  console.info('[jarvis-vision] starting vision service via conda (jarvis-voice env) on port', VISION_PORT, '...')
+  jarvisVisionProcess = spawn(
+    condaExe,
+    ['run', '-n', 'jarvis-voice', '--no-capture-output', 'python', '-m', 'uvicorn', 'vision_service:app', '--host', '0.0.0.0', '--port', String(VISION_PORT)],
+    {
+      cwd: VISION_DIR,
+      env: visionEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: condaExe.toLowerCase().endsWith('.bat'),
+    }
+  )
+  jarvisVisionProcess.stdout.on('data', (chunk) => {
+    const line = chunk.toString().trim()
+    // Filter out verbose conda/pip/model loading noise
+    if (!line || line.startsWith('Downloading') || line.startsWith('  ') || line.includes('100%|') || line.includes('━') || line.startsWith('Requirement already') || line.includes('already satisfied')) return
+    console.log('[jarvis-vision]', line)
+  })
+  jarvisVisionProcess.stderr.on('data', (chunk) => {
+    const line = chunk.toString().trim()
+    // Filter out verbose conda/pip noise from stderr
+    if (!line || line.startsWith('Downloading') || line.includes('100%|') || line.includes('━') || line.startsWith('Requirement already') || line.includes('already satisfied') || line.includes('UserWarning') || line.includes('FutureWarning')) return
+    // Only show important messages
+    if (line.includes('ERROR') || line.includes('Error') || line.includes('failed') || line.includes('ready') || line.includes('Started') || line.includes('Uvicorn') || line.includes('[vision]') || line.includes('[camera]')) {
+      console.log('[jarvis-vision:err]', line)
+    }
+  })
+  jarvisVisionProcess.on('exit', (code) => {
+    console.warn('[jarvis-vision] process exited with code', code)
+    jarvisVisionProcess = null
+    // Auto-restart if it crashed (exit code !== 0 and not deliberately killed)
+    if (code !== 0 && code !== null) {
+      console.info('[jarvis-vision] scheduling auto-restart in 5 seconds...')
+      setTimeout(() => {
+        if (!jarvisVisionProcess) {
+          console.info('[jarvis-vision] auto-restarting vision service...')
+          spawnJarvisVision()
+        }
+      }, 5000)
+    }
+  })
+  jarvisVisionProcess.on('error', (err) => {
+    console.error('[jarvis-vision] spawn error:', err.message)
+    jarvisVisionProcess = null
+  })
+  console.info('[jarvis-vision] spawned (pid', jarvisVisionProcess.pid + ') - health: http://localhost:' + VISION_PORT + '/health')
+}
+
+function killJarvisVision() {
+  if (!jarvisVisionProcess) return
+  console.info('[jarvis-vision] shutting down vision service (pid', jarvisVisionProcess.pid + ') ...')
+  try { jarvisVisionProcess.kill('SIGTERM') } catch { /* already dead */ }
+  setTimeout(() => {
+    try {
+      if (jarvisVisionProcess && !jarvisVisionProcess.killed) {
+        jarvisVisionProcess.kill('SIGKILL')
+      }
+    } catch {
+      /* already dead */
+    }
+  }, 1500)
+  jarvisVisionProcess = null
+}
 
 // <webview> GPU compositor issue: see iframe-based browser below.
 
@@ -200,9 +417,9 @@ async function shutdownJarvisOrchestratorAsync() {
 }
 
 /**
- * Stable HTTP port for the embedded server (production Electron load from dist/).
+ * Stable HTTPS port for the embedded server (production Electron load from dist/).
  * OAuth redirect URIs must match exactly; random ports (listen(0)) break Google Cloud redirect registration.
- * Override: JARVIS_ELECTRON_PORT or ELECTRON_APP_PORT. Register in Google: http://127.0.0.1:<port>/oauth/callback
+ * Override: JARVIS_ELECTRON_PORT or ELECTRON_APP_PORT. Register in Google: https://127.0.0.1:<port>/oauth/callback
  */
 const _electronPort = Number(process.env.JARVIS_ELECTRON_PORT || process.env.ELECTRON_APP_PORT || 53473)
 const ELECTRON_APP_PORT = Number.isFinite(_electronPort) && _electronPort > 0 && _electronPort < 65536 ? _electronPort : 53473
@@ -222,6 +439,26 @@ function readJarvisInspectorScript() {
     console.error('[jarvis-inspector] failed to read inspector script:', e instanceof Error ? e.message : e)
     return ''
   }
+}
+
+async function injectInspectorIntoGuest(wc) {
+  if (!wc || wc.isDestroyed()) return { ok: false, error: 'No guest webContents' }
+  const src = readJarvisInspectorScript()
+  if (!src) return { ok: false, error: 'Inspector script missing' }
+  try {
+    await wc.executeJavaScript(src, true)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function guestWcForTab(tabId) {
+  const gid = jarvisInspectorTabToGuestId.get(tabId)
+  if (gid == null) return null
+  const wc = webContents.fromId(gid)
+  if (!wc || wc.isDestroyed()) return null
+  return wc
 }
 
 function registerJarvisBrowserInspectorIpc() {
@@ -249,18 +486,6 @@ function registerJarvisBrowserInspectorIpc() {
     return { ok: true }
   })
 
-  async function injectInspectorIntoGuest(wc) {
-    if (!wc || wc.isDestroyed()) return { ok: false, error: 'No guest webContents' }
-    const src = readJarvisInspectorScript()
-    if (!src) return { ok: false, error: 'Inspector script missing' }
-    try {
-      await wc.executeJavaScript(src, true)
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
   ipcMain.handle('jarvis-browser-inspector-inject', async (event, payload) => {
     if (!payload || typeof payload.webContentsId !== 'number') return { ok: false, error: 'Invalid payload' }
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -271,14 +496,6 @@ function registerJarvisBrowserInspectorIpc() {
     if (!wc || wc.isDestroyed()) return { ok: false, error: 'Invalid webContentsId' }
     return injectInspectorIntoGuest(wc)
   })
-
-  function guestWcForTab(tabId) {
-    const gid = jarvisInspectorTabToGuestId.get(tabId)
-    if (gid == null) return null
-    const wc = webContents.fromId(gid)
-    if (!wc || wc.isDestroyed()) return null
-    return wc
-  }
 
   ipcMain.handle('jarvis-browser-inspector-capture', async (event, payload) => {
     if (!payload || typeof payload.tabId !== 'string') return { ok: false, error: 'Invalid tabId' }
@@ -491,16 +708,22 @@ let jarvisBrowserPrivacy = { sendDoNotTrack: false, blockThirdPartyCookies: fals
 let jarvisBrowserSitePermissions = {}
 
 function setupBrowserSession() {
+  const mapDownloadStatus = (state) => {
+    if (state === 'progressing') return 'in_progress'
+    if (state === 'completed') return 'completed'
+    return 'in_progress'
+  }
+
   const ses = session.fromPartition(BROWSER_PARTITION)
   // Remove the Electron token from the user-agent so websites don't block/degrade the webview
   ses.setUserAgent(ses.getUserAgent().replace(/Electron\/\S+\s?/, ''))
 
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = { ...(details.requestHeaders || {}) }
     if (jarvisBrowserPrivacy.sendDoNotTrack) {
-      headers.DNT = '1'
+      callback({ requestHeaders: { ...details.requestHeaders, DNT: '1' } })
+      return
     }
-    callback({ requestHeaders: headers })
+    callback({ requestHeaders: details.requestHeaders })
   })
 
   ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -527,8 +750,7 @@ function setupBrowserSession() {
     } catch {
       origin = ''
     }
-    const site = origin && jarvisBrowserSitePermissions[origin]
-    const decision = site && site[key]
+    const decision = origin ? jarvisBrowserSitePermissions[origin]?.[key] : undefined
     if (decision === 'allow') {
       callback(true)
       return
@@ -573,7 +795,7 @@ function setupBrowserSession() {
         id: downloadId,
         url,
         fileName,
-        status: state === 'progressing' ? 'in_progress' : state === 'completed' ? 'completed' : 'in_progress',
+        status: mapDownloadStatus(state),
         bytesReceived: item.getReceivedBytes(),
         totalBytes: total,
         path: item.getSavePath() || '',
@@ -608,8 +830,92 @@ function setupBrowserSession() {
   }
 }
 
+function normalizeSafeExternalUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null
+  const trimmed = rawUrl.trim()
+  if (!trimmed) return null
+
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    if (parsed.username || parsed.password) return null
+    return parsed.href
+  } catch {
+    return null
+  }
+}
+
+const IPV4_BLOCKLIST = [
+  /^10\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^192\.168\./,
+  /^127\./,
+  /^169\.254\./,
+  /^0\./,
+  /^255\./,
+]
+
+const IPV6_BLOCKLIST = [
+  /^::1$/,
+  /^fc[0-9a-f]{2}:/i,
+  /^fd[0-9a-f]{2}:/i,
+  /^fe80:/i,
+  /^ff/i,
+]
+
+function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]'
+}
+
+function isBlockedIpAddress(hostname) {
+  const ipType = isIP(hostname)
+  if (ipType === 0) return { blocked: false }
+  const ip = hostname.toLowerCase()
+  if (ipType === 4 && IPV4_BLOCKLIST.some((range) => range.test(ip))) {
+    return { blocked: true, reason: `Private/reserved IPv4 range: ${ip}` }
+  }
+  if (ipType === 6 && IPV6_BLOCKLIST.some((range) => range.test(ip))) {
+    return { blocked: true, reason: `Private/reserved IPv6 range: ${ip}` }
+  }
+  return { blocked: false }
+}
+
+function _isSafeProxyFetchUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return { safe: false, reason: 'Invalid URL type' }
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return { safe: false, reason: 'Invalid URL' }
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { safe: false, reason: `Scheme ${parsed.protocol} not allowed` }
+  }
+  if (parsed.username || parsed.password) {
+    return { safe: false, reason: 'URL credentials are not allowed' }
+  }
+
+  const hostname = parsed.hostname || ''
+  if (isLoopbackHostname(hostname)) {
+    return { safe: false, reason: 'Loopback hosts not allowed' }
+  }
+  const ipCheck = isBlockedIpAddress(hostname)
+  if (ipCheck.blocked) {
+    return { safe: false, reason: ipCheck.reason || 'Blocked IP address' }
+  }
+  if (isIP(hostname) === 0 && !hostname.includes('.')) {
+    return { safe: false, reason: 'Single-label hostnames not allowed' }
+  }
+  return { safe: true }
+}
+
 function registerBrowserIpc() {
-  ipcMain.handle('jarvis-browser-apply-settings', async (_e, payload) => {
+
+  ipcMain.handle('jarvis-browser-apply-settings', async (event, payload) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Browser settings restricted to internal frame' }
+    }
     if (payload && typeof payload === 'object') {
       const p = payload.privacy
       if (p && typeof p === 'object') {
@@ -626,19 +932,25 @@ function registerBrowserIpc() {
     return { ok: true }
   })
 
-  ipcMain.handle('shell-show-item-in-folder', async (_e, fullPath) => {
+  ipcMain.handle('shell-show-item-in-folder', async (event, fullPath) => {
+    if (!isInternalSender(event)) return false
     if (typeof fullPath !== 'string' || !fullPath.trim()) return false
     shell.showItemInFolder(path.resolve(fullPath.trim()))
     return true
   })
 
-  ipcMain.handle('shell-open-external', async (_e, url) => {
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
-    await shell.openExternal(url)
+  ipcMain.handle('shell-open-external', async (event, url) => {
+    if (!isInternalSender(event)) return false
+    const safeUrl = normalizeSafeExternalUrl(url)
+    if (!safeUrl) return false
+    await shell.openExternal(safeUrl)
     return true
   })
 
-  ipcMain.handle('browser-load-extension', async (_e, folderPath) => {
+  ipcMain.handle('browser-load-extension', async (event, folderPath) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Extension loading restricted to internal frame' }
+    }
     if (typeof folderPath !== 'string' || !folderPath.trim()) {
       return { ok: false, error: 'Invalid path' }
     }
@@ -654,7 +966,10 @@ function registerBrowserIpc() {
     }
   })
 
-  ipcMain.handle('dialog-pick-extension-folder', async () => {
+  ipcMain.handle('dialog-pick-extension-folder', async (event) => {
+    if (!isInternalSender(event)) {
+      return null // Security: Restrict to internal frame
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return null
     const r = await dialog.showOpenDialog(mainWindow, {
       title: 'Select unpacked extension folder',
@@ -724,8 +1039,40 @@ function createTerminalSession(cwd) {
   return session
 }
 
+/**
+ * SECURITY: Validate that IPC caller is from trusted context (main app, not guest/webview).
+ * Restricts privileged IPC to internal frame only.
+ */
+const INTERNAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+function isTrustedInternalUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) return false
+  if (url.startsWith('file://')) return true
+
+  try {
+    const parsed = new URL(url)
+    const protocol = parsed.protocol.toLowerCase()
+    if (protocol !== 'http:' && protocol !== 'https:') return false
+    return INTERNAL_HOSTNAMES.has(parsed.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+function isInternalSender(event) {
+  const url = event?.senderFrame?.url || event?.sender?.getURL?.() || ''
+  const trusted = isTrustedInternalUrl(url)
+  if (!trusted) {
+    console.warn(`[IPC Security] Rejected privileged IPC from untrusted sender: ${url}`)
+  }
+  return trusted
+}
+
 function registerTerminalIpc() {
-  ipcMain.handle('terminal-create', (_e, opts) => {
+  ipcMain.handle('terminal-create', (event, opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Terminal access restricted' }
+    }
     const cwd = opts?.cwd || os.homedir()
     const resolved = path.resolve(cwd)
     let startDir = resolved
@@ -740,7 +1087,10 @@ function registerTerminalIpc() {
     return { id: session.id, cwd: startDir }
   })
 
-  ipcMain.handle('terminal-write', (_e, opts) => {
+  ipcMain.handle('terminal-write', (event, opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Terminal access restricted' }
+    }
     const { id, data } = opts || {}
     const session = terminalSessions.get(id)
     if (!session?.alive) return { ok: false, error: 'no session' }
@@ -752,11 +1102,17 @@ function registerTerminalIpc() {
     }
   })
 
-  ipcMain.handle('terminal-resize', (_event, _opts) => {
+  ipcMain.handle('terminal-resize', (event, _opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Terminal access restricted' }
+    }
     return { ok: true }
   })
 
-  ipcMain.handle('terminal-kill', (_e, opts) => {
+  ipcMain.handle('terminal-kill', (event, opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, error: 'SECURITY: Terminal access restricted' }
+    }
     const { id } = opts || {}
     const session = terminalSessions.get(id)
     if (!session) return { ok: false, error: 'no session' }
@@ -769,7 +1125,10 @@ function registerTerminalIpc() {
     }
   })
 
-  ipcMain.handle('terminal-list', () => {
+  ipcMain.handle('terminal-list', (event) => {
+    if (!isInternalSender(event)) {
+      return []
+    }
     const out = []
     for (const [id, s] of terminalSessions) {
       out.push({ id, cwd: s.cwd, alive: s.alive })
@@ -788,9 +1147,14 @@ function cleanupTerminals() {
 // ── Jarvis IDE IPC ───────────────────────────────────────────────────────────
 
 function registerJarvisIdeIpc() {
-  ipcMain.handle('jarvis-ide-app-root', () => PROJECT_ROOT)
 
-  ipcMain.handle('jarvis-ide-open-files', async () => {
+  ipcMain.handle('jarvis-ide-app-root', (event) => {
+    if (!isInternalSender(event)) return null
+    return PROJECT_ROOT
+  })
+
+  ipcMain.handle('jarvis-ide-open-files', async (event) => {
+    if (!isInternalSender(event)) return []
     const w = getJarvisMainWindow()
     if (!w) return []
     const r = await dialog.showOpenDialog(w, {
@@ -809,7 +1173,8 @@ function registerJarvisIdeIpc() {
     return out
   })
 
-  ipcMain.handle('jarvis-ide-open-folder', async () => {
+  ipcMain.handle('jarvis-ide-open-folder', async (event) => {
+    if (!isInternalSender(event)) return null
     const w = getJarvisMainWindow()
     if (!w) return null
     const r = await dialog.showOpenDialog(w, {
@@ -819,7 +1184,8 @@ function registerJarvisIdeIpc() {
     return r.filePaths[0]
   })
 
-  ipcMain.handle('jarvis-ide-save-file', async (_e, opts) => {
+  ipcMain.handle('jarvis-ide-save-file', async (event, opts) => {
+    if (!isInternalSender(event)) return null
     const w = getJarvisMainWindow()
     if (!w || !opts || typeof opts !== 'object') return null
     const { defaultPath, content } = opts
@@ -831,7 +1197,8 @@ function registerJarvisIdeIpc() {
     return r.filePath
   })
 
-  ipcMain.handle('jarvis-ide-read-dir', async (_e, dirPath) => {
+  ipcMain.handle('jarvis-ide-read-dir', async (event, dirPath) => {
+    if (!isInternalSender(event)) return []
     if (typeof dirPath !== 'string' || !dirPath) return []
     const resolved = path.resolve(dirPath)
     if (!fs.existsSync(resolved)) return []
@@ -839,7 +1206,8 @@ function registerJarvisIdeIpc() {
     return entries.map((e) => ({ name: e.name, isDir: e.isDirectory() }))
   })
 
-  ipcMain.handle('jarvis-ide-walk-files', async (_e, rootPath) => {
+  ipcMain.handle('jarvis-ide-walk-files', async (event, rootPath) => {
+    if (!isInternalSender(event)) return []
     if (typeof rootPath !== 'string') return []
     const root = path.resolve(rootPath)
     if (!fs.existsSync(root)) return []
@@ -867,7 +1235,8 @@ function registerJarvisIdeIpc() {
     return out.sort((a, b) => a.localeCompare(b))
   })
 
-  ipcMain.handle('jarvis-ide-fs-read', async (_e, filePath) => {
+  ipcMain.handle('jarvis-ide-fs-read', async (event, filePath) => {
+    if (!isInternalSender(event)) return { ok: false, error: 'SECURITY: File read restricted' }
     if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
     const p = path.resolve(filePath)
     try {
@@ -878,7 +1247,8 @@ function registerJarvisIdeIpc() {
     }
   })
 
-  ipcMain.handle('jarvis-ide-fs-write', async (_e, opts) => {
+  ipcMain.handle('jarvis-ide-fs-write', async (event, opts) => {
+    if (!isInternalSender(event)) return { ok: false, error: 'SECURITY: File write restricted' }
     const { filePath, content } = opts || {}
     if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
     try {
@@ -891,7 +1261,8 @@ function registerJarvisIdeIpc() {
     }
   })
 
-  ipcMain.handle('jarvis-ide-fs-delete', async (_e, filePath) => {
+  ipcMain.handle('jarvis-ide-fs-delete', async (event, filePath) => {
+    if (!isInternalSender(event)) return { ok: false, error: 'SECURITY: File delete restricted' }
     if (typeof filePath !== 'string') return { ok: false, error: 'Invalid path' }
     try {
       fs.unlinkSync(path.resolve(filePath))
@@ -901,7 +1272,8 @@ function registerJarvisIdeIpc() {
     }
   })
 
-  ipcMain.handle('jarvis-ide-fs-mkdir', async (_e, dirPath) => {
+  ipcMain.handle('jarvis-ide-fs-mkdir', async (event, dirPath) => {
+    if (!isInternalSender(event)) return { ok: false, error: 'SECURITY: Directory create restricted' }
     if (typeof dirPath !== 'string') return { ok: false, error: 'Invalid path' }
     try {
       fs.mkdirSync(path.resolve(dirPath), { recursive: true })
@@ -911,38 +1283,50 @@ function registerJarvisIdeIpc() {
     }
   })
 
-  ipcMain.handle('jarvis-ide-fs-exists', async (_e, p) => {
+  ipcMain.handle('jarvis-ide-fs-exists', async (event, p) => {
+    if (!isInternalSender(event)) return false
     if (typeof p !== 'string') return false
     return fs.existsSync(path.resolve(p))
   })
 
-  ipcMain.handle('jarvis-ide-shell-open-path', async (_e, p) => {
+  ipcMain.handle('jarvis-ide-shell-open-path', async (event, p) => {
+    if (!isInternalSender(event)) return 'SECURITY: Shell open-path restricted'
     if (typeof p !== 'string') return 'Invalid path'
     return shell.openPath(p)
   })
 
-  ipcMain.handle('jarvis-ide-open-external', async (_e, url) => {
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
-    await shell.openExternal(url)
+  ipcMain.handle('jarvis-ide-open-external', async (event, url) => {
+    if (!isInternalSender(event)) return false
+    const safeUrl = normalizeSafeExternalUrl(url)
+    if (!safeUrl) return false
+    await shell.openExternal(safeUrl)
     return true
   })
 
-  ipcMain.handle('jarvis-ide-new-window', async () => {
+  ipcMain.handle('jarvis-ide-new-window', async (event) => {
+    if (!isInternalSender(event)) return false
     await createWindow()
+    return true
   })
 
-  ipcMain.handle('jarvis-ide-quit', () => {
+  ipcMain.handle('jarvis-ide-quit', (event) => {
+    if (!isInternalSender(event)) return false
     app.quit()
+    return true
   })
 
-  ipcMain.handle('jarvis-ide-toggle-fullscreen', () => {
+  ipcMain.handle('jarvis-ide-toggle-fullscreen', (event) => {
+    if (!isInternalSender(event)) return false
     const w = getJarvisMainWindow()
     if (!w) return false
     w.setFullScreen(!w.isFullScreen())
     return w.isFullScreen()
   })
 
-  ipcMain.handle('jarvis-ide-git', async (_e, opts) => {
+  ipcMain.handle('jarvis-ide-git', async (event, opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, stdout: '', stderr: '', error: 'SECURITY: Git access restricted' }
+    }
     const { cwd, args } = opts || {}
     if (typeof cwd !== 'string' || !Array.isArray(args)) {
       return { ok: false, stdout: '', stderr: '', error: 'invalid' }
@@ -965,13 +1349,18 @@ function registerJarvisIdeIpc() {
     }
   })
 
-  ipcMain.handle('jarvis-ide-run-command', async (_e, opts) => {
+  ipcMain.handle('jarvis-ide-run-command', async (event, opts) => {
+    if (!isInternalSender(event)) {
+      return { ok: false, stdout: '', stderr: '', exitCode: null, error: 'SECURITY: Command execution restricted' }
+    }
     const validation = validateRunCommandArgs(opts)
     if (validation) return validation
     const resolved = path.resolve(opts.cwd)
-    const cmd = String(opts.command).trim()
+    const parsed = parseRunCommandForExec(opts.command)
+    if (!parsed.ok) return parsed
+
     try {
-      const r = await execAsync(cmd, {
+      const r = await execFileAsync(parsed.exe, parsed.args, {
         cwd: resolved,
         maxBuffer: 10 * 1024 * 1024,
         timeout: 300000,
@@ -979,22 +1368,26 @@ function registerJarvisIdeIpc() {
       })
       return { ok: true, stdout: r.stdout || '', stderr: r.stderr || '', exitCode: 0 }
     } catch (e) {
-      const err = e
-      const stdout = err && typeof err === 'object' && 'stdout' in err ? String(err.stdout) : ''
-      const stderr = err && typeof err === 'object' && 'stderr' in err ? String(err.stderr) : ''
-      const code =
-        err && typeof err === 'object' && 'code' in err && typeof err.code === 'number'
-          ? err.code
-          : 1
-      return {
-        ok: false,
-        stdout,
-        stderr,
-        exitCode: code,
-        error: err && typeof err === 'object' && err.killed ? 'timeout' : undefined,
-      }
+      return normalizeRunCommandError(e)
     }
   })
+
+  void (async () => {
+    try {
+      const { pathToFileURL } = await import('node:url')
+      const registerPath = path.join(PROJECT_ROOT, 'packages/jarvis-ide/dist-electron/registerJarvisIdeCoreIpc.js')
+      const mod = await import(pathToFileURL(registerPath).href)
+      mod.registerJarvisIdeCoreIpc({
+        createWindow: () => {
+          createWindow().catch((err) => {
+            console.error('[jarvis-ide] createWindow failed:', err instanceof Error ? err.message : err)
+          })
+        },
+      })
+    } catch (e) {
+      console.error('[jarvis-ide] registerJarvisIdeCoreIpc failed:', e instanceof Error ? e.message : e)
+    }
+  })()
 }
 
 function validateRunCommandArgs(opts) {
@@ -1016,6 +1409,53 @@ function validateRunCommandArgs(opts) {
     return fail(e instanceof Error ? e.message : String(e))
   }
   return null
+}
+
+function stripHtmlTags(input) {
+  let out = ''
+  let inTag = false
+  for (const ch of String(input || '')) {
+    if (ch === '<') {
+      inTag = true
+      continue
+    }
+    if (ch === '>') {
+      inTag = false
+      continue
+    }
+    if (!inTag) out += ch
+  }
+  return out
+}
+
+function parseRunCommandForExec(command) {
+  const cmd = String(command).trim()
+  try {
+    const parsed = parseCommandSafe(cmd)
+    return { ok: true, exe: parsed.exe, args: parsed.args }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      error: e instanceof Error ? e.message : 'Failed to parse command',
+    }
+  }
+}
+
+function normalizeRunCommandError(err) {
+  const stdout = err && typeof err === 'object' && 'stdout' in err ? String(err.stdout) : ''
+  const stderr = err && typeof err === 'object' && 'stderr' in err ? String(err.stderr) : ''
+  const code = err && typeof err === 'object' && 'code' in err && typeof err.code === 'number' ? err.code : 1
+  const timedOut = !!(err && typeof err === 'object' && 'killed' in err && err.killed)
+  return {
+    ok: false,
+    stdout,
+    stderr,
+    exitCode: code,
+    error: timedOut ? 'timeout' : undefined,
+  }
 }
 
 function loadEnvFromFile() {
@@ -1041,99 +1481,6 @@ function loadEnvFromFile() {
     }
     if (process.env[key] === undefined) process.env[key] = val
   }
-  // Screen-agent stack (external Python / tooling): ElevenLabs TTS for voice agent — default on unless .env sets 0
-  if (process.env.JARVIS_VOICEAGENT_TTS === undefined) {
-    process.env.JARVIS_VOICEAGENT_TTS = '1'
-  }
-}
-
-/** Child process when `JARVIS_VISION_ENGINE_COMMAND` is set — stopped on app quit. */
-let visionEngineChild = null
-/** True while we intentionally kill the child (quit) — suppress auto-restart. */
-let visionEngineStopIntended = false
-
-function getJarvisVisionEngineCommand() {
-  const cmd = String(process.env.JARVIS_VISION_ENGINE_COMMAND || '').trim()
-  if (cmd) return cmd
-  const a = String(process.env.JARVIS_VISION_AUTOSTART || '').trim().toLowerCase()
-  if (a === '1' || a === 'true' || a === 'yes') {
-    return 'python -m jarvis_visual_engine'
-  }
-  return ''
-}
-
-async function visionEngineHttpProbeOk() {
-  const base = getVisionEngineBaseUrl()
-  const key = process.env.VISION_API_KEY || 'jarvis-vision-local'
-  const label = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || 'emeet').trim() || 'emeet'
-  try {
-    const r = await fetch(`${base}/api/v1/context`, {
-      headers: { 'X-API-Key': key, 'X-Jarvis-Camera-Label': label },
-    })
-    return r.ok
-  } catch {
-    return false
-  }
-}
-
-async function startJarvisVisionEngineIfConfigured() {
-  const cmd = getJarvisVisionEngineCommand()
-  if (!cmd) return
-  if (visionEngineChild && !visionEngineChild.killed) return
-  if (await visionEngineHttpProbeOk()) {
-    console.info(
-      '[vision-engine] HTTP already up at',
-      getVisionEngineBaseUrl(),
-      '— not spawning (Vite or another process is serving the engine)',
-    )
-    return
-  }
-  visionEngineStopIntended = false
-  try {
-    visionEngineChild = spawn(cmd, {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit',
-      shell: true,
-      env: { ...process.env },
-    })
-    visionEngineChild.on('exit', (code, signal) => {
-      console.warn('[vision-engine] process exited', { code, signal: signal || '' })
-      visionEngineChild = null
-      if (visionEngineStopIntended) return
-      setTimeout(() => {
-        void (async () => {
-          if (visionEngineStopIntended) return
-          if (await visionEngineHttpProbeOk()) {
-            console.info('[vision-engine] HTTP recovered elsewhere — not restarting local child')
-            return
-          }
-          console.info('[vision-engine] restarting…')
-          await startJarvisVisionEngineIfConfigured()
-        })()
-      }, 1500)
-    })
-    visionEngineChild.on('error', (err) => {
-      console.error('[vision-engine] spawn error:', err.message)
-      visionEngineChild = null
-      if (!visionEngineStopIntended) {
-        setTimeout(() => void startJarvisVisionEngineIfConfigured(), 2500)
-      }
-    })
-    console.info('[vision-engine] started:', cmd)
-  } catch (e) {
-    console.error('[vision-engine] failed to start:', e instanceof Error ? e.message : e)
-  }
-}
-
-function stopJarvisVisionEngine() {
-  visionEngineStopIntended = true
-  if (!visionEngineChild || visionEngineChild.killed) return
-  try {
-    visionEngineChild.kill('SIGTERM')
-  } catch (e) {
-    console.warn('[vision-engine] stop:', e instanceof Error ? e.message : e)
-  }
-  visionEngineChild = null
 }
 
 function getEnv() {
@@ -1325,16 +1672,9 @@ async function handleElevenLabsTtsProxy(req, res, parsed) {
     )
     if (!upstream.ok) {
       const errText = await upstream.text()
-      let msg = 'ElevenLabs TTS error'
-      try {
-        const j = JSON.parse(errText)
-        msg = j.detail || j.message || msg
-      } catch {
-        if (errText && errText.length < 2000) msg = errText
-      }
-      res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ error: { message: String(msg).slice(0, 2000) } }))
+      res.statusCode = upstream.status
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+      res.end(errText)
       return
     }
     const ct = upstream.headers.get('content-type') || 'audio/mpeg'
@@ -1368,14 +1708,6 @@ async function handleTtsProxy(req, res) {
 
   if (parsed?.provider === 'elevenlabs') {
     await handleElevenLabsTtsProxy(req, res, parsed)
-    return
-  }
-
-  const normalized = normalizeOpenAiAudioSpeechBody(bodyStr)
-  if (!normalized.ok) {
-    res.statusCode = normalized.status
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: normalized.message } }))
     return
   }
 
@@ -1413,20 +1745,13 @@ async function handleTtsProxy(req, res) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
       },
-      body: normalized.body,
+      body: bodyStr,
     })
     if (!upstream.ok) {
       const text = await upstream.text()
-      let msg = 'OpenAI TTS request failed'
-      try {
-        const j = JSON.parse(text)
-        msg = j.error?.message || j.message || msg
-      } catch {
-        if (text && text.length < 2000) msg = text
-      }
-      res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ error: { message: String(msg).slice(0, 2000) } }))
+      res.statusCode = upstream.status
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+      res.end(text)
       return
     }
     const ct = upstream.headers.get('content-type') || 'audio/mpeg'
@@ -1447,6 +1772,14 @@ async function handleTtsProxy(req, res) {
       })
     )
   }
+}
+
+function handleDigitalOceanConfig(_req, res) {
+  const env = getEnv()
+  const has = Boolean((env.DIGITALOCEAN_API_KEY || env.VITE_DIGITALOCEAN_API_KEY || '').trim())
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'application/json')
+  res.end(JSON.stringify({ inferenceKeyFromEnv: has }))
 }
 
 async function handleDigitalOceanModels(req, res) {
@@ -1570,8 +1903,7 @@ async function handleLlmProxy(req, res) {
       return
     }
     try {
-      const bodyRaw = await readBody(req)
-      const body = normalizeLlmChatCompletionBody(bodyRaw, getEnv(), 'digitalocean')
+      const body = await readBody(req)
       const streamRequested = wantsSseStreamFromBody(body)
       const upstream = await fetch(`${DO_INFERENCE}/chat/completions`, {
         method: 'POST',
@@ -1619,8 +1951,7 @@ async function handleLlmProxy(req, res) {
   )
 
   try {
-    const bodyRaw = await readBody(req)
-    const body = normalizeLlmChatCompletionBody(bodyRaw, getEnv(), 'openai')
+    const body = await readBody(req)
     const streamRequested = wantsSseStreamFromBody(body)
     const upstream = await fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -1686,7 +2017,7 @@ function stripHtmlToText(html) {
   return html
     .replaceAll(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replaceAll(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replaceAll(/<[^>]+>/g, ' ')
+    .replaceAll(stripHtmlTags, ' ')
     .replaceAll('&nbsp;', ' ')
     .replaceAll('&amp;', '&')
     .replaceAll('&lt;', '<')
@@ -1762,13 +2093,13 @@ async function searchViaDuckDuckGo(query, maxResults = 6) {
         href = decodeURIComponent(parsed.searchParams.get('uddg') || href)
       } catch { /* ignored */ }
     }
-    const title = m[2].replaceAll(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim()
+    const title = stripHtmlTags(m[2]).replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim()
     if (href && title) links.push({ url: href, title })
   }
 
   const snippets = []
   while ((m = snippetRegex.exec(html)) !== null && snippets.length < maxResults) {
-    snippets.push(m[1].replaceAll(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim())
+    snippets.push(stripHtmlTags(m[1]).replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").trim())
   }
 
   for (let i = 0; i < links.length; i++) {
@@ -1837,29 +2168,10 @@ async function handleSearchExtractProxy(req, res) {
       res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify(data))
     } else {
-      const results = await Promise.all(
-        (body.urls || []).slice(0, 5).map(async (url) => {
-          try {
-            const ac = new AbortController()
-            const t = setTimeout(() => ac.abort(), 10000)
-            const page = await fetch(url, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (compatible; JarvisBot/1.0)',
-                'Accept': 'text/html,application/xhtml+xml,*/*',
-              },
-              signal: ac.signal,
-            })
-            clearTimeout(t)
-            const html = await page.text()
-            return { url, raw_content: stripHtmlToText(html).slice(0, 8000) }
-          } catch {
-            return { url, raw_content: '' }
-          }
-        })
-      )
-      res.statusCode = 200
+      // Fail closed in desktop mode when Tavily key is absent instead of proxy-fetching arbitrary URLs.
+      res.statusCode = 503
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ results }))
+      res.end(JSON.stringify({ error: { message: 'Extract proxy requires TAVILY_API_KEY' } }))
     }
   } catch (e) {
     res.statusCode = 502
@@ -1869,52 +2181,21 @@ async function handleSearchExtractProxy(req, res) {
 }
 
 /** Same-origin proxy for RadioTime OPML (TuneIn station search) — mirrors Vite `/tunein-opml`. */
-async function handleTuneInOpmlProxy(req, res) {
-  const raw = req.url || '/'
-  try {
-    const u = new URL(raw, 'http://127.0.0.1')
-    const rest = u.pathname.replace(/^\/tunein-opml/, '') || '/'
-    const targetUrl = `https://opml.radiotime.com${rest}${u.search}`
-    const upstream = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; TuneInRail/1.0)',
-        Accept: 'application/json, */*',
-      },
-    })
-    const buf = Buffer.from(await upstream.arrayBuffer())
-    res.statusCode = upstream.status
-    const ct = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
-    res.setHeader('Content-Type', ct)
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    if (req.method === 'HEAD') {
-      res.end()
-      return
-    }
-    res.end(buf)
-  } catch (e) {
-    res.statusCode = 502
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Proxy error' }))
-  }
+async function handleTuneInOpmlProxy(_req, res) {
+  res.statusCode = 503
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify({ error: 'TuneIn OPML proxy is disabled for security hardening' }))
 }
 
 
 async function handleElevenLabsStreamingTts(req, res) {
   const env = getEnv()
   const elKey =
-    getXiApiKeyFromReq(req) ||
     (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
-    res.end(
-      JSON.stringify({
-        error: {
-          message:
-            'Missing ElevenLabs API key: add ELEVENLABS_API_KEY to .env or paste your key under Settings → API Keys.',
-        },
-      }),
-    )
+    res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY in .env' } }))
     return
   }
 
@@ -1969,20 +2250,6 @@ async function handleElevenLabsStreamingTts(req, res) {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'ElevenLabs TTS error' } }))
   }
-}
-
-function handleRealtimeVoiceReady(_req, res) {
-  const env = getEnv()
-  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
-  if (!key) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY in .env' } }))
-    return
-  }
-  res.statusCode = 200
-  res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify({ ok: true }))
 }
 
 async function handleRealtimeSession(req, res) {
@@ -2140,42 +2407,6 @@ async function handleVideoContent(req, res) {
   }
 }
 
-// ── UI localStorage ↔ SQLite (browser + desktop parity) ───────────────────
-
-async function handleUiSyncGet(_req, res) {
-  try {
-    const snap = jarvisDb.getUiLocalSnapshot()
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ entries: snap?.entries ?? {}, updatedAt: snap?.updatedAt ?? null }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'UI sync error' } }))
-  }
-}
-
-async function handleUiSyncPost(req, res) {
-  try {
-    const bodyStr = await readBody(req)
-    const body = JSON.parse(bodyStr)
-    if (!body.entries || typeof body.entries !== 'object') {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ error: { message: 'entries object required' } }))
-      return
-    }
-    jarvisDb.saveUiLocalSnapshot(undefined, body.entries)
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ ok: true }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'UI sync error' } }))
-  }
-}
-
 // ── Jarvis Memory API Handlers ──────────────────────────────────────────────
 
 async function handleJarvisMemoryGet(req, res) {
@@ -2188,7 +2419,6 @@ async function handleJarvisMemoryGet(req, res) {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ conversationId, facts, recentTurns, summaries }))
   } catch (e) {
-    console.error('[jarvis-memory] GET failed:', e instanceof Error ? e.stack || e.message : e)
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Memory load error' } }))
@@ -2442,189 +2672,261 @@ async function handleLearningStatsGet(_req, res) {
   }
 }
 
-/** Base URL for the Jarvis Visual Engine HTTP API (no trailing slash). Override when the engine runs elsewhere. */
-function getVisionEngineBaseUrl() {
-  const raw = String(process.env.VISION_ENGINE_URL || process.env.JARVIS_VISION_ENGINE_URL || 'http://127.0.0.1:5000').trim()
-  return raw.replace(/\/$/, '')
-}
-
 /**
- * Hint for which webcam to open (substring match on OS device label).
- * Order: `VISION_CAMERA_LABEL` / `JARVIS_CAMERA_LABEL` → incoming `x-jarvis-camera-label` → `emeet` (eMeet webcams).
+ * Aggregate Jarvis Vision FastAPI (port 8002) into the JSON shape expected by `src/hooks/useVision.ts`.
+ * Start vision separately: `C:\\jarvis-vision\\start_vision.bat` (no Windows service required).
  */
-function resolveVisionCameraLabel(req) {
-  const fromEnv = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || '').trim()
-  if (fromEnv) return fromEnv
-  const incoming = req.headers['x-jarvis-camera-label']
-  if (incoming) {
-    const s = Array.isArray(incoming) ? incoming[0] : String(incoming)
-    const t = s.trim()
-    if (t) return t
-  }
-  return 'emeet'
-}
-
-/**
- * Proxy `/api/vision/*` → `{base}/api/v1/*` (live engine only — no placeholder responses).
- * Set `VISION_ENGINE_URL` / `JARVIS_VISION_ENGINE_URL` if the engine is not on 127.0.0.1:5000.
- */
-async function handleVisionProxy(req, res) {
-  const urlPath = req.url?.split('?')[0] || '/'
-  const q = req.url?.indexOf('?')
-  const search = q !== undefined && q >= 0 ? req.url.slice(q) : ''
-  const targetPath = urlPath.replace(/^\/api\/vision/, '/api/v1')
-  const targetUrl = getVisionEngineBaseUrl() + targetPath + search
-
-  const headers = { ...req.headers, 'X-API-Key': process.env.VISION_API_KEY || 'jarvis-vision-local' }
-  delete headers.host
-  headers['x-jarvis-camera-label'] = resolveVisionCameraLabel(req)
-
-  let body = null
-  if (req.method === 'POST' || req.method === 'PUT') {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    body = Buffer.concat(chunks)
-  }
-
-  const fetchOpts = { method: req.method, headers }
-  if (body) fetchOpts.body = body
-
+async function readVisionProxyJsonBody(req) {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  if (chunks.length === 0) return {}
   try {
-    const upstream = await fetch(targetUrl, fetchOpts)
-    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' })
-    const data = await upstream.arrayBuffer()
-    res.end(Buffer.from(data))
-  } catch (e) {
-    const base = getVisionEngineBaseUrl()
-    console.warn('[vision-proxy] live engine unreachable at', base + ':', e instanceof Error ? e.message : e)
-    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
-    res.end(
-      JSON.stringify({
-        error: {
-          message: `Jarvis Visual Engine not reachable at ${base}. Start the engine and ensure VISION_ENGINE_URL matches.`,
-        },
-      }),
-    )
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    return {}
   }
 }
 
-/**
- * Proxy `/api/replicate/*` → Replicate FastAPI bridge (default `http://127.0.0.1:18865`; screen agent uses 8765).
- * Set `REPLICATE_BRIDGE_URL` to match the bridge if it picked another port (see bridge stdout).
- */
-function getReplicateBridgeBaseUrl() {
-  const u = String(process.env.REPLICATE_BRIDGE_URL || process.env.VITE_REPLICATE_BRIDGE_URL || 'http://127.0.0.1:18865').trim().replace(/\/$/, '')
-  return u || 'http://127.0.0.1:18865'
-}
-
-async function handleReplicateProxy(req, res) {
-  const urlPath = req.url?.split('?')[0] || '/'
-  const q = req.url?.indexOf('?')
-  const search = q !== undefined && q >= 0 ? req.url.slice(q) : ''
-  const targetPath = urlPath.replace(/^\/api\/replicate/, '') || '/'
-  const targetUrl = getReplicateBridgeBaseUrl() + targetPath + search
-
-  const headers = { ...req.headers }
-  delete headers.host
-
-  let body = null
-  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    body = Buffer.concat(chunks)
-  }
-
-  const fetchOpts = { method: req.method, headers }
-  if (body && body.length > 0) fetchOpts.body = body
-
+async function fetchJarvisVisionJson(method, pathname, jsonBody, timeoutMs) {
+  const url = `${JARVIS_VISION_URL}${pathname}`
+  const c = new AbortController()
+  const id = setTimeout(() => c.abort(), timeoutMs || 60000)
   try {
-    const upstream = await fetch(targetUrl, fetchOpts)
-    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' })
-    const data = await upstream.arrayBuffer()
-    res.end(Buffer.from(data))
-  } catch (e) {
-    const base = getReplicateBridgeBaseUrl()
-    console.warn('[replicate-proxy] bridge unreachable at', base + ':', e instanceof Error ? e.message : e)
-    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
-    res.end(
-      JSON.stringify({
-        error: {
-          message: `Replicate bridge not reachable at ${base}. Run npm run replicate-bridge with REPLICATE_API_TOKEN set.`,
-        },
-      }),
-    )
-  }
-}
-
-/** One-place startup lines for operators (voice, vision, RAG). */
-function logJarvisStartupBanner() {
-  const openai = Boolean((process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '').trim())
-  const base = getVisionEngineBaseUrl()
-  const spawnCmd = getJarvisVisionEngineCommand()
-  let ragLine
-  if (ragDb.isConfigured()) {
-    ragLine = 'DATABASE_URL set — schema init runs async (see [rag-db])'
-  } else if (['false', '0', 'no'].includes(String(process.env.RAG_DB_ENABLED || '').trim().toLowerCase())) {
-    ragLine = 'off (RAG_DB_ENABLED=false)'
-  } else {
-    ragLine = 'not configured (set DATABASE_URL for knowledge base)'
-  }
-
-  console.info('')
-  console.info('[jarvis] ══════════════════ Jarvis startup ══════════════════')
-  console.info(`[jarvis] Voice (OpenAI Realtime): ${openai ? 'OPENAI_API_KEY OK' : 'OPENAI_API_KEY MISSING — Voice Mode will not work'}`)
-  console.info(`[jarvis] Vision proxy target: ${base}`)
-  console.info(
-    `[jarvis] Vision engine process: ${spawnCmd ? 'auto-start ON (window opens after HTTP is ready)' : 'auto-start OFF — set JARVIS_VISION_ENGINE_COMMAND or run the engine manually'}`,
-  )
-  console.info(`[jarvis] Vision scene+mood (OpenAI): ${openai ? 'enabled' : 'disabled (no OPENAI_API_KEY)'}`)
-  console.info(`[jarvis] RAG (PostgreSQL): ${ragLine}`)
-  console.info('[jarvis] ═════════════════════════════════════════════════════')
-  console.info('')
-}
-
-/**
- * When `JARVIS_VISION_ENGINE_COMMAND` spawns the engine, Python may take several seconds to bind :5000.
- * Poll until GET /api/v1/context succeeds so the renderer's first polls are less likely to see ECONNREFUSED.
- * Set `JARVIS_VISION_ENGINE_READY_TIMEOUT_MS` (default 60000, max 120000).
- */
-async function waitForVisionEngineHttpReadyIfSpawned() {
-  const cmd = getJarvisVisionEngineCommand()
-  const base = getVisionEngineBaseUrl()
-  if (!cmd) {
-    console.info('[jarvis] Startup: vision engine not auto-spawned — ensure HTTP API is listening at', base)
-    return
-  }
-  const key = process.env.VISION_API_KEY || 'jarvis-vision-local'
-  const label = String(process.env.VISION_CAMERA_LABEL || process.env.JARVIS_CAMERA_LABEL || 'emeet').trim() || 'emeet'
-  const rawTimeout = Number(process.env.JARVIS_VISION_ENGINE_READY_TIMEOUT_MS || 60000)
-  const timeoutMs = Math.min(120000, Math.max(5000, Number.isFinite(rawTimeout) ? rawTimeout : 60000))
-  const deadline = Date.now() + timeoutMs
-  let attempt = 0
-  while (Date.now() < deadline) {
-    attempt += 1
+    const opts = { method, signal: c.signal }
+    if (jsonBody !== undefined) {
+      opts.headers = { 'Content-Type': 'application/json' }
+      opts.body = JSON.stringify(jsonBody)
+    }
+    const r = await fetch(url, opts)
+    const text = await r.text()
+    let data = {}
     try {
-      const u = `${base}/api/v1/context`
-      const r = await fetch(u, {
-        method: 'GET',
-        headers: { 'X-API-Key': key, 'X-Jarvis-Camera-Label': label },
-      })
-      if (r.ok) {
-        console.info('[vision-engine] HTTP ready after', attempt, 'attempt(s):', u)
-        console.info('[jarvis] Startup: vision pipeline READY —', base, '(room camera + OpenAI analysis when key is set)')
+      data = text ? JSON.parse(text) : {}
+    } catch {
+      data = { raw: text }
+    }
+    return { ok: r.ok, status: r.status, data }
+  } catch {
+    return { ok: false, status: 0, data: { error: 'vision_request_failed' } }
+  } finally {
+    clearTimeout(id)
+  }
+}
+
+async function buildJarvisVisionContextPayload() {
+  const disconnected = {
+    connected: false,
+    camera_connected: false,
+    faces: [],
+    scene_description: lastJarvisVisionScene.description,
+    emotion: null,
+    frames_processed: 0,
+    faces_recognized: 0,
+    motion_detections: 0,
+    api_calls: 0,
+    last_updated: new Date().toISOString(),
+  }
+
+  const health = await fetchJarvisVisionJson('GET', '/health', undefined, 5000)
+  if (health?.ok !== true || health?.data?.status !== 'ok') {
+    return disconnected
+  }
+
+  const camera_connected = !!health.data.camera_active
+
+  const [rec, emo, mot] = await Promise.all([
+    fetchJarvisVisionJson('POST', '/recognize', undefined, 45000),
+    fetchJarvisVisionJson('POST', '/emotion', undefined, 45000),
+    fetchJarvisVisionJson('GET', '/motion/status', undefined, 8000),
+  ])
+
+  const faces = mapVisionFaces(rec)
+  const emotion = mapVisionEmotion(emo)
+  const motion_detections = mapMotionDetections(mot)
+
+  return {
+    connected: true,
+    camera_connected,
+    faces,
+    scene_description: lastJarvisVisionScene.description,
+    emotion,
+    frames_processed: 0,
+    faces_recognized: faces.length,
+    motion_detections,
+    api_calls: 1,
+    last_updated: new Date().toISOString(),
+  }
+}
+
+function mapVisionFaces(recognitionResponse) {
+  if (!recognitionResponse?.ok || !recognitionResponse.data || !Array.isArray(recognitionResponse.data.faces)) {
+    return []
+  }
+  return recognitionResponse.data.faces.map((f) => ({
+    name: typeof f.name === 'string' ? f.name : 'unknown',
+    confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+  }))
+}
+
+function mapVisionEmotion(emotionResponse) {
+  if (!emotionResponse?.ok || !emotionResponse.data || !Array.isArray(emotionResponse.data.faces) || emotionResponse.data.faces.length === 0) {
+    return null
+  }
+
+  const ef = emotionResponse.data.faces[0]
+  const dom = typeof ef.dominant_emotion === 'string' ? ef.dominant_emotion : 'neutral'
+  const scores = ef.emotion_scores && typeof ef.emotion_scores === 'object' ? ef.emotion_scores : {}
+  let conf = 0.5
+
+  if (typeof scores[dom] === 'number') {
+    conf = scores[dom] > 1 ? scores[dom] / 100 : scores[dom]
+    conf = Math.min(1, Math.max(0, conf))
+  }
+
+  return { primary: dom, confidence: conf }
+}
+
+function mapMotionDetections(motionResponse) {
+  if (motionResponse?.ok !== true || motionResponse?.data?.motion_detected !== true) {
+    return 0
+  }
+  return motionResponse.data.area_pixels > 0 ? 1 : 0
+}
+
+function extractVisionDescription(data) {
+  if (typeof data?.description === 'string') return data.description
+  if (typeof data?.analysis === 'string') return data.analysis
+  return null
+}
+
+async function runJarvisVisionAnalyzePayload() {
+  const r = await fetchJarvisVisionJson(
+    'POST',
+    '/describe',
+    { prompt: 'Describe the scene: who is present, what they are doing, what objects are visible, and any notable details. Be specific and factual in 2-3 sentences.', use_cloud: true },
+    120000,
+  )
+  if (!r.ok) {
+    return { ok: false, error: 'Vision service unavailable' }
+  }
+  const desc = extractVisionDescription(r.data)
+  if (desc) {
+    lastJarvisVisionScene = { description: desc.trim(), at: Date.now() }
+  }
+  return { ok: true, scene_description: desc }
+}
+
+/** Serves GET /api/vision/context and POST /api/vision/analyze via Jarvis Vision on JARVIS_VISION_URL (default :8002). */
+// eslint-disable-next-line sonarjs/cognitive-complexity
+async function handleVisionProxy(req, res) {
+  try {
+    const urlPath = req.url?.split('?')[0] || '/'
+    const rel = (urlPath.replace(/^\/api\/vision\/?/, '') || 'context').replace(/\/$/, '')
+
+    if (rel === 'context' && req.method === 'GET') {
+      const ctx = await buildJarvisVisionContextPayload()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(ctx))
+      return
+    }
+
+    if (rel === 'analyze' && req.method === 'POST') {
+      const out = await runJarvisVisionAnalyzePayload()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(out))
+      return
+    }
+
+    if (rel === 'health' && req.method === 'GET') {
+      const r = await fetchJarvisVisionJson('GET', '/health', undefined, 5000)
+      if (!r.ok) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision health check failed' }))
         return
       }
-    } catch {
-      /* ECONNREFUSED until the engine listens */
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
     }
-    await new Promise((res) => setTimeout(res, 200))
+
+    if (rel === 'motion/status' && req.method === 'GET') {
+      const r = await fetchJarvisVisionJson('GET', '/motion/status', undefined, 8000)
+      if (!r.ok) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision motion status unavailable' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
+    }
+
+    if (rel === 'describe' && req.method === 'POST') {
+      const body = await readVisionProxyJsonBody(req)
+      const payload = {
+        prompt: typeof body.prompt === 'string' ? body.prompt : 'Describe what you see in detail.',
+        use_cloud: Boolean(body.use_cloud),
+      }
+      const r = await fetchJarvisVisionJson('POST', '/describe', payload, 120000)
+      if (r.ok && typeof r.data?.description === 'string') {
+        lastJarvisVisionScene = { description: r.data.description.trim(), at: Date.now() }
+      }
+      if (!r.ok) {
+        res.writeHead(r.status || 502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision describe failed' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
+    }
+
+    if (rel === 'recognize' && req.method === 'POST') {
+      await readVisionProxyJsonBody(req)
+      const r = await fetchJarvisVisionJson('POST', '/recognize', undefined, 120000)
+      if (!r.ok) {
+        res.writeHead(r.status || 502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision recognition failed' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
+    }
+
+    if (rel === 'emotion' && req.method === 'POST') {
+      await readVisionProxyJsonBody(req)
+      const r = await fetchJarvisVisionJson('POST', '/emotion', undefined, 120000)
+      if (!r.ok) {
+        res.writeHead(r.status || 502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision emotion analysis failed' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
+    }
+
+    if (rel === 'ocr' && req.method === 'POST') {
+      await readVisionProxyJsonBody(req)
+      const r = await fetchJarvisVisionJson('POST', '/ocr', undefined, 120000)
+      if (!r.ok) {
+        res.writeHead(r.status || 502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Vision OCR failed' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(r.data))
+      return
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Unknown /api/vision route', path: rel }))
+  } catch (error) {
+    console.warn('[vision-proxy] Request failed', error instanceof Error ? error.message : 'unknown')
+    res.writeHead(502, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Vision proxy error' }))
   }
-  console.warn(
-    '[vision-engine] Timed out waiting for HTTP at',
-    base,
-    '— check JARVIS_VISION_ENGINE_COMMAND and VISION_ENGINE_URL',
-  )
-  console.warn('[jarvis] Startup: vision pipeline NOT READY — UI may show vision errors until the engine responds')
 }
 
 
@@ -2831,25 +3133,13 @@ async function processIngestFile(file, fields, results, errors) {
   }
 }
 
-/** Returns true if a 503 was sent (RAG disabled or offline). */
-function sendIfRagUnavailable(res) {
+async function handleRagIngest(req, res) {
   if (!ragDb.isConfigured()) {
     res.statusCode = 503
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG not configured — set DATABASE_URL in .env, or set RAG_DB_ENABLED=false to run without the knowledge base.' } }))
-    return true
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
+    return
   }
-  if (!ragDb.isReady()) {
-    res.statusCode = 503
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'RAG database is not connected (unreachable or still starting). Check DATABASE_URL, VPN/firewall, DigitalOcean trusted sources; or set RAG_DB_ENABLED=false in .env.' } }))
-    return true
-  }
-  return false
-}
-
-async function handleRagIngest(req, res) {
-  if (sendIfRagUnavailable(res)) return
   try {
     const raw = await readBodyRaw(req)
     const ct = req.headers['content-type'] || ''
@@ -2887,7 +3177,12 @@ async function handleRagIngest(req, res) {
 }
 
 async function handleRagIngestText(req, res) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured — set DATABASE_URL in .env' } }))
+    return
+  }
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -2917,7 +3212,12 @@ async function handleRagIngestText(req, res) {
 }
 
 async function handleRagSearch(req, res) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -2929,10 +3229,7 @@ async function handleRagSearch(req, res) {
       return
     }
     const embedding = await ragDb.embedSingle(query)
-    const lim = typeof body.limit === 'number' && body.limit > 0 ? body.limit : 5
-    const thr =
-      typeof body.threshold === 'number' && !Number.isNaN(body.threshold) ? body.threshold : 0.3
-    const results = await ragDb.searchSimilar(embedding, lim, thr)
+    const results = await ragDb.searchSimilar(embedding, body.limit || 5, body.threshold || 0.3)
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ results }))
@@ -2945,7 +3242,12 @@ async function handleRagSearch(req, res) {
 }
 
 async function handleRagCreateDocument(req, res) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
   try {
     const bodyStr = await readBody(req)
     const body = JSON.parse(bodyStr)
@@ -3033,7 +3335,12 @@ async function handleRagCreateDocument(req, res) {
 }
 
 async function handleRagDocumentsList(req, res) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
   try {
     const u = new URL(req.url || '/', 'http://127.0.0.1')
     const limit = Number.parseInt(u.searchParams.get('limit') || '50', 10)
@@ -3050,7 +3357,12 @@ async function handleRagDocumentsList(req, res) {
 }
 
 async function handleRagDocumentGet(req, res, docId) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
   try {
     const doc = await ragDb.getDocument(docId)
     if (!doc) {
@@ -3072,7 +3384,6 @@ async function handleRagDocumentGet(req, res, docId) {
 
 async function handleRagDocumentDownload(req, res, docId) {
   try {
-    if (sendIfRagUnavailable(res)) return
     const doc = await ragDb.getDocument(docId)
     if (!doc?.spaces_key) {
       res.statusCode = 404
@@ -3099,7 +3410,12 @@ async function handleRagDocumentDownload(req, res, docId) {
 }
 
 async function handleRagDocumentDelete(req, res, docId) {
-  if (sendIfRagUnavailable(res)) return
+  if (!ragDb.isConfigured()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: { message: 'RAG database not configured' } }))
+    return
+  }
   try {
     const doc = await ragDb.deleteDocument(docId)
     if (!doc) {
@@ -3122,11 +3438,9 @@ async function handleRagDocumentDelete(req, res, docId) {
   }
 }
 
-async function handleElevenLabsMyVoices(req, res) {
+async function handleElevenLabsMyVoices(_req, res) {
   const env = getEnv()
-  const elKey =
-    getXiApiKeyFromReq(req) ||
-    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -3150,9 +3464,7 @@ async function handleElevenLabsMyVoices(req, res) {
 
 async function handleElevenLabsSharedVoices(req, res) {
   const env = getEnv()
-  const elKey =
-    getXiApiKeyFromReq(req) ||
-    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -3160,9 +3472,8 @@ async function handleElevenLabsSharedVoices(req, res) {
     return
   }
   try {
-    const rawQuery = (req.url || '').split('?')[1] || ''
-    const query = buildAllowedElevenLabsSharedVoicesQuery(rawQuery)
-    const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices${query ? `?${query}` : ''}`, {
+    const query = (req.url || '').split('?')[1] || ''
+    const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${query}`, {
       headers: { 'xi-api-key': elKey },
     })
     const text = await upstream.text()
@@ -3178,9 +3489,7 @@ async function handleElevenLabsSharedVoices(req, res) {
 
 async function handleElevenLabsSoundEffect(req, res) {
   const env = getEnv()
-  const elKey =
-    getXiApiKeyFromReq(req) ||
-    (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
+  const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
   if (!elKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
@@ -3260,11 +3569,11 @@ async function handleSunoGenerate(req, res) {
   try {
     const raw = await readBody(req)
     const parsed = JSON.parse(raw)
-    const body = buildAllowedSunoGenerateBody(parsed)
+    if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
     const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(body),
+      body: JSON.stringify(parsed),
     })
     const text = await upstream.text()
     res.statusCode = upstream.status
@@ -3781,30 +4090,18 @@ async function handleStoryRandom(req, res) {
 // ── X (Twitter) API proxy ──
 async function handleXTweet(req, res) {
   const env = getEnv()
-  const apiKey = (env.X_API_KEY || '').trim()
-  const apiSecret = (env.X_API_SECRET || '').trim()
-  const accessToken = (env.X_ACCESS_TOKEN || '').trim()
-  const accessTokenSecret = (env.X_ACCESS_TOKEN_SECRET || '').trim()
-  if (!apiKey || !apiSecret || !accessToken || !accessTokenSecret) {
+  const bearerToken = (env.X_BEARER_TOKEN || env.X_ACCESS_TOKEN || '').trim()
+  if (!bearerToken) {
     res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: { message: 'Missing X API credentials (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET)' } }))
+    res.end(JSON.stringify({ error: { message: 'Missing X bearer credential (X_BEARER_TOKEN or X_ACCESS_TOKEN)' } }))
     return
   }
   try {
     const body = JSON.parse(await readBody(req))
-    const OAuth = require('oauth-1.0a')
-    const CryptoJS = require('crypto-js')
-    const oauth = OAuth({
-      consumer: { key: apiKey, secret: apiSecret },
-      signature_method: 'HMAC-SHA1',
-      hash_function(baseString, key) { return CryptoJS.HmacSHA1(baseString, key).toString(CryptoJS.enc.Base64) },
-    })
-    const token = { key: accessToken, secret: accessTokenSecret }
     const url = 'https://api.twitter.com/2/tweets'
-    const oauthHeader = oauth.toHeader(oauth.authorize({ url, method: 'POST' }, token))
     const upstream = await fetch(url, {
       method: 'POST',
-      headers: { ...oauthHeader, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${bearerToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     const text = await upstream.text()
@@ -3816,6 +4113,7 @@ async function handleXTweet(req, res) {
 }
 
 // ── Email IMAP/SMTP handler ──
+// eslint-disable-next-line sonarjs/cognitive-complexity
 async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP action router
   const env = getEnv()
   const urlPath = req.url?.split('?')[0] || ''
@@ -3907,7 +4205,7 @@ async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP 
             cc: (env2.cc || []).map(a => a.address || a.name || '').join(', '),
             subject: env2.subject || '(no subject)',
             date: env2.date ? new Date(env2.date).toISOString() : '',
-            body: parsed.text || (parsed.html ? parsed.html.replaceAll(/<[^>]+>/g, '') : '(empty)'),
+            body: parsed.text || (parsed.html ? stripHtmlToText(parsed.html) : '(empty)'),
             replyTo: (env2.replyTo || []).map(a => a.address || '').join(', '),
             seen: (msg.flags || new Set()).has(String.raw`\Seen`),
             hasAttachments: (parsed.attachments || []).length > 0,
@@ -3983,9 +4281,8 @@ async function handleEmailProxy(req, res) { // NOSONAR S3776 — flat IMAP/SMTP 
 
 const { tokenGenerate } = require('@vonage/jwt')
 const vonageShared = require(path.join(__dirname, '..', 'scripts', 'vonage-voice-shared.cjs'))
-const vonageWebhookVerify = require(path.join(__dirname, '..', 'scripts', 'vonage-webhook-verify.cjs'))
-const vonageEventStore = require(path.join(__dirname, '..', 'scripts', 'vonage-event-store.cjs'))
 
+// eslint-disable-next-line sonarjs/cognitive-complexity
 async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-call validation + NCCO branch
   const env = getEnv()
   const appId = (env.VONAGE_APPLICATION_ID || '').trim()
@@ -4087,590 +4384,6 @@ async function handleVonageVoiceCall(req, res) { // NOSONAR S3776 — single-cal
   }
 }
 
-/** Log once when inbound Vonage webhooks are accepted without `VONAGE_SIGNATURE_SECRET` (Tier 5). */
-let vonageInboundWebhookUnsignedLogged = false
-
-/**
- * @param {import('node:http').IncomingMessage} req
- * @param {Buffer} rawBody
- * @param {Record<string, string>} env
- * @returns {{ ok: true } | { ok: false, status: number, body: object }}
- */
-function checkVonageInboundWebhook(req, rawBody, env) {
-  const secret = (env.VONAGE_SIGNATURE_SECRET || '').trim()
-  const token = vonageWebhookVerify.getVonageWebhookJwt(req)
-  if (!secret) {
-    if (!vonageInboundWebhookUnsignedLogged) {
-      vonageInboundWebhookUnsignedLogged = true
-      console.warn(
-        '[vonage] Inbound webhooks: VONAGE_SIGNATURE_SECRET not set — requests are not verified (Tier 5).',
-      )
-    }
-    return { ok: true }
-  }
-  if (!token) {
-    return {
-      ok: false,
-      status: 401,
-      body: {
-        error: {
-          message: 'Missing signed webhook JWT (Authorization: Bearer or Vonage-Signature).',
-        },
-      },
-    }
-  }
-  const v = vonageWebhookVerify.verifyVonageSignedWebhook({
-    rawBody,
-    token,
-    signatureSecret: secret,
-  })
-  if (!v.ok) {
-    return {
-      ok: false,
-      status: 401,
-      body: { error: { message: `Webhook verification failed: ${v.reason}` } },
-    }
-  }
-  return { ok: true }
-}
-
-async function handleVonageWebhookAnswer(req, res) {
-  const env = getEnv()
-  let rawBody = Buffer.alloc(0)
-  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-    rawBody = await readBodyRaw(req)
-  }
-  const gate = checkVonageInboundWebhook(req, rawBody, env)
-  if (!gate.ok) {
-    res.statusCode = gate.status
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify(gate.body))
-    return
-  }
-  const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
-  /** @type {Array<Record<string, unknown>>} */
-  let ncco
-  if (wsUri) {
-    ncco = [
-      {
-        action: 'connect',
-        endpoint: [
-          {
-            type: 'websocket',
-            uri: wsUri,
-            'content-type': 'audio/l16;rate=16000',
-          },
-        ],
-      },
-    ]
-  } else {
-    ncco = [
-      {
-        action: 'talk',
-        text: 'Jarvis voice bridge is not configured. Set VONAGE_PUBLIC_WS_URL and run the AI voice bridge.',
-        language: 'en-GB',
-      },
-    ]
-  }
-  res.statusCode = 200
-  res.setHeader('Content-Type', 'application/json; charset=utf-8')
-  res.end(JSON.stringify(ncco))
-}
-
-async function handleVonageWebhookEvent(req, res) {
-  const env = getEnv()
-  const rawBody = await readBodyRaw(req)
-  const gate = checkVonageInboundWebhook(req, rawBody, env)
-  if (!gate.ok) {
-    res.statusCode = gate.status
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify(gate.body))
-    return
-  }
-  try {
-    const payload = rawBody.length > 0 ? JSON.parse(rawBody.toString()) : {}
-    vonageEventStore.persistEvent(payload, { type: 'voice-event' })
-  } catch { /* ignore */ }
-  res.statusCode = 204
-  res.end()
-}
-
-async function handleVonageInboundSms(req, res) {
-  let rawBody = Buffer.alloc(0)
-  let smsPayload = {}
-  if (req.method === 'POST') {
-    rawBody = await readBodyRaw(req)
-    try { smsPayload = JSON.parse(rawBody.toString()) } catch { /* form-encoded */ }
-    if (!smsPayload.msisdn && rawBody.length > 0) {
-      const params = new URLSearchParams(rawBody.toString())
-      smsPayload = Object.fromEntries(params.entries())
-    }
-  } else {
-    const u = new URL(req.url || '', 'http://localhost')
-    smsPayload = Object.fromEntries(u.searchParams.entries())
-  }
-  vonageEventStore.persistEvent(smsPayload, { type: 'inbound-sms' })
-  console.log('[vonage] Inbound SMS received:', {
-    from: smsPayload.msisdn || smsPayload.from || 'unknown',
-    text: typeof smsPayload.text === 'string' ? smsPayload.text.slice(0, 100) : '',
-    messageId: smsPayload.messageId || smsPayload['message-id'] || null,
-  })
-  res.statusCode = 200
-  res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify({ ok: true }))
-}
-
-async function handleVonageReadInboundSms(req, res) {
-  const limit = parseInt(new URL(req.url || '', 'http://localhost').searchParams.get('limit') || '20', 10)
-  const events = vonageEventStore.readRecentEvents({ type: 'inbound-sms', limit })
-  const messages = events.map(e => ({
-    from: e.msisdn || e.from || 'unknown',
-    text: typeof e.text === 'string' ? e.text : '',
-    receivedAt: e._receivedAt || '',
-    messageId: e.messageId || e['message-id'] || null,
-  }))
-  res.statusCode = 200
-  res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify({ ok: true, messages }))
-}
-
-/** @type {{ text: string; at: number } | null} */
-let lastDesktopPaste = null
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-/**
- * Copy text to the system clipboard and simulate paste (Ctrl+V / Cmd+V) so the
- * foreground window (e.g. Notepad) receives it. User should focus the target app first.
- */
-async function handleDesktopPasteText(req, res) {
-  if (req.method !== 'POST') {
-    res.statusCode = 405
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
-    return
-  }
-  try {
-    const raw = await readBody(req)
-    let body = {}
-    try {
-      body = JSON.parse(raw || '{}')
-    } catch {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
-      return
-    }
-    const text = typeof body.text === 'string' ? body.text : ''
-    const maxLen = 100000
-    if (!text.length) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: 'Missing or empty "text"' }))
-      return
-    }
-    if (text.length > maxLen) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: `Text too long (max ${maxLen} characters)` }))
-      return
-    }
-
-    const now = Date.now()
-    if (lastDesktopPaste && text === lastDesktopPaste.text && now - lastDesktopPaste.at < 4000) {
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({
-        ok: true,
-        pasted: true,
-        duplicateSkipped: true,
-        message: 'Same text was pasted a moment ago; skipped duplicate paste to avoid garbled output. If you need a new version, change the text first.',
-      }))
-      return
-    }
-    lastDesktopPaste = { text, at: now }
-
-    clipboard.writeText(text)
-    await sleep(180)
-
-    const platform = process.platform
-    let pasted = false
-    let pasteDetail = ''
-
-    if (platform === 'win32') {
-      await new Promise((resolve) => {
-        execFile(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            'Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 120; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')',
-          ],
-          { timeout: 20000 },
-          (err, _stdout, stderr) => {
-            pasted = !err
-            if (err) pasteDetail = err.message || String(stderr || 'SendKeys failed')
-            resolve()
-          },
-        )
-      })
-    } else if (platform === 'darwin') {
-      await sleep(80)
-      await new Promise((resolve) => {
-        execFile(
-          'osascript',
-          ['-e', 'tell application "System Events" to keystroke "v" using command down'],
-          { timeout: 20000 },
-          (err) => {
-            pasted = !err
-            if (err) pasteDetail = err.message || 'osascript failed (check Accessibility permissions for Electron)'
-            resolve()
-          },
-        )
-      })
-    } else {
-      await sleep(80)
-      await new Promise((resolve) => {
-        execFile('xdotool', ['key', 'ctrl+v'], { timeout: 5000 }, (err) => {
-          pasted = !err
-          if (err) {
-            pasteDetail = 'xdotool not available — text is on the clipboard; user can press Ctrl+V in the focused app.'
-          }
-          resolve()
-        })
-      })
-    }
-
-    const msg = pasted
-      ? `Pasted ${text.length} characters into the foreground window. If it went to the wrong place, focus the correct app (e.g. Notepad) and run again.`
-      : `Copied ${text.length} characters to the clipboard. Automatic paste did not complete (${pasteDetail}). Ask the user to click the target window and press Ctrl+V (Cmd+V on Mac).`
-
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: true, pasted, platform, message: msg }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
-  }
-}
-
-const CLIPBOARD_READ_MAX = 200000
-
-function handleDesktopClipboardRead(req, res) {
-  if (req.method !== 'GET') {
-    res.statusCode = 405
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
-    return
-  }
-  try {
-    let text = clipboard.readText()
-    if (typeof text !== 'string') text = ''
-    const truncated = text.length > CLIPBOARD_READ_MAX
-    if (truncated) text = text.slice(0, CLIPBOARD_READ_MAX)
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({
-      ok: true,
-      text,
-      length: text.length,
-      truncated,
-    }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
-  }
-}
-
-/**
- * Foreground-window hints for Realtime system instructions (values are sanitised in the renderer before the model).
- * Stub: populate activeApp / windowTitle / summary via OS APIs or sidecar when available.
- */
-function handleDesktopFocusContext(_req, res) {
-  res.statusCode = 200
-  res.setHeader('Content-Type', 'application/json; charset=utf-8')
-  res.end(JSON.stringify({ activeApp: '', windowTitle: '', summary: '' }))
-}
-
-/**
- * Capture a monitor and return PNG bytes (desktopCapturer thumbnail — full display size when possible).
- */
-async function captureScreenPng(displayIndex = 0) {
-  const displays = screen.getAllDisplays()
-  if (!displays.length) {
-    throw new Error('No displays detected')
-  }
-  const idx = Math.min(Math.max(0, displayIndex), displays.length - 1)
-  const d = displays[idx]
-  const scale = d.scaleFactor || 1
-  const tw = Math.min(4096, Math.max(1, Math.ceil(d.bounds.width * scale)))
-  const th = Math.min(4096, Math.max(1, Math.ceil(d.bounds.height * scale)))
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: tw, height: th },
-  })
-  if (!sources.length) {
-    throw new Error('No screen sources from desktopCapturer')
-  }
-  const wantId = String(d.id)
-  const source = sources.find((s) => s.display_id === wantId) || sources[idx] || sources[0]
-  const img = source.thumbnail
-  if (!img || img.isEmpty()) {
-    throw new Error('Empty screen capture')
-  }
-  return { png: img.toPNG(), screenName: source.name || 'Screen', displayIndex: idx, displayCount: displays.length }
-}
-
-const SCREEN_READ_VISION_PROMPT = `You are reading a screenshot of the user's desktop (one full monitor).
-1) Transcribe ALL clearly readable text: window titles, document or editor content, browser UI (tabs, address bar if visible), dialogs, notifications, taskbar labels, clock, menus. Follow reading order (roughly top to bottom, then left to right within each region).
-2) For text that is too small, cropped, or blurry, write [illegible] for that fragment — do not invent words.
-3) Finish with a short summary (2–4 sentences) of what is on screen and what the user is likely doing.
-
-Plain text only. Do not fabricate content that is not visible in the image.`
-
-async function analyzeScreenPngWithOpenAI(pngBuffer) {
-  const env = getEnv()
-  const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
-  if (!key) {
-    return { error: 'No OPENAI_API_KEY — add it to .env for screen reading.' }
-  }
-  const base64 = pngBuffer.toString('base64')
-  const dataUrl = `data:image/png;base64,${base64}`
-  try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        max_tokens: 4096,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: SCREEN_READ_VISION_PROMPT },
-              { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
-            ],
-          },
-        ],
-      }),
-    })
-    if (!resp.ok) {
-      const errText = await resp.text()
-      console.error('[desktop] screen vision API error:', resp.status, errText.slice(0, 400))
-      return { error: `Vision API error HTTP ${resp.status}` }
-    }
-    const data = await resp.json()
-    const text = data.choices?.[0]?.message?.content?.trim()
-    if (!text) {
-      return { error: 'Empty response from vision model' }
-    }
-    return { analysis: text }
-  } catch (e) {
-    console.error('[desktop] screen vision error:', e.message)
-    return { error: e instanceof Error ? e.message : String(e) }
-  }
-}
-
-async function handleDesktopScreenRead(req, res) {
-  if (req.method !== 'POST') {
-    res.statusCode = 405
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
-    return
-  }
-  try {
-    let body = {}
-    try {
-      body = JSON.parse(await readBody(req) || '{}')
-    } catch {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
-      return
-    }
-    const rawIdx = body.display_index
-    const displayIndex = typeof rawIdx === 'number' && Number.isFinite(rawIdx)
-      ? Math.max(0, Math.floor(rawIdx))
-      : 0
-
-    const { png, screenName, displayIndex: usedIdx, displayCount } = await captureScreenPng(displayIndex)
-    const vision = await analyzeScreenPngWithOpenAI(png)
-    if (vision.error) {
-      res.statusCode = 502
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: vision.error }))
-      return
-    }
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({
-      ok: true,
-      analysis: vision.analysis,
-      screen_name: screenName,
-      display_index: usedIdx,
-      display_count: displayCount,
-    }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
-  }
-}
-
-/**
- * Launch a desktop app or open a URL in a named browser (Electron only).
- * POST JSON: { target: string, url?: string }
- * - target: "edge" | "chrome" | "firefox" | "notepad" | "explorer" | or a full https?:// URL (default browser)
- * - url: optional https URL to open in that browser (edge/chrome/firefox)
- */
-async function handleDesktopLaunch(req, res) {
-  if (req.method !== 'POST') {
-    res.statusCode = 405
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }))
-    return
-  }
-  try {
-    const raw = await readBody(req)
-    let body = {}
-    try {
-      body = JSON.parse(raw || '{}')
-    } catch {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
-      return
-    }
-    const targetRaw = typeof body.target === 'string' ? body.target.trim() : ''
-    const urlRaw = typeof body.url === 'string' ? body.url.trim() : ''
-    if (!targetRaw) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: false, error: 'Missing "target" (e.g. edge, chrome, notepad, or an https:// URL)' }))
-      return
-    }
-
-    const t = targetRaw.toLowerCase()
-    const platform = process.platform
-    let message = ''
-    const urlOk = urlRaw && /^https?:\/\//i.test(urlRaw)
-
-    // Open arbitrary URL in default browser
-    if (/^https?:\/\//i.test(targetRaw)) {
-      await shell.openExternal(targetRaw)
-      message = `Opened in default browser: ${targetRaw}`
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true, message, platform }))
-      return
-    }
-
-    if (t === 'edge' || t === 'microsoft edge' || t === 'msedge') {
-      if (platform === 'win32') {
-        if (urlOk) {
-          await shell.openExternal(`microsoft-edge:${urlRaw}`)
-          message = `Launched Microsoft Edge with URL: ${urlRaw}`
-        } else {
-          await shell.openExternal('microsoft-edge:')
-          message = 'Launched Microsoft Edge'
-        }
-      } else if (platform === 'darwin') {
-        const args = urlOk ? ['-a', 'Microsoft Edge', urlRaw] : ['-a', 'Microsoft Edge']
-        await execFileAsync('open', args)
-        message = urlOk ? `Launched Microsoft Edge with URL: ${urlRaw}` : 'Launched Microsoft Edge'
-      } else {
-        const bin = 'microsoft-edge-stable'
-        await execFileAsync(bin, urlOk ? [urlRaw] : [], { timeout: 15000 }).catch(async () => {
-          await execFileAsync('microsoft-edge', urlOk ? [urlRaw] : [], { timeout: 15000 })
-        })
-        message = urlOk ? `Launched Microsoft Edge with URL: ${urlRaw}` : 'Launched Microsoft Edge'
-      }
-    } else if (t === 'chrome' || t === 'google chrome') {
-      if (platform === 'win32') {
-        const cmd = urlOk ? `start "" chrome "${urlRaw.replace(/"/g, '')}"` : 'start "" chrome'
-        await execAsync(cmd, { timeout: 20000, windowsHide: true })
-        message = urlOk ? `Launched Google Chrome with URL: ${urlRaw}` : 'Launched Google Chrome'
-      } else if (platform === 'darwin') {
-        const args = urlOk ? ['-a', 'Google Chrome', urlRaw] : ['-a', 'Google Chrome']
-        await execFileAsync('open', args)
-        message = urlOk ? `Launched Google Chrome with URL: ${urlRaw}` : 'Launched Google Chrome'
-      } else {
-        await execFileAsync('google-chrome', urlOk ? [urlRaw] : [], { timeout: 15000 }).catch(async () => {
-          await execFileAsync('chromium', urlOk ? [urlRaw] : [], { timeout: 15000 })
-        })
-        message = urlOk ? `Launched Chrome with URL: ${urlRaw}` : 'Launched Chrome'
-      }
-    } else if (t === 'firefox' || t === 'mozilla firefox') {
-      if (platform === 'win32') {
-        const cmd = urlOk
-          ? `start "" firefox "${urlRaw.replace(/"/g, '')}"`
-          : 'start "" firefox'
-        await execAsync(cmd, { timeout: 20000, windowsHide: true })
-        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
-      } else if (platform === 'darwin') {
-        const args = urlOk ? ['-a', 'Firefox', urlRaw] : ['-a', 'Firefox']
-        await execFileAsync('open', args)
-        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
-      } else {
-        await execFileAsync('firefox', urlOk ? [urlRaw] : [], { timeout: 15000 })
-        message = urlOk ? `Launched Firefox with URL: ${urlRaw}` : 'Launched Firefox'
-      }
-    } else if (t === 'notepad') {
-      if (platform === 'win32') {
-        await execFileAsync('notepad.exe', [], { timeout: 15000, windowsHide: true })
-      } else if (platform === 'darwin') {
-        await execFileAsync('open', ['-a', 'TextEdit'], { timeout: 15000 })
-      } else {
-        await execFileAsync('gedit', [], { timeout: 15000 }).catch(async () => {
-          await execFileAsync('xed', [], { timeout: 15000 })
-        })
-      }
-      message = platform === 'win32' ? 'Launched Notepad' : 'Launched default text editor'
-    } else if (t === 'explorer' || t === 'file explorer' || t === 'files') {
-      if (platform === 'win32') {
-        await execFileAsync('explorer.exe', [], { timeout: 15000, windowsHide: true })
-        message = 'Opened File Explorer'
-      } else if (platform === 'darwin') {
-        await execFileAsync('open', ['/'], { timeout: 15000 })
-        message = 'Opened Finder'
-      } else {
-        await execFileAsync('xdg-open', [os.homedir()], { timeout: 15000 })
-        message = 'Opened file manager'
-      }
-    } else if (t === 'calculator' || t === 'calc') {
-      if (platform === 'win32') {
-        await shell.openExternal('ms-calculator:')
-      } else if (platform === 'darwin') {
-        await execFileAsync('open', ['-a', 'Calculator'], { timeout: 15000 })
-      } else {
-        await execFileAsync('gnome-calculator', [], { timeout: 15000 }).catch(async () => {
-          await execFileAsync('kcalc', [], { timeout: 15000 })
-        })
-      }
-      message = 'Launched Calculator'
-    } else {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({
-        ok: false,
-        error: `Unknown target "${targetRaw}". Use edge, chrome, firefox, notepad, explorer, calculator, or pass an https:// URL as target.`,
-      }))
-      return
-    }
-
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ ok: true, message, platform }))
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
-  }
-}
-
 async function handleVonageSms(req, res) {
   const env = getEnv()
   const apiKey = (env.VONAGE_API_KEY || '').trim()
@@ -4695,7 +4408,13 @@ async function handleVonageSms(req, res) {
       res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
       return
     }
-    const digits = vonageShared.normalizeVonagePhoneDigits(rawTo)
+    let digits = rawTo.replaceAll(/\s+/g, '')
+    if (digits.startsWith('00')) digits = digits.slice(2)
+    if (digits.startsWith('+')) digits = digits.slice(1)
+    digits = digits.replaceAll(/\D/g, '')
+    if (digits.length === 11 && digits.startsWith('0')) {
+      digits = `44${digits.slice(1)}`
+    }
     if (digits.length < 8 || digits.length > 15) {
       res.statusCode = 400; res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
@@ -4731,12 +4450,6 @@ async function handleVonageSms(req, res) {
 const exactRoutes = [
   { method: 'POST', path: '/api/vonage/sms', handler: handleVonageSms },
   { method: 'POST', path: '/api/vonage/call', handler: handleVonageVoiceCall },
-  { method: 'GET', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
-  { method: 'POST', path: '/api/vonage/webhook/answer', handler: handleVonageWebhookAnswer },
-  { method: 'POST', path: '/api/vonage/webhook/event', handler: handleVonageWebhookEvent },
-  { method: 'GET', path: '/api/vonage/webhook/inbound-sms', handler: handleVonageInboundSms },
-  { method: 'POST', path: '/api/vonage/webhook/inbound-sms', handler: handleVonageInboundSms },
-  { method: 'GET', path: '/api/vonage/inbound-sms', handler: handleVonageReadInboundSms },
   { method: 'POST', path: '/api/x/tweet', handler: handleXTweet },
   { method: 'POST', path: '/api/plaid/link-token', handler: handlePlaidLinkToken },
   { method: 'POST', path: '/api/plaid/exchange', handler: handlePlaidExchange },
@@ -4752,14 +4465,12 @@ const exactRoutes = [
   { method: 'GET', path: '/api/huggingface/dataset-sample', handler: handleHfDatasetSample },
   { method: 'GET', path: '/api/github/search', handler: handleGitHubSearch },
   { method: 'GET', path: '/api/github/file', handler: handleGitHubFile },
+  { method: 'GET', path: '/api/digitalocean/config', handler: handleDigitalOceanConfig },
   { method: 'GET', path: '/api/digitalocean/models', handler: handleDigitalOceanModels },
   { method: 'POST', path: '/api/llm', handler: handleLlmProxy },
   { method: 'POST', path: '/api/tts', handler: handleTtsProxy },
   { method: 'POST', path: '/api/elevenlabs-tts', handler: handleElevenLabsStreamingTts },
-  { method: 'GET', path: '/api/realtime/voice-ready', handler: handleRealtimeVoiceReady },
   { method: 'POST', path: '/api/realtime/session', handler: handleRealtimeSession },
-  { method: 'GET', path: '/api/ui-sync', handler: handleUiSyncGet },
-  { method: 'POST', path: '/api/ui-sync', handler: handleUiSyncPost },
   { method: 'GET', path: '/api/jarvis-memory', handler: handleJarvisMemoryGet },
   { method: 'POST', path: '/api/jarvis-memory', handler: handleJarvisMemoryPost },
   { method: 'POST', path: '/api/jarvis-memory/extract', handler: handleJarvisMemoryExtract },
@@ -4773,11 +4484,6 @@ const exactRoutes = [
   { method: 'GET', path: '/api/elevenlabs/voices', handler: handleElevenLabsSharedVoices },
   { method: 'POST', path: '/api/elevenlabs/sound-effect', handler: handleElevenLabsSoundEffect },
   { method: 'POST', path: '/api/voice-analysis', handler: handleVoiceAnalysis },
-  { method: 'POST', path: '/api/desktop/paste-text', handler: handleDesktopPasteText },
-  { method: 'GET', path: '/api/desktop/clipboard-text', handler: handleDesktopClipboardRead },
-  { method: 'POST', path: '/api/desktop/screen-read', handler: handleDesktopScreenRead },
-  { method: 'POST', path: '/api/desktop/launch', handler: handleDesktopLaunch },
-  { method: 'GET', path: '/api/desktop/focus-context', handler: handleDesktopFocusContext },
   { method: 'POST', path: '/api/rag/ingest', handler: handleRagIngest },
   { method: 'POST', path: '/api/rag/ingest-text', handler: handleRagIngestText },
   { method: 'POST', path: '/api/rag/search', handler: handleRagSearch },
@@ -4800,14 +4506,139 @@ const patternRoutes = [
 
 const prefixRoutes = [
   { prefix: '/api/email/', methods: ['POST'], handler: handleEmailProxy },
-  { prefix: '/api/replicate/', handler: handleReplicateProxy },
   { prefix: '/api/vision/', handler: handleVisionProxy },
   { prefix: '/api/reliability/', handler: handleReliabilityProxy },
   { prefix: '/api/a2e/', handler: handleA2eProxy },
   { prefix: '/tunein-opml', methods: ['GET', 'HEAD'], handler: handleTuneInOpmlProxy },
 ]
 
+const LOCAL_SERVER_RATE_WINDOW_MS = 60_000
+const LOCAL_SERVER_MAX_REQUESTS = 300
+const localServerRateBuckets = new Map()
+const STATIC_FILE_RATE_WINDOW_MS = 10_000
+const STATIC_FILE_MAX_REQUESTS_PER_PATH = 60
+const staticFileRateBuckets = new Map()
+const STATIC_FILE_MAX_CONCURRENT_OPS = 24
+let activeStaticFileOps = 0
+const staticDistFileCache = new Map()
+let staticDistCacheReady = false
+
+function getClientKey(req) {
+  const ip = req?.socket?.remoteAddress || 'unknown'
+  return String(ip)
+}
+
+function isLocalServerRateLimited(req) {
+  const key = getClientKey(req)
+  const now = Date.now()
+  const bucket = localServerRateBuckets.get(key)
+
+  if (!bucket || now - bucket.windowStart >= LOCAL_SERVER_RATE_WINDOW_MS) {
+    localServerRateBuckets.set(key, { windowStart: now, count: 1 })
+    return false
+  }
+
+  bucket.count += 1
+  if (bucket.count > LOCAL_SERVER_MAX_REQUESTS) {
+    return true
+  }
+
+  localServerRateBuckets.set(key, bucket)
+  return false
+}
+
+function isStaticFileOperationRateLimited(req, urlPath) {
+  const key = `${getClientKey(req)}:${urlPath}`
+  const now = Date.now()
+  const bucket = staticFileRateBuckets.get(key)
+
+  if (!bucket || now - bucket.windowStart >= STATIC_FILE_RATE_WINDOW_MS) {
+    staticFileRateBuckets.set(key, { windowStart: now, count: 1 })
+    return false
+  }
+
+  bucket.count += 1
+  if (bucket.count > STATIC_FILE_MAX_REQUESTS_PER_PATH) {
+    return true
+  }
+
+  staticFileRateBuckets.set(key, bucket)
+  return false
+}
+
+function tryAcquireStaticFileOpSlot() {
+  if (activeStaticFileOps >= STATIC_FILE_MAX_CONCURRENT_OPS) {
+    return false
+  }
+  activeStaticFileOps += 1
+  return true
+}
+
+function releaseStaticFileOpSlot() {
+  if (activeStaticFileOps > 0) {
+    activeStaticFileOps -= 1
+  }
+}
+
+async function buildStaticDistFileCache() {
+  if (staticDistCacheReady) {
+    return
+  }
+
+  const filesToRead = []
+
+  async function walk(dir) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(absolutePath)
+        continue
+      }
+      filesToRead.push(absolutePath)
+    }
+  }
+
+  await walk(DIST_DIR)
+
+  for (const absolutePath of filesToRead) {
+    const relativePath = path.relative(DIST_DIR, absolutePath).replaceAll('\\', '/')
+    const routePath = `/${relativePath}`
+    const content = await fs.promises.readFile(absolutePath)
+    staticDistFileCache.set(routePath, content)
+  }
+
+  staticDistCacheReady = true
+}
+
 function serveStaticFile(req, res, urlPath) {
+  if (isStaticFileOperationRateLimited(req, urlPath)) {
+    res.statusCode = 429
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: 'Too many file requests' }))
+    return
+  }
+
+  if (!tryAcquireStaticFileOpSlot()) {
+    res.statusCode = 503
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: 'Static file server busy' }))
+    return
+  }
+
+  let staticSlotReleased = false
+  const releaseStaticSlot = () => {
+    if (staticSlotReleased) {
+      return
+    }
+    staticSlotReleased = true
+    releaseStaticFileOpSlot()
+  }
+
+  res.once('finish', releaseStaticSlot)
+  res.once('close', releaseStaticSlot)
+  res.once('error', releaseStaticSlot)
+
   const filePath = safeJoinDist(urlPath)
   if (!filePath) {
     res.statusCode = 403
@@ -4815,38 +4646,46 @@ function serveStaticFile(req, res, urlPath) {
     return
   }
 
-  fs.stat(filePath, (err, st) => {
-    if (!err && st.isFile()) {
-      res.statusCode = 200
-      res.setHeader('Content-Type', contentType(filePath))
-      if (req.method === 'HEAD') {
-        res.end()
-        return
-      }
-      fs.createReadStream(filePath).pipe(res)
+  const relativePath = path.relative(DIST_DIR, filePath).replaceAll('\\', '/')
+  const routePath = `/${relativePath}`
+  const cachedFile = staticDistFileCache.get(routePath)
+
+  if (cachedFile) {
+    res.statusCode = 200
+    res.setHeader('Content-Type', contentType(filePath))
+    if (req.method === 'HEAD') {
+      res.end()
       return
     }
+    res.end(cachedFile)
+    return
+  }
 
-    const indexPath = path.join(DIST_DIR, 'index.html')
-    fs.access(indexPath, fs.constants.F_OK, (errIndex) => {
-      if (errIndex) {
-        res.statusCode = 404
-        res.end('Not found')
-        return
-      }
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'text/html; charset=utf-8')
-      if (req.method === 'HEAD') {
-        res.end()
-        return
-      }
-      fs.createReadStream(indexPath).pipe(res)
-    })
-  })
+  const cachedIndex = staticDistFileCache.get('/index.html')
+  if (!cachedIndex) {
+    res.statusCode = 404
+    res.end('Not found')
+    return
+  }
+
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  res.end(cachedIndex)
 }
 
 function createServer() {
-  return http.createServer((req, res) => {
+  return https.createServer(getLocalTlsOptions(), (req, res) => {
+    if (isLocalServerRateLimited(req)) {
+      res.statusCode = 429
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'Too many requests' }))
+      return
+    }
+
     const urlPath = req.url?.split('?')[0] || '/'
 
     const exactMatch = exactRoutes.find(r => r.method === req.method && r.path === urlPath)
@@ -4900,7 +4739,8 @@ function setupSocketProxy(clientSocket, upstreamSocket, upstreamRes, upstreamHea
 
 function startLocalServer() {
   return new Promise((resolve, reject) => {
-    const s = createServer()
+    buildStaticDistFileCache().then(() => {
+      const s = createServer()
     
     // WebSocket proxy for /ws/realtime → OpenAI Realtime API
     s.on('upgrade', (req, clientSocket, head) => {
@@ -4957,9 +4797,12 @@ function startLocalServer() {
       if (err?.code === 'EADDRINUSE') {
         console.error(
           `[electron] Port ${ELECTRON_APP_PORT} is in use. Set JARVIS_ELECTRON_PORT to a free port and add ` +
-            `http://127.0.0.1:<that-port>/oauth/callback to your OAuth client (Google Cloud Console).`,
+            `https://127.0.0.1:<that-port>/oauth/callback to your OAuth client (Google Cloud Console).`,
         )
       }
+      reject(err)
+    })
+    }).catch((err) => {
       reject(err)
     })
   })
@@ -5044,7 +4887,7 @@ async function createWindow() {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         webviewTag: true,
         preload: PRELOAD_PATH,
       },
@@ -5082,7 +4925,7 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       webviewTag: true,
       preload: PRELOAD_PATH,
     },
@@ -5091,7 +4934,7 @@ async function createWindow() {
   attachJarvisWebviewGuestHandlers(mainWindow.webContents)
   attachIframeBrowserHandlers(mainWindow)
 
-  const url = `http://127.0.0.1:${port}/`
+  const url = `https://127.0.0.1:${port}/`
   await mainWindow.loadURL(url)
 
   mainWindow.on('closed', () => {
@@ -5099,115 +4942,129 @@ async function createWindow() {
   })
 }
 
-app.whenReady().then(async () => {
-  // Grant microphone + speaker permissions for voice pipeline (STT + TTS)
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
-    callback(allowed.includes(permission))
-  })
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
-    return allowed.includes(permission)
-  })
+const SHOULD_BOOTSTRAP_ELECTRON = process.env.JARVIS_SKIP_ELECTRON_BOOTSTRAP !== '1'
 
-  // Strip X-Frame-Options & CSP frame-ancestors from ALL HTTP responses so the
-  // in-app browser <iframe> can embed any external site.  This replaces the
-  // broken <webview> path (GPU compositor never paints the guest surface).
-  const FRAME_BLOCK_HEADERS = new Set(['x-frame-options', 'content-security-policy', 'content-security-policy-report-only'])
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const headers = { ...details.responseHeaders }
-    for (const key of Object.keys(headers)) {
-      if (FRAME_BLOCK_HEADERS.has(key.toLowerCase())) {
-        delete headers[key]
+if (SHOULD_BOOTSTRAP_ELECTRON) {
+  app.whenReady().then(() => {
+    // Grant microphone + speaker permissions for voice pipeline (STT + TTS)
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+      callback(allowed.includes(permission))
+    })
+    session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+      const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+      return allowed.includes(permission)
+    })
+    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+      const host = String(request.hostname || '').toLowerCase()
+      if (host === '127.0.0.1' || host === 'localhost') {
+        callback(0)
+        return
       }
+      callback(-3)
+    })
+
+    // Strip X-Frame-Options & CSP frame-ancestors from ALL HTTP responses so the
+    // in-app browser <iframe> can embed any external site.  This replaces the
+    // broken <webview> path (GPU compositor never paints the guest surface).
+    const FRAME_BLOCK_HEADERS = new Set(['x-frame-options', 'content-security-policy', 'content-security-policy-report-only'])
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      const headers = { ...details.responseHeaders }
+      for (const key of Object.keys(headers)) {
+        if (FRAME_BLOCK_HEADERS.has(key.toLowerCase())) {
+          delete headers[key]
+        }
+      }
+      callback({ responseHeaders: headers })
+    })
+
+    loadEnvFromFile()
+
+    // Light IPC registrations (instant)
+    setupBrowserSession()
+    registerBrowserIpc()
+    registerJarvisBrowserInspectorIpc()
+    registerJarvisIdeIpc()
+    registerTerminalIpc()
+    try {
+      const {
+        registerScreenVisionIpc,
+        registerNativeInputIpc,
+        registerPowerShellExecIpc,
+      } = require('./jarvis-desktop-automation.cjs')
+      registerScreenVisionIpc()
+      registerNativeInputIpc()
+      registerPowerShellExecIpc()
+    } catch (e) {
+      console.error('[jarvis-desktop-automation] failed to register:', e instanceof Error ? e.message : e)
     }
-    callback({ responseHeaders: headers })
+
+    // Show the window FIRST so Jarvis feels instant
+    createWindow().catch((err) => {
+      console.error('[electron] failed to create window:', err instanceof Error ? err.message : err)
+    })
+
+    // Heavy background init — deferred so the UI appears immediately
+    setTimeout(() => {
+      spawnJarvisVision()
+      registerJarvisOrchestratorIpc()
+      startJarvisOrchestrator().catch((err) => {
+        console.error('[jarvis] orchestrator start failed:', err instanceof Error ? err.message : err)
+      })
+      try {
+        require('./vonage-ai-voice-bridge.cjs').startFromElectron(getEnv)
+      } catch (e) {
+        console.error('[vonage-ai-voice-bridge] failed to start:', e instanceof Error ? e.message : e)
+      }
+      if (ragDb.isConfigured()) {
+        ragDb.initSchema().catch((err) => console.error('[rag-db] schema init failed:', err.message))
+      }
+    }, 500)
   })
 
-  loadEnvFromFile()
-  /** Packaged app lives under app.asar — SQLite cannot write inside asar; use a writable userData path. */
-  try {
-    if (app.isPackaged && !String(process.env.JARVIS_DB_PATH || '').trim()) {
-      process.env.JARVIS_DB_PATH = path.join(app.getPath('userData'), 'jarvis.db')
+  app.on('before-quit', (e) => {
+    killJarvisVision()
+    if (jarvisOrchestratorQuitDrain) {
+      return
     }
-  } catch (e) {
-    console.warn('[jarvis-db] could not set JARVIS_DB_PATH for packaged app:', e instanceof Error ? e.message : e)
-  }
-
-  logJarvisStartupBanner()
-  await startJarvisVisionEngineIfConfigured()
-  await waitForVisionEngineHttpReadyIfSpawned()
-
-  registerJarvisOrchestratorIpc()
-  void startJarvisOrchestrator()
-  try {
-    require('./vonage-ai-voice-bridge.cjs').startFromElectron(getEnv)
-  } catch (e) {
-    console.error('[vonage-ai-voice-bridge] failed to start:', e instanceof Error ? e.message : e)
-  }
-  setupBrowserSession()
-  registerBrowserIpc()
-  registerJarvisBrowserInspectorIpc()
-  registerJarvisIdeIpc()
-  registerTerminalIpc()
-
-  try {
-    const {
-      registerScreenVisionIpc,
-      registerNativeInputIpc,
-      registerPowerShellExecIpc,
-    } = require('./jarvis-desktop-automation.cjs')
-    registerScreenVisionIpc()
-    registerNativeInputIpc()
-    registerPowerShellExecIpc()
-  } catch (e) {
-    console.error('[jarvis-desktop-automation] failed to register:', e instanceof Error ? e.message : e)
-  }
-
-  // Initialise RAG database schema (pgvector) if configured — failures are logged inside rag-db (non-fatal)
-  if (ragDb.isConfigured()) {
-    void ragDb.initSchema()
-  }
-
-  try {
-    await createWindow()
-  } catch (e) {
-    console.error('[jarvis] createWindow failed:', e instanceof Error ? e.message : e)
-    app.quit()
-  }
-}).catch((e) => {
-  console.error('[jarvis] app.whenReady failed:', e instanceof Error ? e.message : e)
-  app.quit()
-})
-
-app.on('before-quit', (e) => {
-  if (jarvisOrchestratorQuitDrain) {
-    return
-  }
-  if (!jarvisOrchestratorModule) {
-    return
-  }
-  e.preventDefault()
-  jarvisOrchestratorQuitDrain = true
-  void shutdownJarvisOrchestratorAsync().finally(() => {
-    app.quit()
+    if (!jarvisOrchestratorModule) {
+      return
+    }
+    e.preventDefault()
+    jarvisOrchestratorQuitDrain = true
+    shutdownJarvisOrchestratorAsync()
+      .catch((err) => {
+        console.error('[jarvis] orchestrator shutdown failed:', err instanceof Error ? err.message : err)
+      })
+      .finally(() => {
+        app.quit()
+      })
   })
-})
 
-app.on('will-quit', () => {
-  stopJarvisVisionEngine()
-})
+  app.on('window-all-closed', () => {
+    killJarvisVision()
+    cleanupTerminals()
+    if (server) {
+      server.close()
+      server = null
+    }
+    ragDb.shutdown().catch(() => {})
+    if (process.platform !== 'darwin') app.quit()
+  })
 
-app.on('window-all-closed', () => {
-  cleanupTerminals()
-  if (server) {
-    server.close()
-    server = null
-  }
-  ragDb.shutdown().catch(() => {})
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow().catch((err) => {
+        console.error('[electron] activate createWindow failed:', err instanceof Error ? err.message : err)
+      })
+    }
+  })
+}
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) void createWindow()
-})
+module.exports = {
+  ...module.exports,
+  registerJarvisIdeIpc,
+  registerTerminalIpc,
+  isInternalSender,
+  parseCommandSafe,
+}

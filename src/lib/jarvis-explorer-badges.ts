@@ -196,6 +196,7 @@ export interface GitPorcelainEntry {
 }
 
 /** Parse `git status --porcelain` (v1). */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- porcelain v1 parser handles renamed/copied file path pairs and quote-escaped paths
 export function parseGitStatusPorcelain(stdout: string): Map<string, GitPorcelainEntry> {
   const map = new Map<string, GitPorcelainEntry>()
   const lines = stdout.split(/\r?\n/).filter(Boolean)
@@ -329,6 +330,7 @@ const AUDIO_EXT = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'])
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi'])
 const BINARY_EXT = new Set(['exe', 'dll', 'so', 'dylib', 'bin', 'wasm', 'zip', '7z', 'rar', 'pdf', 'woff', 'woff2'])
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- maps extension/language combos to badge sets; each branch is a distinct file-kind rule
 export function fileKindBadgeIds(filename: string | undefined, language: string): JarvisExplorerBadgeId[] {
   const ext = (filename?.split('.').pop() || '').toLowerCase()
   const lang = language.toLowerCase()
@@ -450,6 +452,7 @@ export interface ComputeExplorerBadgesInput {
   readonly missingLogicDetections?: readonly MissingLogicDetectionId[]
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- aggregates git, lint, language, dirty, and missing-logic badge signals in one deterministic pass
 export function computeExplorerBadgesForFile(input: ComputeExplorerBadgesInput): JarvisExplorerBadgeId[] {
   const { filename, language, diskPath, workspaceRoot, gitPorcelain, problems, isDirtyBuffer, isActive, meta, missingLogicDetections } = input
   const rel = relativePathToWorkspaceRoot(diskPath, workspaceRoot)

@@ -6,10 +6,9 @@
 
 import OpenAI from 'openai'
 
-import type { ComplexityAssessment } from './complexityDetector'
 import type { CoTScratchpad } from './cotScratchpad'
-import type { ModelSpec, ModelTier } from './modelRegistry'
-import { MODEL_REGISTRY, ROUTING_RULES, estimateCost, getModelSpec } from './modelRegistry'
+import type { ModelTier } from './modelRegistry'
+import { ROUTING_RULES, estimateCost, getModelSpec } from './modelRegistry'
 
 const LOG = '[RoutingClassifier]'
 
@@ -98,6 +97,7 @@ export default class RoutingClassifier {
     }
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- routing decision tree with complexity/premium/model-band branches; all bands must remain co-located for consistent fallback logic
   private async classifyInner(signals: RoutingSignals): Promise<RoutingDecision> {
     /**
      * NOTE: ALWAYS_NANO routes (conversational, clarification_needed) return
@@ -295,7 +295,6 @@ Task type: ${signals.taskType}`
     overrideReason?: string,
     extraSignals: string[] = [],
   ): RoutingDecision {
-    void MODEL_REGISTRY[tier]
     const spec = getModelSpec(tier)
     const inputTokens = Math.max(1, Math.floor(signals.taskDescription.length / 4))
     const outputTokens = outputTokensForLength(signals.estimatedOutputLength)

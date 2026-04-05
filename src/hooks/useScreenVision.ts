@@ -28,7 +28,7 @@ export function useScreenVision() {
       setState({ streaming: true, stream, error: null })
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        void videoRef.current.play()
+        videoRef.current.play().catch(() => {})
       }
     } catch (err) {
       setState({ streaming: false, stream: null, error: String(err) })

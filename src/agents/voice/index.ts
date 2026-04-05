@@ -6,6 +6,7 @@ import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
 import { unlink, writeFile } from 'node:fs/promises'
 import { platform, tmpdir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 
 import type EventEmitter from 'eventemitter3'
@@ -56,7 +57,7 @@ async function playPcmWithWebAudio(pcm: Buffer, signal: AbortSignal): Promise<vo
   const audioBuf = await ctx.decodeAudioData(copy)
   await new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
-      void ctx.close().catch(() => {})
+      ctx.close().catch(() => {})
       resolve()
       return
     }
@@ -69,32 +70,32 @@ async function playPcmWithWebAudio(pcm: Buffer, signal: AbortSignal): Promise<vo
       } catch {
         /* ignored */
       }
-      void ctx.close().catch(() => {})
+      ctx.close().catch(() => {})
       resolve()
     }
     signal.addEventListener('abort', onAbort, { once: true })
     src.onended = (): void => {
       signal.removeEventListener('abort', onAbort)
-      void ctx.close().catch(() => {})
+      ctx.close().catch(() => {})
       resolve()
     }
     src.start(0)
     if (ctx.state === 'suspended') {
-      void ctx.resume().catch(reject)
+      ctx.resume().catch(reject)
     }
   })
 }
 
 function playWavWithPowerShell(wavPath: string): ChildProcess {
-  const escaped = wavPath.replace(/'/g, "''")
   return spawn(
-    'powershell.exe',
-    ['-NoProfile', '-Command', `$sp = New-Object System.Media.SoundPlayer('${escaped}'); $sp.PlaySync()`],
-    { stdio: 'ignore', windowsHide: true },
+    'powershell.exe', // eslint-disable-line sonarjs/no-os-command-from-path -- fixed Windows system binary
+    ['-NoProfile', '-Command', '$sp = New-Object System.Media.SoundPlayer($env:JARVIS_WAV_PATH); $sp.PlaySync()'],
+    { stdio: 'ignore', windowsHide: true, env: { ...process.env, JARVIS_WAV_PATH: wavPath } },
   )
 }
 
 function playWavWithFfplay(wavPath: string): ChildProcess {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- ffplay is a trusted system media utility; path resolution via PATH is the portable approach
   return spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-i', wavPath], {
     stdio: 'ignore',
     windowsHide: true,
@@ -102,6 +103,7 @@ function playWavWithFfplay(wavPath: string): ChildProcess {
 }
 
 function playWavWithAplay(wavPath: string): ChildProcess {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- aplay is a trusted ALSA system utility; path resolution via PATH is the portable approach
   return spawn('aplay', ['-q', wavPath], { stdio: 'ignore', windowsHide: true })
 }
 
@@ -157,7 +159,7 @@ async function playPcmNode(
   hooks?: { onPlaybackChild?: (c: ChildProcess | null) => void },
 ): Promise<void> {
   const wav = pcm16MonoToWav(pcm)
-  const path = join(tmpdir(), `jarvis-voice-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`)
+  const path = join(tmpdir(), `jarvis-voice-${Date.now()}-${randomBytes(8).toString('hex')}.wav`)
   await writeFile(path, wav)
   hooks?.onPlaybackChild?.(null)
   try {
@@ -273,13 +275,13 @@ export class VoiceAgent {
       this.clearLowDebounce()
       this.cancelOngoing()
       this.queue.unshift(p.text)
-      void this.drain()
+      this.drain().catch(() => {})
       return
     }
     if (p.priority === 'normal') {
       this.clearLowDebounce()
       this.queue.push(p.text)
-      void this.drain()
+      this.drain().catch(() => {})
       return
     }
     // low — debounce: only the latest text within 500ms is queued
@@ -293,7 +295,7 @@ export class VoiceAgent {
       this.pendingLow = null
       if (t && t.length > 0) {
         this.queue.push(t)
-        void this.drain()
+        this.drain().catch(() => {})
       }
     }, 500)
   }

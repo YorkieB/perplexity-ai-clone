@@ -69,6 +69,7 @@ export async function a2eParseJson<T>(res: Response): Promise<T> {
  * Build a user-facing message from a failed HTTP response (prefer JSON body over status text).
  * Handles A2E `{ code, data }` envelopes, `{ message }`, and `{ error: { message } }`.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- exhaustive JSON envelope shape branching for A2E API error formats
 export function formatA2eHttpError(res: Response, bodyText: string): string {
   const statusLine = (String(res.status) + (res.statusText ? ' ' + res.statusText : '')).trim()
   const trimmed = bodyText.trim()

@@ -91,6 +91,7 @@ export class PythonBridge extends EventEmitter<PythonBridgeEvents> {
         socket.off('error', onConnectError)
         finish(() => {
           this.status = 'connected'
+          // eslint-disable-next-line sonarjs/no-nested-functions -- runtime error handler must be registered inside the open callback to share the socket reference
           socket.on('error', (runtimeErr: Error) => {
             console.error('[PythonBridge] socket error:', runtimeErr)
           })
@@ -185,7 +186,7 @@ export class PythonBridge extends EventEmitter<PythonBridgeEvents> {
       this.reconnectTimer = null
       this.reconnectScheduled = false
       console.info('[PythonBridge] reconnect attempt')
-      void this.connect().catch((err: unknown) => {
+      this.connect().catch((err: unknown) => {
         console.error('[PythonBridge] reconnect failed:', err)
       })
     }, RECONNECT_DELAY_MS)

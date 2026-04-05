@@ -31,9 +31,9 @@ export function EmptyState({ onExampleClick }: EmptyStateProps) {
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground font-medium">Try asking:</p>
           <div className="grid gap-3">
-            {exampleQueries.map((query, index) => (
+            {exampleQueries.map((query) => (
               <button
-                key={index}
+                key={query}
                 onClick={() => onExampleClick(query)}
                 className="px-4 py-3 bg-card border border-border rounded-lg hover:border-accent hover:bg-card/80 transition-all text-left group"
               >

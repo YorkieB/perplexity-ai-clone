@@ -12,7 +12,6 @@ import { v4 as uuidv4 } from 'uuid'
 import type { ConfidenceScore, ConfidenceVector, PreTaskEstimate } from './confidenceTypes'
 import {
   CONFIDENCE_THRESHOLDS,
-  ELICITATION_INSTRUCTION,
   scoreToAction,
   scoreToLevel,
 } from './confidenceTypes'
@@ -23,7 +22,7 @@ const LOG = '[ConfidenceElicitor]'
 const PRE_TASK_MODEL = 'gpt-4o-mini'
 
 /** As specified for simple flat JSON objects (fallback when brace-balanced parse fails). */
-const CONFIDENCE_FLAT_REGEX = /\{[^{}]*"confidence"\s*:\s*([\d.]+)[^{}]*\}/g
+const CONFIDENCE_FLAT_REGEX = /\{[^{}]{0,200}"confidence"\s*:\s*([\d.]+)[^{}]{0,200}\}/g
 
 function clamp01(n: number): number {
   if (!Number.isFinite(n)) return 0
@@ -39,6 +38,7 @@ function asStringArray(v: unknown): string[] {
  * Extracts a `{ ... }` substring starting at `start` with balanced braces,
  * respecting strings and escapes.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- brace-balanced JSON slicer with string/escape tracking; all state must be co-located for correctness
 function sliceBalancedJson(s: string, start: number): string | null {
   if (s[start] !== '{') return null
   let depth = 0
@@ -132,6 +132,7 @@ export default class ConfidenceElicitor {
    * Attempts to read a confidence object appended to model output (zero LLM cost).
    * Prefers `"confidence"`; falls back to `"scalar"` for {@link ELICITATION_INSTRUCTION} payloads.
    */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- parses confidence envelopes with scalar/boolean/string variants and multi-key fallback
   extractFromOutput(
     output: string,
     sessionId: string,
@@ -148,12 +149,14 @@ export default class ConfidenceElicitor {
     let knowledgeGaps: string[] = []
 
     if (obj !== null) {
-      const raw =
-        typeof obj.confidence === 'number'
-          ? obj.confidence
-          : typeof obj.scalar === 'number'
-            ? obj.scalar
-            : Number(obj.confidence ?? obj.scalar)
+      let raw: number
+      if (typeof obj.confidence === 'number') {
+        raw = obj.confidence
+      } else if (typeof obj.scalar === 'number') {
+        raw = obj.scalar
+      } else {
+        raw = Number(obj.confidence ?? obj.scalar)
+      }
       if (Number.isFinite(raw)) scalar = clamp01(raw)
       explanation = typeof obj.explanation === 'string' ? obj.explanation : ''
       uncertaintyFactors = asStringArray(obj.uncertaintyFactors)
@@ -416,7 +419,7 @@ Estimate confidence BEFORE attempting this task.`
     verbalized?: number
     ragHits?: number
   }): ConfidenceVector {
-    void scores.verbalized
+
     const factual = scores.ragHits !== undefined ? clamp01(scores.ragHits) : 0.7
     let reasoning = 0.7
     if (scores.observation === true) reasoning = 0.85
@@ -444,7 +447,6 @@ Estimate confidence BEFORE attempting this task.`
     taskType: string,
     n: number = CONFIDENCE_THRESHOLDS.CONSISTENCY_SAMPLES,
   ): Promise<{ consistent: boolean; agreementScore: number; variance: string }> {
-    void taskType
     const prompt = `In one sentence, is this output correct and complete for the task?
 Task: ${taskDescription.slice(0, 200)}
 Output: ${output.slice(0, 500)}

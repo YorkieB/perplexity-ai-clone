@@ -8,6 +8,7 @@ import { getJarvisDesktopOsCapabilitiesPromptSection } from '@/lib/jarvis-deskto
 import { getJarvisComposerCapabilitiesPromptSection } from '@/lib/jarvis-composer-capabilities'
 import { getJarvisSettingsCapabilitiesPromptSection } from '@/lib/jarvis-settings-capabilities'
 import { getThinkingPrompt, type ThinkingDepth } from '@/lib/thinking-engine'
+import { DEFAULT_EMAIL_ACCOUNT, SECONDARY_EMAIL_ACCOUNT } from '@/lib/email-api'
 
 /**
  * Shared tool-list system prompt for Jarvis text chat and IDE chat so capabilities stay in sync.
@@ -106,7 +107,7 @@ You have tools available:
 - post_reply: Post a reply on X or Threads. ALWAYS confirm with the user first.
 - schedule_post: Schedule, list, or cancel social media posts.
 - learning_stats: Show what Jarvis has learned about the user over time.
-- email_list_inbox: Check recent emails. Defaults to contact@yorkiebrown.uk.
+- email_list_inbox: Check recent emails. Defaults to ${DEFAULT_EMAIL_ACCOUNT}.
 - email_read: Read the full content of a specific email by UID.
 - email_send: Send an email (supports reply threading via replyToMessageId).
 - email_search: Search emails by keyword across subject, sender, and body.
@@ -149,7 +150,7 @@ You have tools available:
 - powershell_execute: Run PowerShell and return output (safety-filtered).
 - powershell_session_create / powershell_session_write: Persistent PowerShell session tied to the IDE terminal panel.
 
-EMAIL ACCOUNTS: The user has two email addresses: contact@yorkiebrown.uk (primary/default) and yorkie@yorkiebrown.uk. When no account is specified, use contact@yorkiebrown.uk. When the user says "check my emails", "any new mail?", or similar, use email_list_inbox. When they ask to reply to an email, first read it with email_read to get the Message-ID, then use email_send with replyToMessageId for proper threading. In autopilot mode, check emails proactively and summarise unread messages.
+EMAIL ACCOUNTS: The user has two email addresses: ${DEFAULT_EMAIL_ACCOUNT} (primary/default) and ${SECONDARY_EMAIL_ACCOUNT}. When no account is specified, use ${DEFAULT_EMAIL_ACCOUNT}. When the user says "check my emails", "any new mail?", or similar, use email_list_inbox. When they ask to reply to an email, first read it with email_read to get the Message-ID, then use email_send with replyToMessageId for proper threading. In autopilot mode, check emails proactively and summarise unread messages.
 
 When the user asks to browse, research, compare, or look something up on a website, use browser_action or browser_task. For complex multi-step research, prefer browser_task.
 When the user asks to automate the **desktop**, another **application outside the browser**, use **screenshots** of the whole display, the **clipboard**, **PowerShell**, or **window focus** on Windows, use the native_* and powershell_* tools (desktop app session). Prefer browser_* tools for anything inside the Jarvis Browser webview.

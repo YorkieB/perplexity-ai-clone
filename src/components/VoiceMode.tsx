@@ -1,5 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react'
-import { FocusTrap } from 'focus-trap-react'
+import { useEffect, useCallback } from 'react'
 import { XIcon, HandWavingIcon, VideoCameraIcon, MicrophoneIcon, MicrophoneSlashIcon } from '@phosphor-icons/react'
 import { useRealtimeVoice, VoicePipelineState } from '@/hooks/useRealtimeVoice'
 import { useVision } from '@/hooks/useVision'
@@ -13,7 +12,6 @@ import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { cn } from '@/lib/utils'
 import { setRendererVoiceModeOpen } from '@/lib/voice-mode-ui'
-import './VoiceMode.css'
 
 interface VoiceModeProps {
   readonly open: boolean
@@ -37,8 +35,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
 
   const pipeline = useRealtimeVoice({
     onResponse,
-    ttsProvider: settings?.ttsProvider ?? 'elevenlabs',
-    elevenlabsVoiceId: settings?.apiKeys?.elevenLabsVoiceId,
+    ttsProvider: 'elevenlabs',
     visionContext: visionCtx,
     tuneInControl,
     browserControl,
@@ -57,53 +54,30 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
     userSettings: settings,
   })
 
-  const pipelineRef = useRef(pipeline)
-  pipelineRef.current = pipeline
-
   const handleBargeIn = useCallback(() => {
     pipeline.bargeIn()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipeline.bargeIn])
 
   useEffect(() => {
+    setRendererVoiceModeOpen(open)
     const ipc = typeof window !== 'undefined' ? window.electronAPI?.setVoiceModeActive : undefined
     if (typeof ipc === 'function') {
-      void ipc(open).catch(() => {})
+      ipc(open).catch(() => {})
     }
     if (open) {
-      void pipeline.open()
-      try {
-        setRendererVoiceModeOpen(true)
-        window.setRendererVoiceModeOpen?.(true)
-        void window.electronAPI?.setVoiceModeActive?.(true)?.catch(() => {})
-      } catch {
-        /* Host/renderer hooks must not block or roll back the voice pipeline */
-      }
+      pipeline.open()
     } else {
       pipeline.close()
-      try {
-        setRendererVoiceModeOpen(false)
-        window.setRendererVoiceModeOpen?.(false)
-        void window.electronAPI?.setVoiceModeActive?.(false)?.catch(() => {})
-      } catch {
-        /* Host/renderer hooks must not block pipeline teardown */
-      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- pipeline.open/close are stable; effect tracks `open` only
-  }, [open])
-
-  useEffect(() => {
     return () => {
-      pipelineRef.current.close()
       setRendererVoiceModeOpen(false)
-      try {
-        window.setRendererVoiceModeOpen?.(false)
-        void window.electronAPI?.setVoiceModeActive?.(false)?.catch(() => {})
-      } catch {
-        /* unmount teardown */
+      if (typeof ipc === 'function') {
+        ipc(false).catch(() => {})
       }
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -139,21 +113,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
   if (!open) return null
 
   return (
-    <FocusTrap
-      focusTrapOptions={{
-        returnFocusOnDeactivate: true,
-        escapeDeactivates: false,
-        clickOutsideDeactivates: false,
-        allowOutsideClick: false,
-      }}
-    >
-      <div
-        className="fixed inset-0 z-50 flex flex-col items-center justify-center voice-mode-backdrop"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Voice mode"
-        tabIndex={-1}
-      >
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center voice-mode-backdrop">
       {/* Close button */}
       <button
         onClick={onClose}
@@ -176,11 +136,7 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
       </div>
 
       {/* State label */}
-      <p
-        className="absolute top-8 left-1/2 -translate-x-1/2 z-10 text-white/50 text-xs uppercase tracking-widest select-none"
-        aria-live="polite"
-        aria-atomic="true"
-      >
+      <p className="absolute top-8 left-1/2 -translate-x-1/2 z-10 text-white/50 text-xs uppercase tracking-widest select-none">
         {stateLabel(pipeline.state)}
       </p>
 
@@ -191,30 +147,22 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
 
       {/* Transcript / response text area */}
       <div className="w-full max-w-lg px-8 flex flex-col items-center gap-4 min-h-[120px]">
-        <div aria-live="polite" aria-atomic="false" className="w-full text-center">
-          {(pipeline.interimTranscript || pipeline.transcript) && pipeline.state === 'listening' && (
-            <>
-              {pipeline.transcript && (
-                <p className="text-white/80 text-base">{pipeline.transcript}</p>
-              )}
-              {pipeline.interimTranscript && (
-                <p className="text-white/40 text-base italic">{pipeline.interimTranscript}</p>
-              )}
-            </>
-          )}
-        </div>
+        {(pipeline.interimTranscript || pipeline.transcript) && pipeline.state === 'listening' && (
+          <div className="text-center">
+            {pipeline.transcript && (
+              <p className="text-white/80 text-base">{pipeline.transcript}</p>
+            )}
+            {pipeline.interimTranscript && (
+              <p className="text-white/40 text-base italic">{pipeline.interimTranscript}</p>
+            )}
+          </div>
+        )}
 
-        <div
-          aria-live={pipeline.state === 'speaking' ? 'assertive' : 'polite'}
-          aria-atomic="false"
-          className="w-full"
-        >
-          {(pipeline.state === 'thinking' || pipeline.state === 'speaking') && pipeline.aiText && (
-            <p className="text-white/90 text-base text-center leading-relaxed max-h-40 overflow-y-auto">
-              {pipeline.aiText}
-            </p>
-          )}
-        </div>
+        {(pipeline.state === 'thinking' || pipeline.state === 'speaking') && pipeline.aiText && (
+          <p className="text-white/90 text-base text-center leading-relaxed max-h-40 overflow-y-auto">
+            {pipeline.aiText}
+          </p>
+        )}
 
         {pipeline.state === 'speaking' && (
           <button
@@ -247,7 +195,6 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
             : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
         )}
         aria-label={pipeline.micMuted ? 'Unmute microphone' : 'Mute microphone'}
-        aria-pressed={pipeline.micMuted}
       >
         {pipeline.micMuted ? <MicrophoneSlashIcon size={18} /> : <MicrophoneIcon size={18} />}
         <span>{pipeline.micMuted ? 'Muted' : 'Mic on'}</span>
@@ -257,8 +204,41 @@ export function VoiceMode({ open, onClose, onResponse }: VoiceModeProps) {
       <p className="absolute bottom-8 text-white/30 text-xs select-none">
         {bottomHint(pipeline.state)}
       </p>
-      </div>
-    </FocusTrap>
+
+      <style>{`
+        .voice-mode-backdrop {
+          background: radial-gradient(ellipse at center, #0d0d1a 0%, #000008 100%);
+        }
+
+        /* ── Orb animations ── */
+        @keyframes orb-idle-pulse {
+          0%, 100% { transform: scale(1); opacity: 0.7; }
+          50%       { transform: scale(1.04); opacity: 1; }
+        }
+        @keyframes orb-listen-ripple {
+          0%   { transform: scale(1); opacity: 0.9; }
+          50%  { transform: scale(1.12); opacity: 0.6; }
+          100% { transform: scale(1); opacity: 0.9; }
+        }
+        @keyframes orb-think-spin {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+        @keyframes orb-speak-wave {
+          0%, 100% { transform: scaleY(1); }
+          25%      { transform: scaleY(1.18); }
+          75%      { transform: scaleY(0.85); }
+        }
+        @keyframes ripple-out {
+          0%   { transform: scale(1);   opacity: 0.5; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+        @keyframes fade-in-up {
+          from { opacity: 0; transform: translateY(10px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+    </div>
   )
 }
 
@@ -319,7 +299,7 @@ function ThinkingRing() {
       style={{
         borderTopColor: 'rgba(255,255,255,0.9)',
         borderRightColor: 'rgba(255,255,255,0.3)',
-        animation: 'orb-think-pulse 1s linear infinite',
+        animation: 'orb-think-spin 1s linear infinite',
       }}
     />
   )
@@ -344,7 +324,7 @@ function WaveformBars() {
           className="w-1 rounded-full bg-white"
           style={{
             height: 20,
-            animation: `orb-speak-bar-wave ${0.5 + i * 0.07}s ease-in-out infinite`,
+            animation: `orb-speak-wave ${0.5 + i * 0.07}s ease-in-out infinite`,
             animationDelay: `${i * 0.08}s`,
             transformOrigin: 'center',
             transform: `scaleY(${bar.scale})`,
@@ -363,7 +343,7 @@ function IdleDot() {
   return (
     <div
       className="w-5 h-5 rounded-full bg-white/60"
-      style={{ animation: 'orb-idle 3s ease-in-out infinite' }}
+      style={{ animation: 'orb-idle-pulse 3s ease-in-out infinite' }}
     />
   )
 }
@@ -424,7 +404,7 @@ function orbAnimation(state: VoicePipelineState): string {
   switch (state) {
     case 'listening': return 'orb-listen-ripple 1.4s ease-in-out infinite'
     case 'thinking':  return 'none'
-    case 'speaking':  return 'orb-speak-wave 1.2s ease-in-out infinite'
-    default:          return 'orb-idle 3s ease-in-out infinite'
+    case 'speaking':  return 'orb-listen-ripple 0.8s ease-in-out infinite'
+    default:          return 'orb-idle-pulse 3s ease-in-out infinite'
   }
 }

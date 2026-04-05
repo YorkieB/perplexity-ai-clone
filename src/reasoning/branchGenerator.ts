@@ -110,6 +110,7 @@ function candidateSimilarity(a: BranchCandidate, b: BranchCandidate): number {
   return union === 0 ? 0 : inter / union
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- normalizes raw LLM candidate objects with multiple optional fields and type coercions
 function normalizeCandidate(raw: unknown): BranchCandidate | null {
   if (raw === null || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>

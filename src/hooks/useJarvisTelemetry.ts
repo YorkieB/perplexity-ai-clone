@@ -163,6 +163,7 @@ export const INITIAL_DASHBOARD_STATE: DashboardState = {
  * tot_search_complete, cost_warning
  * Previous spec comment said 7 — implementation correctly handles 8.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- handles 8 telemetry event types; splitting into sub-reducers would scatter related state updates
 function _applyEvent(state: DashboardState, event: TelemetryEvent): DashboardState {
   const d = event.data
   const sessionId = event.sessionId
@@ -300,12 +301,14 @@ function _applyEvent(state: DashboardState, event: TelemetryEvent): DashboardSta
       const lowConfidenceCount =
         prev.lowConfidenceCount +
         (conf !== undefined && Number.isFinite(conf) && conf < 0.6 ? 1 : 0)
-      const v =
-        conf !== undefined && Number.isFinite(conf)
-          ? conf
-          : prev.totalEstimates === 0
-            ? 0
-            : prev.avgPreTaskConfidence
+      let v: number
+      if (conf !== undefined && Number.isFinite(conf)) {
+        v = conf
+      } else if (prev.totalEstimates === 0) {
+        v = 0
+      } else {
+        v = prev.avgPreTaskConfidence
+      }
       const avgPreTaskConfidence =
         (prev.avgPreTaskConfidence * prev.totalEstimates + v) / totalEstimates
       return {

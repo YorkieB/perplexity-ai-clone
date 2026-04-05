@@ -28,7 +28,122 @@ export function validateNativeClick(x: number, y: number, screenW: number, scree
 
 const MAX_TYPE_CHARS = 12_000
 const MAX_CLIPBOARD_WRITE = 500_000
+const MAX_POWERSHELL_COMMAND_CHARS = 20_000
+const MAX_POWERSHELL_CWD_CHARS = 1_024
 const DANGEROUS_HOTKEY = /(\^|\b)alt\+f4\b|\bwin\+l\b/i
+
+type ToolValidationResult = { ok: true } | { ok: false; reason: string }
+type ToolPreValidator = (
+  args: Record<string, unknown>,
+  screenW: number,
+  screenH: number,
+) => ToolValidationResult
+
+function validateOptionalCwd(cwd: unknown): { valid: boolean; reason?: string } {
+  if (cwd === undefined) return { valid: true }
+  if (typeof cwd !== 'string') return { valid: false, reason: 'Invalid cwd type' }
+  const trimmed = cwd.trim()
+  if (!trimmed) return { valid: false, reason: 'Empty cwd' }
+  if (trimmed.length > MAX_POWERSHELL_CWD_CHARS) return { valid: false, reason: 'cwd too long' }
+  if (trimmed.includes('\u0000')) return { valid: false, reason: 'cwd contains null bytes' }
+  return { valid: true }
+}
+
+function validatePowerShellCommandArg(args: Record<string, unknown>): ToolValidationResult {
+  const cmd = args.command
+  if (typeof cmd !== 'string' || !cmd.trim()) return { ok: false, reason: 'Missing command' }
+  if (cmd.length > MAX_POWERSHELL_COMMAND_CHARS) return { ok: false, reason: 'Command too long' }
+  const v = validatePowerShellCommand(cmd)
+  if (!v.safe) return { ok: false, reason: v.reason ?? 'Blocked command' }
+  return { ok: true }
+}
+
+function validateMouseClickPre(
+  args: Record<string, unknown>,
+  screenW: number,
+  screenH: number,
+): ToolValidationResult {
+  const x = args.x
+  const y = args.y
+  if (typeof x === 'number' && typeof y === 'number') {
+    const v = validateNativeClick(x, y, screenW, screenH)
+    if (!v.valid) return { ok: false, reason: v.reason ?? 'Bad coordinates' }
+  }
+  return { ok: true }
+}
+
+function validateKeyboardTypePre(args: Record<string, unknown>): ToolValidationResult {
+  const text = args.text
+  if (typeof text !== 'string' || !text.length) return { ok: false, reason: 'Missing text' }
+  if (text.length > MAX_TYPE_CHARS) return { ok: false, reason: 'Text too long' }
+  return { ok: true }
+}
+
+function validateKeyboardHotkeyPre(args: Record<string, unknown>): ToolValidationResult {
+  const combo = args.combo
+  if (typeof combo !== 'string' || !combo.trim()) return { ok: false, reason: 'Missing combo' }
+  if (DANGEROUS_HOTKEY.test(combo)) return { ok: false, reason: 'Blocked hotkey pattern' }
+  return { ok: true }
+}
+
+function validateWindowFocusPre(args: Record<string, unknown>): ToolValidationResult {
+  const title = args.title
+  if (typeof title !== 'string' || !title.trim()) return { ok: false, reason: 'Missing title' }
+  if (title.length > 500) return { ok: false, reason: 'Title too long' }
+  return { ok: true }
+}
+
+function validateScreenCapturePre(
+  args: Record<string, unknown>,
+  screenW: number,
+  screenH: number,
+): ToolValidationResult {
+  const region = args.region as { left?: number; top?: number; width?: number; height?: number } | undefined
+  const v = validateScreenRegion(region, screenW, screenH)
+  return v.valid ? { ok: true } : { ok: false, reason: v.reason ?? 'Bad region' }
+}
+
+function validateClipboardWritePre(args: Record<string, unknown>): ToolValidationResult {
+  const text = args.text
+  if (typeof text !== 'string') return { ok: false, reason: 'Missing text' }
+  if (text.length > MAX_CLIPBOARD_WRITE) return { ok: false, reason: 'Clipboard payload too large' }
+  return { ok: true }
+}
+
+function validatePowerShellExecutePre(args: Record<string, unknown>): ToolValidationResult {
+  const cmdValidation = validatePowerShellCommandArg(args)
+  if (!cmdValidation.ok) return cmdValidation
+  const cwdValidation = validateOptionalCwd(args.cwd)
+  if (!cwdValidation.valid) return { ok: false, reason: cwdValidation.reason ?? 'Invalid cwd' }
+  return { ok: true }
+}
+
+function validatePowerShellSessionWritePre(args: Record<string, unknown>): ToolValidationResult {
+  const cmdValidation = validatePowerShellCommandArg(args)
+  if (!cmdValidation.ok) return cmdValidation
+  const sessionId = args.session_id
+  if (typeof sessionId !== 'number' || !Number.isFinite(sessionId) || !Number.isInteger(sessionId) || sessionId <= 0) {
+    return { ok: false, reason: 'Invalid session_id' }
+  }
+  return { ok: true }
+}
+
+function validatePowerShellSessionCreatePre(args: Record<string, unknown>): ToolValidationResult {
+  const cwdValidation = validateOptionalCwd(args.cwd)
+  return cwdValidation.valid ? { ok: true } : { ok: false, reason: cwdValidation.reason ?? 'Invalid cwd' }
+}
+
+const TOOL_PRE_VALIDATORS: Record<string, ToolPreValidator> = {
+  native_mouse_click: validateMouseClickPre,
+  native_keyboard_type: (args) => validateKeyboardTypePre(args),
+  native_keyboard_hotkey: (args) => validateKeyboardHotkeyPre(args),
+  native_window_focus: (args) => validateWindowFocusPre(args),
+  native_screen_capture: validateScreenCapturePre,
+  native_clipboard_write: (args) => validateClipboardWritePre(args),
+  powershell_execute: (args) => validatePowerShellExecutePre(args),
+  powershell_session_write: (args) => validatePowerShellSessionWritePre(args),
+  powershell_session_create: (args) => validatePowerShellSessionCreatePre(args),
+}
 
 export function validateScreenRegion(
   region: { left?: number; top?: number; width?: number; height?: number } | undefined,
@@ -56,53 +171,7 @@ export function validateNativeToolPre(
   screenW: number,
   screenH: number,
 ): { ok: true } | { ok: false; reason: string } {
-  switch (name) {
-    case 'native_mouse_click': {
-      const x = args.x
-      const y = args.y
-      if (typeof x === 'number' && typeof y === 'number') {
-        const v = validateNativeClick(x, y, screenW, screenH)
-        if (!v.valid) return { ok: false, reason: v.reason ?? 'Bad coordinates' }
-      }
-      return { ok: true }
-    }
-    case 'native_keyboard_type': {
-      const text = args.text
-      if (typeof text !== 'string' || !text.length) return { ok: false, reason: 'Missing text' }
-      if (text.length > MAX_TYPE_CHARS) return { ok: false, reason: 'Text too long' }
-      return { ok: true }
-    }
-    case 'native_keyboard_hotkey': {
-      const combo = args.combo
-      if (typeof combo !== 'string' || !combo.trim()) return { ok: false, reason: 'Missing combo' }
-      if (DANGEROUS_HOTKEY.test(combo)) return { ok: false, reason: 'Blocked hotkey pattern' }
-      return { ok: true }
-    }
-    case 'native_window_focus': {
-      const title = args.title
-      if (typeof title !== 'string' || !title.trim()) return { ok: false, reason: 'Missing title' }
-      if (title.length > 500) return { ok: false, reason: 'Title too long' }
-      return { ok: true }
-    }
-    case 'native_screen_capture': {
-      const region = args.region as { left?: number; top?: number; width?: number; height?: number } | undefined
-      const v = validateScreenRegion(region, screenW, screenH)
-      return v.valid ? { ok: true } : { ok: false, reason: v.reason ?? 'Bad region' }
-    }
-    case 'native_clipboard_write': {
-      const text = args.text
-      if (typeof text !== 'string') return { ok: false, reason: 'Missing text' }
-      if (text.length > MAX_CLIPBOARD_WRITE) return { ok: false, reason: 'Clipboard payload too large' }
-      return { ok: true }
-    }
-    case 'powershell_execute':
-    case 'powershell_session_write': {
-      const cmd = args.command as string
-      if (typeof cmd !== 'string' || !cmd.trim()) return { ok: false, reason: 'Missing command' }
-      const v = validatePowerShellCommand(cmd)
-      return v.safe ? { ok: true } : { ok: false, reason: v.reason ?? 'Blocked command' }
-    }
-    default:
-      return { ok: true }
-  }
+  const validator = TOOL_PRE_VALIDATORS[name]
+  if (!validator) return { ok: true }
+  return validator(args, screenW, screenH)
 }

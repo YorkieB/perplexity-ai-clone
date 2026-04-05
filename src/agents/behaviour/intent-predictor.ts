@@ -125,6 +125,7 @@ export class IntentPredictor {
   }
 
   /** Build transition maps and priors from chronological session streams. */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- builds transition-probability model from multi-channel event streams; splitting would break data locality
   private ingestEventsForModels(events: BehaviourEvent[]): void {
     const bySession = new Map<string, BehaviourEvent[]>()
     for (const e of events) {
@@ -187,6 +188,7 @@ export class IntentPredictor {
     }
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- intent prediction requires evaluating multiple signal channels with weighted fallbacks
   predict(context: PredictContext): PredictResult {
     if (!this.spaces.isEnabled()) {
       return {

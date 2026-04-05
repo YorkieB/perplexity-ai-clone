@@ -188,6 +188,7 @@ export async function trackToolOutcome(outcome: ToolOutcome): Promise<void> {
 /**
  * Fetch learning statistics (for the learning_stats tool).
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- aggregates five distinct stat categories (stats, preferences, corrections, patterns, knowledge) into one formatted report
 export async function getLearningStats(): Promise<string> {
   try {
     const res = await fetch('/api/jarvis-memory/learning-stats')

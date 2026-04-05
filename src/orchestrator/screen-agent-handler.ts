@@ -162,7 +162,9 @@ export class ScreenAgentHandler {
   private lastBehaviourSuggestion: BehaviourSuggestionEvent | null = null
 
   private readonly onIntentResolved = (payload: unknown): void => {
-    void this.routeIntent(payload)
+    this.routeIntent(payload).catch((err: unknown) => {
+      console.error('[ScreenAgentHandler] routeIntent failed', err)
+    })
   }
 
   private readonly onGlobalUserConfirmed = (): void => {

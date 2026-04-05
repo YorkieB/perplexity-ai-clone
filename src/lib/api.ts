@@ -1,6 +1,7 @@
 import { callLlm, llmPrompt } from './llm'
 import { getPreferredChatModel } from './chat-preferences'
 import { Source, FocusMode } from './types'
+import { isSafeScheme, parseUrlSafely } from './url-validation'
 
 export interface TavilySearchResult {
   url: string
@@ -17,6 +18,41 @@ export interface TavilySearchResponse {
 export interface SearchError {
   error: true
   message: string
+}
+
+function normalizeSearchResult(result: TavilySearchResult): Source | null {
+  if (!result || typeof result.url !== 'string') return null
+
+  const parsed = parseUrlSafely(result.url)
+  if (!parsed) return null
+  if (!isSafeScheme(parsed.scheme)) return null
+
+  let url: URL
+  try {
+    url = new URL(result.url)
+  } catch {
+    return null
+  }
+
+  // Defensive: reject credential-bearing URLs even if provider returns one.
+  if (url.username || url.password) return null
+
+  const domain = url.hostname.replace(/^www\./, '')
+  if (!domain) return null
+
+  const title = typeof result.title === 'string' ? result.title : domain
+  const snippet = typeof result.content === 'string' ? result.content : ''
+  const score = typeof result.score === 'number' && Number.isFinite(result.score) ? result.score : 0
+  const confidence = Math.max(0, Math.min(100, Math.round(score * 100)))
+
+  return {
+    url: url.href,
+    title,
+    snippet,
+    confidence,
+    domain,
+    favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=32`,
+  }
 }
 
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
@@ -80,19 +116,15 @@ export async function executeWebSearch(
 
     const data: TavilySearchResponse = await response.json()
 
-    const sources: Source[] = data.results.map((result) => {
-      const url = new URL(result.url)
-      const domain = url.hostname.replace('www.', '')
-      
-      return {
-        url: result.url,
-        title: result.title,
-        snippet: result.content,
-        confidence: Math.round(result.score * 100),
-        domain,
-        favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=32`,
-      }
-    })
+    const sources: Source[] = data.results
+      .map((result) => normalizeSearchResult(result))
+      .filter((source): source is Source => source !== null)
+
+    if (sources.length !== data.results.length) {
+      console.warn(
+        `[API] Dropped ${String(data.results.length - sources.length)} search results with invalid or unsafe URLs.`,
+      )
+    }
 
     return sources
   } catch (error) {

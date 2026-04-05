@@ -21,6 +21,7 @@ export const NOWTV_DEFAULT_BOOKMARKS: readonly NowTvBookmarkRow[] = [
  * Parse `VITE_NOWTV_BOOKMARKS` JSON. Returns `null` if empty or invalid.
  * Expected shape: `[{ "title": "…", "meta": "…", "progress": 0-100, "href": "https://…" }]`
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- JSON env parser with per-field type and range validation; all validation is co-located for correctness
 export function parseNowTvBookmarksEnv(raw: string | undefined): NowTvBookmarkRow[] | null {
   const s = raw?.trim()
   if (!s) return null

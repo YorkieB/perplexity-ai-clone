@@ -1,18 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import type { OAuthToken, UserSettings } from '@/lib/types'
 import { validateOAuthState, exchangeCodeForToken } from '@/lib/oauth'
+import { safeReturnUrl } from '@/lib/oauthReturnUrl'
 import { exchangeSpotifyCodeForToken } from '@/lib/spotify-oauth'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CheckCircle, XCircle, Spinner } from '@phosphor-icons/react'
+import { CheckCircleIcon, SpinnerIcon, XCircleIcon } from '@phosphor-icons/react'
 
 export function OAuthCallback() {
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', {
     apiKeys: {},
     oauthTokens: {},
     oauthClientIds: {},
-    oauthClientSecrets: {},
     connectedServices: {
       googledrive: false,
       onedrive: false,
@@ -22,12 +22,32 @@ export function OAuthCallback() {
     },
   })
 
+  const settingsRef = useRef(settings)
+
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [message, setMessage] = useState('Processing OAuth callback...')
 
+  function navigateToSanitizedReturnUrl(rawReturnUrl: string | null | undefined): void {
+    const safePath = safeReturnUrl(rawReturnUrl)
+    try {
+      const target = new URL(safePath, globalThis.location.origin)
+      if (target.origin !== globalThis.location.origin) {
+        globalThis.location.replace('/')
+        return
+      }
+      globalThis.location.replace(target.pathname + target.search + target.hash)
+    } catch {
+      globalThis.location.replace('/')
+    }
+  }
+
   useEffect(() => {
     void (async () => {
-      const params = new URLSearchParams(window.location.search)
+      const params = new URLSearchParams(globalThis.location.search)
       const code = params.get('code')
       const stateParam = params.get('state')
       const error = params.get('error')
@@ -57,7 +77,7 @@ export function OAuthCallback() {
 
         if (state.provider === 'spotify') {
           providerKey = 'spotify'
-          const clientId = settings?.oauthClientIds.spotify?.trim()
+          const clientId = settingsRef.current?.oauthClientIds.spotify?.trim()
           if (!clientId) {
             setStatus('error')
             setMessage('Spotify Client ID not found. Add it in Settings → OAuth, then connect again.')
@@ -66,16 +86,15 @@ export function OAuthCallback() {
           token = await exchangeSpotifyCodeForToken(code, clientId)
         } else {
           providerKey = state.provider as 'googledrive' | 'onedrive' | 'github' | 'dropbox'
-          const clientId = settings?.oauthClientIds[providerKey]
-          const clientSecret = settings?.oauthClientSecrets[providerKey]
+          const clientId = settingsRef.current?.oauthClientIds[providerKey]?.trim()
 
-          if (!clientId || !clientSecret) {
+          if (!clientId) {
             setStatus('error')
-            setMessage('OAuth credentials not found. Please configure them in settings.')
+            setMessage('OAuth client ID not found. Please configure it in settings.')
             return
           }
 
-          token = await exchangeCodeForToken(state.provider, code, clientId, clientSecret)
+          token = await exchangeCodeForToken(state.provider, code, clientId)
         }
 
         if (!token) {
@@ -85,13 +104,13 @@ export function OAuthCallback() {
         }
 
         setSettings((current) => ({
-          ...current!,
+          ...current,
           oauthTokens: {
-            ...current!.oauthTokens,
+            ...current.oauthTokens,
             [providerKey]: token,
           },
           connectedServices: {
-            ...current!.connectedServices,
+            ...current.connectedServices,
             [providerKey]: true,
           },
         }))
@@ -100,14 +119,15 @@ export function OAuthCallback() {
         setMessage(`Successfully connected to ${state.provider}!`)
 
         setTimeout(() => {
-          window.location.href = state.returnUrl || '/'
+          // SECURITY: Keep redirect same-origin even after sanitization.
+          navigateToSanitizedReturnUrl(state.returnUrl)
         }, 2000)
       } catch (err) {
         setStatus('error')
         setMessage(`Error during OAuth flow: ${err instanceof Error ? err.message : 'Unknown error'}`)
       }
     })()
-    // Single exchange on mount; settings come from KV hook initial/hydrated state
+    // Single exchange on mount; settings accessed via ref to avoid stale closure
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -118,7 +138,7 @@ export function OAuthCallback() {
           {status === 'processing' && (
             <>
               <div className="p-4 bg-primary/10 rounded-full">
-                <Spinner className="text-primary animate-spin" size={48} />
+                <SpinnerIcon className="text-primary animate-spin" size={48} />
               </div>
               <div>
                 <h2 className="text-xl font-bold">Processing Authorization</h2>
@@ -130,7 +150,7 @@ export function OAuthCallback() {
           {status === 'success' && (
             <>
               <div className="p-4 bg-green-500/10 rounded-full">
-                <CheckCircle className="text-green-500" size={48} weight="fill" />
+                <CheckCircleIcon className="text-green-500" size={48} weight="fill" />
               </div>
               <div>
                 <h2 className="text-xl font-bold">Authorization Successful!</h2>
@@ -145,13 +165,13 @@ export function OAuthCallback() {
           {status === 'error' && (
             <>
               <div className="p-4 bg-destructive/10 rounded-full">
-                <XCircle className="text-destructive" size={48} weight="fill" />
+                <XCircleIcon className="text-destructive" size={48} weight="fill" />
               </div>
               <div>
                 <h2 className="text-xl font-bold">Authorization Failed</h2>
                 <p className="text-muted-foreground mt-2">{message}</p>
               </div>
-              <Button onClick={() => (window.location.href = '/')}>
+              <Button onClick={() => (globalThis.location.href = '/')}>
                 Return to Application
               </Button>
             </>

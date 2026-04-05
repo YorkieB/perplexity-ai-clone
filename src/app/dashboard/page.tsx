@@ -97,6 +97,7 @@ export default function ReasoningDashboardPage() {
 
   const lastUpdatedLabel = useMemo(
     () => formatHeartbeatRelative(state.lastHeartbeat),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- relativeClock is a timer tick trigger for re-rendering, not used inside the callback
     [state.lastHeartbeat, relativeClock],
   )
 

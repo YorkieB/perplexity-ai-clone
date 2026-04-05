@@ -1,20 +1,46 @@
 import { useMemo, createElement, Fragment, useState } from 'react'
 import { marked } from 'marked'
 import { cn } from '@/lib/utils'
-import { Copy, Check } from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { Highlight, themes } from 'prism-react-renderer'
 
 interface MarkdownRendererProps {
-  content: string
-  onCitationHover: (index: number | null) => void
+  readonly content: string
+  readonly onCitationHover: (index: number | null) => void
 }
 
 interface ParsedContent {
   type: 'text' | 'citation'
   content: string
   citationNumber?: number
+}
+
+type HighlightLine = { content: string; types: string[] }[]
+
+function renderHighlightedLines(
+  tokens: HighlightLine[],
+  getLineProps: (input: { line: HighlightLine }) => Record<string, unknown>,
+  getTokenProps: (input: { token: { content: string; types: string[] } }) => Record<string, unknown>
+) {
+  const lineKeyCounts = new Map<string, number>()
+  return tokens.map((line) => {
+    const lineBaseKey = line.map((token) => token.content).join('\u0001') || 'empty-line'
+    const lineSeen = lineKeyCounts.get(lineBaseKey) ?? 0
+    lineKeyCounts.set(lineBaseKey, lineSeen + 1)
+    const lineProps = getLineProps({ line })
+    const tokenKeyCounts = new Map<string, number>()
+    return (
+      <div key={`${lineBaseKey}:${String(lineSeen)}`} {...lineProps}>
+        {line.map((token) => {
+          const tokenBaseKey = `${token.types.join('.')}:${token.content}`
+          const tokenSeen = tokenKeyCounts.get(tokenBaseKey) ?? 0
+          tokenKeyCounts.set(tokenBaseKey, tokenSeen + 1)
+          return <span key={`${tokenBaseKey}:${String(tokenSeen)}`} {...getTokenProps({ token })} />
+        })}
+      </div>
+    )
+  })
 }
 
 const languageColors: Record<string, string> = {
@@ -40,7 +66,12 @@ const languageColors: Record<string, string> = {
   c: 'oklch(0.62 0.15 235)',
 }
 
-function CodeBlock({ code, language }: { code: string; language?: string }) {
+interface CodeBlockProps {
+  readonly code: string
+  readonly language?: string
+}
+
+function CodeBlock({ code, language }: CodeBlockProps) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -76,9 +107,9 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
           className="h-7 w-7 p-0 hover:bg-accent/20"
         >
           {copied ? (
-            <Check className="h-3.5 w-3.5" style={{ color: accentColor }} />
+            <span className="h-3.5 w-3.5 text-xs leading-none" style={{ color: accentColor }}>✓</span>
           ) : (
-            <Copy className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+            <span className="h-3.5 w-3.5 text-xs leading-none text-muted-foreground hover:text-foreground">⧉</span>
           )}
         </Button>
       </div>
@@ -99,13 +130,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
               margin: 0,
             }}
           >
-            {tokens.map((line, i) => (
-              <div key={i} {...getLineProps({ line })}>
-                {line.map((token, key) => (
-                  <span key={key} {...getTokenProps({ token })} />
-                ))}
-              </div>
-            ))}
+            {renderHighlightedLines(tokens as HighlightLine[], getLineProps, getTokenProps)}
           </pre>
         )}
       </Highlight>
@@ -130,7 +155,7 @@ function parseCitationsInText(text: string): ParsedContent[] {
     parts.push({
       type: 'citation',
       content: match[0],
-      citationNumber: parseInt(match[1], 10),
+      citationNumber: Number.parseInt(match[1], 10),
     })
 
     lastIndex = match.index + match[0].length
@@ -153,7 +178,7 @@ function processHTMLWithCitations(
   const tempDiv = document.createElement('div')
   tempDiv.innerHTML = html
 
-  const processNode = (node: Node, index: number): React.ReactNode => {
+  const processNode = (node: Node, keyPath: string): React.ReactNode => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent || ''
       const parts = parseCitationsInText(text)
@@ -162,13 +187,17 @@ function processHTMLWithCitations(
         return text
       }
 
-      return parts.map((part, idx) => {
+      const partKeyCounts = new Map<string, number>()
+      return parts.map((part) => {
+        const partBaseKey = `${part.type}:${part.citationNumber ?? 'none'}:${part.content}`
+        const partSeen = partKeyCounts.get(partBaseKey) ?? 0
+        partKeyCounts.set(partBaseKey, partSeen + 1)
         if (part.type === 'citation' && part.citationNumber) {
           const citationNum = part.citationNumber
           return createElement(
             'sup',
             {
-              key: `citation-${citationNum}-${idx}`,
+              key: `citation-${citationNum}-${keyPath}-${String(partSeen)}`,
               className: 'inline-flex items-center justify-center w-5 h-5 ml-0.5 text-xs font-semibold text-accent bg-accent/20 rounded-full cursor-pointer hover:bg-accent hover:text-accent-foreground transition-all hover:scale-110',
               onMouseEnter: () => onCitationHover(citationNum),
               onMouseLeave: () => onCitationHover(null),
@@ -189,23 +218,24 @@ function processHTMLWithCitations(
         const codeElement = element.querySelector('code')
         if (codeElement) {
           const code = codeElement.textContent || ''
-          const language = codeElement.className.match(/language-(\w+)/)?.[1]
+          const languageMatch = /language-(\w+)/.exec(codeElement.className)
+          const language = languageMatch?.[1]
           return createElement(CodeBlock, {
-            key: `code-${index}`,
+            key: `code-${keyPath}`,
             code,
             language,
           })
         }
       }
 
-      const children = Array.from(element.childNodes).map((child, idx) =>
-        processNode(child, idx)
+      const children = Array.from(element.childNodes).map((child, childIndex) =>
+        processNode(child, `${keyPath}.${String(childIndex)}`)
       )
 
       return createElement(
         tagName,
         {
-          key: `${tagName}-${index}`,
+          key: `${tagName}-${keyPath}`,
           className: cn(element.className, getElementClasses(tagName)),
         },
         ...children
@@ -215,8 +245,8 @@ function processHTMLWithCitations(
     return null
   }
 
-  const result = Array.from(tempDiv.childNodes).map((node, idx) =>
-    processNode(node, idx)
+  const result = Array.from(tempDiv.childNodes).map((node, rootIndex) =>
+    processNode(node, `root-${String(rootIndex)}`)
   )
   
   return createElement(Fragment, null, ...result)
@@ -250,7 +280,7 @@ function getElementClasses(tag: string): string {
   return classes[tag] || ''
 }
 
-export function MarkdownRenderer({ content, onCitationHover }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, onCitationHover }: Readonly<MarkdownRendererProps>) {
   const renderedContent = useMemo(() => {
     marked.setOptions({
       gfm: true,

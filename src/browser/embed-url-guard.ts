@@ -4,15 +4,23 @@
  *
  * Keep logic aligned with `isEmbeddableBrowserNavigationUrl` in `electron/main.cjs`.
  */
+
+import { isSafeScheme, parseUrlSafely } from '@/lib/url-validation'
+
 export function isEmbeddableBrowserNavigationUrl(rawUrl: string): boolean {
-  try {
-    const u = new URL(rawUrl)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
-    const p = u.pathname.toLowerCase()
-    if (p.includes('/identity/') || p.includes('idtoken')) return false
-    if (p.includes('/oauth') && (p.includes('/token') || p.endsWith('/token'))) return false
-    return true
-  } catch {
-    return false
-  }
+  // Parse URL safely; reject if parse fails
+  const parsed = parseUrlSafely(rawUrl)
+  if (!parsed) return false
+
+  // Only allow http/https schemes
+  if (!isSafeScheme(parsed.scheme)) return false
+
+  // Reject OAuth and identity provider paths
+  const pathLower = parsed.pathname.toLowerCase()
+  if (pathLower.includes('/identity/') || pathLower.includes('idtoken')) return false
+  if (pathLower.includes('/oauth')) return false
+  if (pathLower.endsWith('/token') || pathLower.includes('/token?')) return false
+  if (pathLower.includes('/authorize') && pathLower.includes('/token')) return false
+
+  return true
 }

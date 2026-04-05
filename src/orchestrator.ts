@@ -131,13 +131,6 @@ const DEFAULT_BASE_SYSTEM_PROMPT =
  */
 let alertMonitoringStarted = false
 
-function isProbablyCodeRelated(message: string): boolean {
-  if (message.includes('```')) return true
-  return /\b(code|function|const |let |import |refactor|recode|rewrite|bug|error|stack|typescript|javascript|python)\b/i.test(
-    message,
-  )
-}
-
 export default class Orchestrator {
   readonly sessionId: string
   readonly sessionIndex: SessionIndex
@@ -363,38 +356,6 @@ export default class Orchestrator {
       `[Orchestrator] Intent classified: ${result.route} (${result.method}, confidence: ${result.confidence.toFixed(2)}, ${String(result.processingTimeMs)}ms)`,
     )
     return result
-  }
-
-  // DEPRECATED: replaced by SemanticRouter in Phase 4
-  // Remove once Phase 4 is validated in production for 1 week
-  private _legacyClassifyIntent(userMessage: string): OrchestratorIntentRoute {
-    const m = userMessage.trim().toLowerCase()
-    if (m.length === 0) return 'conversational'
-
-    if (/^(hi|hello|hey|thanks|thank you|ok thanks|bye)\b/.test(m) && m.length < 100) {
-      return 'conversational'
-    }
-
-    if (
-      /\b(what do you mean|clarify|not sure what|which (file|one)|can you explain what you)\b/.test(m) ||
-      (m.length < 40 && /\?/.test(m) && !isProbablyCodeRelated(userMessage))
-    ) {
-      return 'clarification_needed'
-    }
-
-    if (
-      /\b(who was|when did|what year|capital of|define |what is the difference|how does .+ work|population of)\b/.test(
-        m,
-      )
-    ) {
-      return 'knowledge_lookup'
-    }
-
-    if (isProbablyCodeRelated(userMessage)) {
-      return 'code_instruction'
-    }
-
-    return 'general'
   }
 
   /** Model context-window cap for {@link TOKEN_LIMITS} (telemetry budget %). */

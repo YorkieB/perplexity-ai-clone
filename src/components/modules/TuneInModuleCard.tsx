@@ -179,6 +179,7 @@ export function TuneInModuleCard() {
           if (autoplayPendingRef.current) {
             autoplayPendingRef.current = false
             // Defer play until the new <audio> element mounts (key changes with streamUrl)
+            // eslint-disable-next-line sonarjs/no-nested-functions -- setTimeout callback inside async IIFE inside useEffect; shares audioRef via closure
             setTimeout(() => { audioRef.current?.play().catch(() => {}) }, 100)
           }
         } else {
@@ -475,19 +476,9 @@ export function TuneInModuleCard() {
                                 : 'border-transparent text-foreground hover:border-border hover:bg-muted/50'
                             )}
                           >
-                            {s.imageUrl ? (
-                              <img
-                                src={s.imageUrl}
-                                alt=""
-                                className="size-8 shrink-0 rounded object-cover"
-                                loading="lazy"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <span className="flex size-8 shrink-0 items-center justify-center rounded bg-muted text-[10px] text-muted-foreground">
-                                <Radio className="size-3.5 opacity-80" aria-hidden />
-                              </span>
-                            )}
+                            <span className="flex size-8 shrink-0 items-center justify-center rounded bg-muted text-[10px] text-muted-foreground">
+                              <Radio className="size-3.5 opacity-80" aria-hidden />
+                            </span>
                             <span className="min-w-0 flex-1">
                               <span className="line-clamp-2 font-medium">{s.name}</span>
                               {s.subtext ? (

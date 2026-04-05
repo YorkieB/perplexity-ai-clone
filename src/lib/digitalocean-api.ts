@@ -20,14 +20,10 @@ export async function fetchDigitalOceanModels(apiToken?: string): Promise<Digita
       headers.Authorization = `Bearer ${trimmed}`
     }
 
-    console.log('[DigitalOcean] Fetching models... Token provided:', !!trimmed)
-    
     const response = await fetch('/api/digitalocean/models', {
       headers,
     })
 
-    console.log('[DigitalOcean] Response status:', response.status)
-    
     const text = await response.text()
     if (!response.ok) {
       let message = text
@@ -43,7 +39,6 @@ export async function fetchDigitalOceanModels(apiToken?: string): Promise<Digita
 
     const data = JSON.parse(text) as { models?: DigitalOceanModelOption[] }
     const models = Array.isArray(data.models) ? data.models : []
-    console.log(`[DigitalOcean] Successfully loaded ${models.length} models`)
     return models
   } catch (e) {
     console.error(`[DigitalOcean] Exception fetching models:`, e instanceof Error ? e.message : e)

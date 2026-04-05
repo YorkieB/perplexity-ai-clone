@@ -22,7 +22,7 @@ import { runCode } from './code-runner'
 import { getBalances, getTransactions, getSpendingSummary } from './plaid-api'
 import { searchStories, getStoryContent, getRandomStory, continueReading, jumpToPage, getCurrentBook } from './story-api'
 import { postTweet, readSocialFeed, readComments, replyViaBrowser } from './social-api'
-import { emailListInbox, emailReadMessage, emailSend, emailSearch, emailListFolders, emailMove, emailDelete, emailMarkRead } from './email-api'
+import { emailListInbox, emailReadMessage, emailSend, emailSearch, emailListFolders, emailMove, emailDelete, emailMarkRead, DEFAULT_EMAIL_ACCOUNT, SECONDARY_EMAIL_ACCOUNT } from './email-api'
 import { ensureGoogleAccessToken, listCalendarEvents, createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, listCalendars, formatEventTime } from './google-calendar'
 import type { NewCalendarEvent } from './google-calendar'
 import { driveListFiles, driveSearchFiles, driveReadFile, driveCreateFile, driveCreateFolder, driveMoveFile, driveRenameFile, driveDeleteFile, formatDriveFile } from './google-drive'
@@ -36,13 +36,23 @@ import { trackToolOutcome, analyzeExchangeAsync, getLearningStats } from './lear
 import { DESKTOP_AUTOMATION_TOOLS } from './chat-tools-desktop-automation-tools'
 import { runDesktopAutomationTool } from './desktop-automation-tool-runner'
 import { playTts, getEffectiveTtsVoice } from './tts'
-import {
-  generateImage as replicateBridgeGenerateImage,
-  transcribeAudio as replicateBridgeTranscribeAudio,
-  generateVideo as replicateBridgeGenerateVideo,
-  synthesizeSpeech as replicateBridgeSynthesizeSpeech,
-  searchModels as replicateBridgeSearchModels,
-} from './replicate-service'
+import { sanitizeRedirectUrl } from './url-validation'
+
+function ensureToolArgsRecord(args: unknown): Record<string, unknown> | null {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return null
+  }
+  return args as Record<string, unknown>
+}
+
+function logChatToolValidationFailure(
+  toolName: string,
+  reason: string,
+  details?: Record<string, unknown>,
+): void {
+  const metadata = details ?? {}
+  console.warn(`[ChatTools] Validation failed for ${toolName}: ${reason}`, metadata)
+}
 
 // ── Tool definitions ────────────────────────────────────────────────────────
 
@@ -96,7 +106,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
       },
     },
   },
-  ...(DESKTOP_AUTOMATION_TOOLS as Record<string, unknown>[]),
+  ...DESKTOP_AUTOMATION_TOOLS,
   {
     type: 'function',
     function: {
@@ -754,86 +764,6 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
   {
     type: 'function',
     function: {
-      name: 'replicate_search_models',
-      description:
-        'Search Replicate’s public model index (top matches). Use to discover model ids before running a specific model.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query (e.g. "flux", "whisper", "video")' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'replicate_generate_image',
-      description:
-        'Generate an image via Replicate (default black-forest-labs/flux-2-pro). Returns a URL; image is shown in the Media Canvas when available.',
-      parameters: {
-        type: 'object',
-        properties: {
-          prompt: { type: 'string', description: 'Text prompt for the image' },
-          model: {
-            type: 'string',
-            description: 'Optional Replicate model id (e.g. black-forest-labs/flux-2-pro)',
-          },
-        },
-        required: ['prompt'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'replicate_transcribe',
-      description: 'Transcribe audio from a public URL using OpenAI Whisper on Replicate.',
-      parameters: {
-        type: 'object',
-        properties: {
-          audio_url: { type: 'string', description: 'HTTPS URL of the audio file' },
-        },
-        required: ['audio_url'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'replicate_generate_video',
-      description:
-        'Generate a short video via Replicate (default WAN 2.1 i2v). Optionally pass image_url for image-to-video.',
-      parameters: {
-        type: 'object',
-        properties: {
-          prompt: { type: 'string', description: 'Text prompt for the video' },
-          image_url: { type: 'string', description: 'Optional image URL for image-conditioned video' },
-          model: { type: 'string', description: 'Optional Replicate model id (e.g. wan-video/wan-2.1-i2v-720p)' },
-        },
-        required: ['prompt'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'replicate_tts',
-      description: 'Synthesize speech from text using Kokoro TTS on Replicate. Returns an audio URL.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: 'Text to speak' },
-          voice: { type: 'string', description: 'Voice id (default af_heart)' },
-        },
-        required: ['text'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'generate_music',
       description: 'Generate a full song from a text description using Suno AI. Returns a playable audio track in the Music Player.',
       parameters: {
@@ -1040,11 +970,11 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'email_list_inbox',
-      description: 'List recent emails from the inbox. Shows sender, subject, date, and read status. Defaults to contact@yorkiebrown.uk unless another account is specified.',
+      description: `List recent emails from the inbox. Shows sender, subject, date, and read status. Defaults to ${DEFAULT_EMAIL_ACCOUNT} unless another account is specified.`,
       parameters: {
         type: 'object',
         properties: {
-          account: { type: 'string', description: 'Email account: "contact@yorkiebrown.uk" or "yorkie@yorkiebrown.uk". Defaults to contact@.' },
+          account: { type: 'string', description: `Email account: "${DEFAULT_EMAIL_ACCOUNT}" or "${SECONDARY_EMAIL_ACCOUNT}". Defaults to contact@.` },
           folder: { type: 'string', description: 'IMAP folder (default: INBOX). Use email_list_folders to see available folders.' },
           limit: { type: 'number', description: 'Max emails to return (default: 20)' },
         },
@@ -1075,7 +1005,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
       parameters: {
         type: 'object',
         properties: {
-          account: { type: 'string', description: 'Email account to send from (default: contact@yorkiebrown.uk)' },
+          account: { type: 'string', description: `Email account to send from (default: ${DEFAULT_EMAIL_ACCOUNT})` },
           to: { type: 'string', description: 'Recipient email address(es), comma-separated' },
           subject: { type: 'string', description: 'Email subject line' },
           body: { type: 'string', description: 'Email body text' },
@@ -1490,8 +1420,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'vonage_send_sms',
-      description:
-        'Send an SMS text message via Vonage (server must have VONAGE_* env vars). You are capable of this when configured — use for appointment reminders or short notifications the user asked you to send. Respect consent and local rules.',
+      description: 'Send an SMS text message via Vonage (server must have VONAGE_* env vars). Use for appointment reminders or short notifications the user asked you to send. Respect consent and local rules.',
       parameters: {
         type: 'object',
         properties: {
@@ -1506,8 +1435,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     type: 'function',
     function: {
       name: 'vonage_voice_call',
-      description:
-        'Place an outbound phone call via Vonage Voice API. When the person answers, Vonage TTS speaks your message aloud (one-way scripted announcement only — not a live back-and-forth). Requires Voice app credentials in .env.',
+      description: 'Place an outbound phone call via Vonage Voice API. When the person answers, Vonage text-to-speech speaks your message aloud (scripted announcement only). Requires Voice app credentials (VONAGE_APPLICATION_ID + private key) in .env.',
       parameters: {
         type: 'object',
         properties: {
@@ -1524,7 +1452,7 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
     function: {
       name: 'vonage_ai_voice_call',
       description:
-        'Start a live two-way AI phone call via Vonage: caller audio is streamed to the server WebSocket bridge (speech-to-text → model → text-to-speech). You participate in the conversation as Jarvis. Requires Voice app credentials, VONAGE_PUBLIC_WS_URL (public wss:// to the bridge), optional VONAGE_WS_SECRET, and the AI voice bridge running. For a one-shot spoken script only, use vonage_voice_call instead.',
+        'Start a live two-way AI phone call via Vonage: caller audio is streamed to the server WebSocket bridge (speech-to-text → model → text-to-speech back to the line). Requires Voice app credentials, VONAGE_PUBLIC_WS_URL (public wss:// to your bridge, e.g. ngrok), optional VONAGE_WS_SECRET, and the AI voice bridge enabled/running. Do not use for a simple one-shot spoken script — use vonage_voice_call instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -1534,27 +1462,11 @@ const CHAT_TOOLS: Record<string, unknown>[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'vonage_read_sms',
-      description:
-        'Read recent inbound SMS messages received via Vonage. Returns the latest messages with sender number, text content, and timestamp. Use when the user asks about received texts or incoming messages.',
-      parameters: {
-        type: 'object',
-        properties: {
-          limit: { type: 'number', description: 'Max messages to return (default 20)' },
-        },
-      },
-    },
-  },
 ]
 
 // ── Tool executor ───────────────────────────────────────────────────────────
 
 interface ToolExecutorDeps {
-  /** Model id for nested LLM calls (e.g. browser_task agent) — include `do:` prefix for DigitalOcean. */
-  primaryChatModel?: string
   browserControl: BrowserControl | null
   guideMode: boolean
   onStatus?: (status: string) => void
@@ -1571,11 +1483,11 @@ interface ToolExecutorDeps {
   onMusicGeneratingLabel?: (label: string) => void
   userSettings?: UserSettings | null
   setUserSettings?: (fn: (prev: UserSettings) => UserSettings) => void
+  signal?: AbortSignal
 }
 
 function createToolExecutor(deps: ToolExecutorDeps) {
   const {
-    primaryChatModel,
     browserControl, guideMode, onStatus,
     mediaCanvasControl, onMediaGenerating, onMediaGeneratingLabel, openMediaCanvas,
     openCodeEditor,
@@ -1585,6 +1497,20 @@ function createToolExecutor(deps: ToolExecutorDeps) {
   const getIde = (): CodeEditorControl | null => {
     if (deps.getCodeEditorControl) return deps.getCodeEditorControl()
     return deps.codeEditorControl ?? null
+  }
+
+  const asStringArg = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback)
+  const asOptionalStringArg = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined)
+  const asBoundedStringArg = (value: unknown, maxLen: number): string | null => {
+    if (typeof value !== 'string') return null
+    const trimmed = value.trim()
+    if (!trimmed || trimmed.length > maxLen) return null
+    return trimmed
+  }
+  const asBoundedIntegerArg = (value: unknown, min: number, max: number): number | null => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) return null
+    if (value < min || value > max) return null
+    return value
   }
 
   const getGoogleToken = async (): Promise<string> => {
@@ -1601,16 +1527,28 @@ function createToolExecutor(deps: ToolExecutorDeps) {
     return token
   }
 
-  return async (name: string, args: Record<string, unknown>): Promise<string> => {
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- top-level tool dispatcher returned as factory; all tool branches share closure over context
+  return async (name: string, args: Record<string, unknown>): Promise<string> => { // NOSONAR
+    if (deps.signal?.aborted) return 'Operation cancelled.'
+
+    const normalizedArgs = ensureToolArgsRecord(args)
+    if (!normalizedArgs) {
+      logChatToolValidationFailure(name, 'arguments payload was not an object')
+      return 'Invalid tool arguments.'
+    }
+
+
     /** Control object exists while CodeEditorModal is mounted, but Monaco is only live when the modal is open. */
     if (name.startsWith('ide_') || name.startsWith('git_')) {
       let ide = getIde()
-      if (!ide || !ide.isOpen()) {
+      if (!ide?.isOpen()) {
         openCodeEditor?.()
         for (let i = 0; i < 30; i++) {
+          if (deps.signal?.aborted) return 'Operation cancelled.'
           await new Promise((r) => setTimeout(r, 150))
           ide = getIde()
           if (ide?.isOpen()) {
+            if (deps.signal?.aborted) return 'Operation cancelled.'
             await new Promise((r) => setTimeout(r, 500))
             break
           }
@@ -1618,10 +1556,14 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
     }
     const codeEditorControl = getIde()
-    switch (name) {
+    // eslint-disable-next-line sonarjs/max-switch-cases -- each case is a named tool handler; extracting into sub-dispatchers would not reduce coupling
+    switch (name) { // NOSONAR
       case 'web_search': {
-        const query = args.query as string
-        if (!query) return 'Error: missing query.'
+        const query = asBoundedStringArg(args.query, 2000)
+        if (!query) {
+          logChatToolValidationFailure(name, 'missing or invalid query', { query: args.query })
+          return 'Error: missing query.'
+        }
         onStatus?.(`Searching the web for "${query}"...`)
         try {
           const results = await executeWebSearch(query, 'all', false)
@@ -1638,53 +1580,88 @@ function createToolExecutor(deps: ToolExecutorDeps) {
 
       case 'browser_action': {
         if (!browserControl) return 'Browser is not available.'
-        const action = args.action as string
+        const action = typeof args.action === 'string' ? args.action : ''
+        if (!action) {
+          logChatToolValidationFailure(name, 'missing action', { action: args.action })
+          return 'Missing action.'
+        }
         onStatus?.(`Browser: ${action}...`)
 
         switch (action) {
           case 'navigate': {
-            if (!args.url) return 'Missing url.'
+            const rawUrl = typeof args.url === 'string' ? args.url.trim() : ''
+            if (!rawUrl) {
+              logChatToolValidationFailure(name, 'missing url for navigate', { action, url: args.url })
+              return 'Missing url.'
+            }
+            const safeUrl = sanitizeRedirectUrl(rawUrl, [])
+            if (!safeUrl) {
+              logChatToolValidationFailure(name, 'rejected unsafe navigate url', { action, url: rawUrl.slice(0, 256) })
+              return 'Invalid or unsafe url.'
+            }
             browserControl.openBrowser()
             await new Promise(r => setTimeout(r, 300))
-            const res = await browserControl.navigate(args.url as string)
+            const res = await browserControl.navigate(safeUrl)
             await new Promise(r => setTimeout(r, 1000))
             return res.ok ? `Navigated to ${res.url}. Title: ${res.title || '(no title)'}. Use snapshot to see elements.` : 'Navigation failed. The URL may be wrong — try Google search.'
           }
           case 'snapshot': return await browserControl.snapshot()
           case 'click': {
             if (!args.ref) return 'Missing ref.'
-            const r = await browserControl.click(args.ref as string)
+            const ref = asStringArg(args.ref)
+            const r = await browserControl.click(ref)
             await new Promise(r => setTimeout(r, 1200))
-            return r.ok ? `Clicked ${args.ref}. Use snapshot to see the updated page.` : `Could not click ${args.ref}.`
+            return r.ok ? `Clicked ${ref}. Use snapshot to see the updated page.` : `Could not click ${ref}.`
           }
           case 'type': {
             if (!args.ref || !args.text) return 'Missing ref or text.'
-            const r = await browserControl.type(args.ref as string, args.text as string)
-            return r.ok ? `Typed "${args.text}" into ${args.ref}.` : `Could not type into ${args.ref}.`
+            const ref = asStringArg(args.ref)
+            const text = asStringArg(args.text)
+            const r = await browserControl.type(ref, text)
+            return r.ok ? `Typed "${text}" into ${ref}.` : `Could not type into ${ref}.`
           }
           case 'extract_text': return (await browserControl.extractText()) || '(empty page)'
           case 'scroll': {
-            const dir = (args.direction === 'up' ? 'up' : 'down') as 'up' | 'down'
+            const direction = asBoundedStringArg(args.direction, 16)
+            if (direction !== 'up' && direction !== 'down') {
+              logChatToolValidationFailure(name, 'invalid scroll direction', { action, direction: args.direction })
+              return 'Missing or invalid direction. Use "up" or "down".'
+            }
+            const dir: 'up' | 'down' = direction
             await browserControl.scroll(dir)
             return `Scrolled ${dir}.`
           }
           case 'go_back': await browserControl.goBack(); return 'Went back.'
           case 'go_forward': await browserControl.goForward(); return 'Went forward.'
           case 'new_tab': {
-            const res = await browserControl.newTab(args.url as string | undefined)
+            const urlArg = asOptionalStringArg(args.url)?.trim()
+            const safeUrl = urlArg ? (sanitizeRedirectUrl(urlArg, []) ?? undefined) : undefined
+            if (urlArg && safeUrl === undefined) {
+              logChatToolValidationFailure(name, 'rejected unsafe new_tab url', { action, url: urlArg.slice(0, 256) })
+              return 'Invalid or unsafe url.'
+            }
+            const res = await browserControl.newTab(safeUrl)
             if (!res.ok) return 'Failed to open new tab.'
-            if (args.url) await new Promise(r => setTimeout(r, 1500))
+            if (safeUrl) await new Promise(r => setTimeout(r, 1500))
             return `Opened new tab (id: ${res.tabId}).`
           }
           case 'switch_tab': {
-            if (!args.tab_id) return 'Missing tab_id.'
-            const r = await browserControl.switchTab(args.tab_id as string)
-            return r.ok ? `Switched to tab ${args.tab_id}.` : `Tab not found.`
+            const tabId = asBoundedStringArg(args.tab_id, 128)
+            if (!tabId) {
+              logChatToolValidationFailure(name, 'invalid switch_tab tab_id', { action, tabId: args.tab_id })
+              return 'Missing or invalid tab_id.'
+            }
+            const r = await browserControl.switchTab(tabId)
+            return r.ok ? `Switched to tab ${tabId}.` : `Tab not found.`
           }
           case 'close_tab': {
-            if (!args.tab_id) return 'Missing tab_id.'
-            const r = await browserControl.closeTab(args.tab_id as string)
-            return r.ok ? `Closed tab ${args.tab_id}.` : `Could not close tab.`
+            const tabId = asBoundedStringArg(args.tab_id, 128)
+            if (!tabId) {
+              logChatToolValidationFailure(name, 'invalid close_tab tab_id', { action, tabId: args.tab_id })
+              return 'Missing or invalid tab_id.'
+            }
+            const r = await browserControl.closeTab(tabId)
+            return r.ok ? `Closed tab ${tabId}.` : `Could not close tab.`
           }
           case 'list_tabs': {
             const tabs = browserControl.listTabs()
@@ -1696,14 +1673,21 @@ function createToolExecutor(deps: ToolExecutorDeps) {
 
       case 'browser_task': {
         if (!browserControl) return 'Browser is not available.'
-        const goal = args.goal as string
-        if (!goal) return 'Missing goal.'
+        const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+        if (!goal) {
+          logChatToolValidationFailure(name, 'missing goal', { goal: args.goal })
+          return 'Missing goal.'
+        }
+        if (goal.length > 4000) {
+          logChatToolValidationFailure(name, 'goal exceeded max length', { length: goal.length })
+          return 'Goal is too long.'
+        }
         onStatus?.(`Starting autonomous browser task: "${goal}"`)
         try {
           const vgm = deps.userSettings?.voiceGuidanceMode ?? (guideMode ? 'guide' : 'copilot')
           const result = await runBrowserAgent(goal, browserControl, {
             maxSteps: 25,
-            model: primaryChatModel?.trim() || 'gpt-4o-mini',
+            model: 'gpt-4o-mini',
             guideMode: vgm === 'guide',
             voiceGuidanceMode: vgm,
             onSpeakNarration: (text) => {
@@ -1770,14 +1754,14 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'generate_video': {
-        const prompt = args.prompt as string
+        const prompt = asBoundedStringArg(args.prompt, 4000)
         if (!prompt) return 'Missing prompt.'
         onStatus?.('Generating video...')
         onMediaGenerating?.(true)
         onMediaGeneratingLabel?.('Generating video...')
         openMediaCanvas?.()
         try {
-          const dur = ([4, 8, 12].includes(args.duration as number) ? args.duration : 4) as 4 | 8 | 12
+          const dur = (asBoundedIntegerArg(args.duration, 4, 12) ?? 4) as 4 | 8 | 12
           const result = await createVideo(prompt, { seconds: dur }, (progress) => {
             onMediaGeneratingLabel?.(`Generating video... ${Math.round(progress)}%`)
           })
@@ -1883,7 +1867,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         const fid = args.file_id as string | undefined
         if (fid) {
           const content = codeEditorControl.getFileContent(fid)
-          return content != null ? content : `File ${fid} not found.`
+          return content ?? `File ${fid} not found.`
         }
         const active = codeEditorControl.getActiveFile()
         if (!active) return 'No active file.'
@@ -1904,8 +1888,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
 
       case 'ide_rename_file': {
         if (!codeEditorControl) return 'IDE is not available.'
-        const ok = codeEditorControl.renameFile(args.file_id as string, args.new_name as string)
-        return ok ? `File renamed to "${args.new_name}".` : 'File not found.'
+        const newName = asStringArg(args.new_name)
+        const ok = codeEditorControl.renameFile(args.file_id as string, newName)
+        return ok ? `File renamed to "${newName}".` : 'File not found.'
       }
 
       case 'ide_run_and_fix': {
@@ -2018,7 +2003,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
 
       case 'ide_run_terminal': {
         if (!codeEditorControl) return 'IDE is not available.'
-        const cmd = String(args.command ?? '').trim()
+        const cmd = asStringArg(args.command).trim()
         if (!cmd) return 'Provide command (e.g. npm run build).'
         const r = await codeEditorControl.runTerminalCommand(cmd)
         let out = ''
@@ -2170,8 +2155,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
           const ide = getIde()
           if (!ide) return 'Git requires the IDE to be open with a workspace folder.'
           const diffArgs = ['diff']
-          if (args.staged) diffArgs.push('--cached')
-          if (args.file) diffArgs.push('--', args.file as string)
+          if (args.staged === true) diffArgs.push('--cached')
+          const fileArg = asOptionalStringArg(args.file)?.trim()
+          if (fileArg) diffArgs.push('--', fileArg)
           const r = await ide.runGitCommand(diffArgs)
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
           return out ? out.slice(0, 8000) : 'No diff output (nothing changed).'
@@ -2185,7 +2171,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         try {
           const ide = getIde()
           if (!ide) return 'Git requires the IDE to be open with a workspace folder.'
-          const count = Math.min(Number(args.count) || 15, 50)
+          const count = asBoundedIntegerArg(args.count, 1, 50) ?? 15
           const r = await ide.runGitCommand(['log', `--oneline`, `-${count}`, '--decorate'])
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
           return out || 'No commits found.'
@@ -2195,7 +2181,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_add': {
-        const files = (args.files as string || '').trim()
+        const files = asBoundedStringArg(args.files, 4000)
         if (!files) return 'Missing files argument.'
         onStatus?.(`Staging: ${files}…`)
         try {
@@ -2211,7 +2197,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_commit': {
-        const message = (args.message as string || '').trim()
+        const message = asBoundedStringArg(args.message, 500)
         if (!message) return 'Missing commit message.'
         onStatus?.('Committing…')
         try {
@@ -2227,8 +2213,8 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_push': {
-        const remote = (args.remote as string || 'origin').trim()
-        const branch = (args.branch as string || '').trim()
+        const remote = asBoundedStringArg(args.remote, 128) ?? 'origin'
+        const branch = asOptionalStringArg(args.branch)?.trim() ?? ''
         onStatus?.(`Pushing to ${remote}…`)
         try {
           const ide = getIde()
@@ -2245,8 +2231,8 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_pull': {
-        const remote = (args.remote as string || 'origin').trim()
-        const branch = (args.branch as string || '').trim()
+        const remote = asBoundedStringArg(args.remote, 128) ?? 'origin'
+        const branch = asOptionalStringArg(args.branch)?.trim() ?? ''
         onStatus?.(`Pulling from ${remote}…`)
         try {
           const ide = getIde()
@@ -2267,7 +2253,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         try {
           const ide = getIde()
           if (!ide) return 'Git requires the IDE to be open with a workspace folder.'
-          const createName = (args.create as string || '').trim()
+          const createName = asOptionalStringArg(args.create)?.trim() ?? ''
           if (createName) {
             const r = await ide.runGitCommand(['checkout', '-b', createName])
             const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -2283,7 +2269,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_checkout': {
-        const branch = (args.branch as string || '').trim()
+        const branch = asBoundedStringArg(args.branch, 128)
         if (!branch) return 'Missing branch name.'
         onStatus?.(`Checking out ${branch}…`)
         try {
@@ -2299,7 +2285,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'git_stash': {
-        const action = (args.action as string || 'stash').trim()
+        const actionRaw = asOptionalStringArg(args.action)?.trim().toLowerCase() ?? 'stash'
+        if (!['stash', 'pop', 'list'].includes(actionRaw)) return 'Invalid action. Use stash, pop, or list.'
+        const action = actionRaw as 'stash' | 'pop' | 'list'
         onStatus?.(`git stash ${action}…`)
         try {
           const ide = getIde()
@@ -2311,7 +2299,8 @@ function createToolExecutor(deps: ToolExecutorDeps) {
             stashArgs = ['stash', 'list']
           } else {
             stashArgs = ['stash', 'push']
-            if (args.message) stashArgs.push('-m', args.message as string)
+            const message = asOptionalStringArg(args.message)?.trim()
+            if (message) stashArgs.push('-m', message)
           }
           const r = await ide.runGitCommand(stashArgs)
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -2323,40 +2312,48 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'search_huggingface': {
-        const query = args.query as string
+        const query = asBoundedStringArg(args.query, 2000)
         if (!query) return 'Missing query.'
+        const typeRaw = asOptionalStringArg(args.type)?.trim()
+        const type: 'datasets' | 'models' = typeRaw === 'models' ? 'models' : 'datasets'
         onStatus?.(`Searching Hugging Face for "${query}"...`)
         try {
-          return await searchHuggingFace(query, (args.type as 'datasets' | 'models') || 'datasets')
+          return await searchHuggingFace(query, type)
         } catch (e) {
           return `HuggingFace search failed: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 
       case 'fetch_dataset_sample': {
-        const datasetId = args.dataset_id as string
+        const datasetId = asBoundedStringArg(args.dataset_id, 300)
         if (!datasetId) return 'Missing dataset_id.'
+        const split = asOptionalStringArg(args.split)
+        const config = asOptionalStringArg(args.config)
         onStatus?.(`Fetching sample from dataset "${datasetId}"...`)
         try {
-          return await fetchDatasetSample(datasetId, args.split as string, args.config as string)
+          return await fetchDatasetSample(datasetId, split, config)
         } catch (e) {
           return `Dataset fetch failed: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 
       case 'search_github': {
-        const query = args.query as string
+        const query = asBoundedStringArg(args.query, 2000)
         if (!query) return 'Missing query.'
+        const typeRaw = asOptionalStringArg(args.type)?.trim()
+        const type: 'repositories' | 'code' = typeRaw === 'code' ? 'code' : 'repositories'
         onStatus?.(`Searching GitHub for "${query}"...`)
         try {
-          return await searchGitHub(query, (args.type as 'repositories' | 'code') || 'repositories')
+          return await searchGitHub(query, type)
         } catch (e) {
           return `GitHub search failed: ${e instanceof Error ? e.message : String(e)}`
         }
       }
 
       case 'fetch_github_file': {
-        const { owner, repo, path } = args as { owner?: string; repo?: string; path?: string }
+        const owner = asBoundedStringArg(args.owner, 100)
+        const repo = asBoundedStringArg(args.repo, 100)
+        const path = asBoundedStringArg(args.path, 2000)
         if (!owner || !repo || !path) return 'Missing owner, repo, or path.'
         onStatus?.(`Fetching ${owner}/${repo}/${path}...`)
         try {
@@ -2370,16 +2367,18 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       }
 
       case 'generate_music': {
-        const prompt = args.prompt as string
+        const prompt = asBoundedStringArg(args.prompt, 4000)
         if (!prompt) return 'Missing prompt.'
+        const style = asOptionalStringArg(args.style)
+        const instrumental = typeof args.instrumental === 'boolean' ? args.instrumental : undefined
         onStatus?.('Generating music...')
         onMusicGenerating?.(true)
         onMusicGeneratingLabel?.('Generating music — this takes 1–3 minutes...')
         openMusicPlayer?.()
         try {
           const tracks = await generateMusic(prompt, {
-            style: args.style as string | undefined,
-            instrumental: args.instrumental as boolean | undefined,
+            style,
+            instrumental,
           })
           if (tracks.length > 0) {
             const track = tracks[0]
@@ -2414,7 +2413,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       case 'get_transactions': {
         onStatus?.('Fetching transactions...')
         try {
-          return await getTransactions(args.start_date as string | undefined, args.end_date as string | undefined)
+          const startDate = asOptionalStringArg(args.start_date)
+          const endDate = asOptionalStringArg(args.end_date)
+          return await getTransactions(startDate, endDate)
         } catch (e) {
           return `Failed to get transactions: ${e instanceof Error ? e.message : String(e)}`
         }
@@ -2423,7 +2424,9 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       case 'get_spending_summary': {
         onStatus?.('Analysing your finances...')
         try {
-          return await getSpendingSummary(args.start_date as string | undefined, args.end_date as string | undefined)
+          const startDate = asOptionalStringArg(args.start_date)
+          const endDate = asOptionalStringArg(args.end_date)
+          return await getSpendingSummary(startDate, endDate)
         } catch (e) {
           return `Failed to get spending summary: ${e instanceof Error ? e.message : String(e)}`
         }
@@ -2590,7 +2593,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         onStatus?.('Reading email...')
         try {
           return await emailReadMessage(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             uid,
           )
         } catch (e) {
@@ -2606,7 +2609,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         onStatus?.('Sending email...')
         try {
           return await emailSend(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             to, subject, body,
             args.replyToMessageId as string | undefined,
           )
@@ -2621,7 +2624,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         onStatus?.(`Searching emails for "${query}"...`)
         try {
           return await emailSearch(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             query,
             args.folder as string | undefined,
             args.limit as number | undefined,
@@ -2647,7 +2650,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         onStatus?.('Moving email...')
         try {
           return await emailMove(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             uid, targetFolder,
           )
         } catch (e) {
@@ -2661,7 +2664,7 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         onStatus?.('Deleting email...')
         try {
           return await emailDelete(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             uid,
           )
         } catch (e) {
@@ -2672,12 +2675,13 @@ function createToolExecutor(deps: ToolExecutorDeps) {
       case 'email_mark_read': {
         const uid = args.uid as number
         if (typeof args.read !== 'boolean') return 'Missing uid or read flag.'
+        const readFlag = args.read
         onStatus?.(`Marking email as ${args.read ? 'read' : 'unread'}...`)
         try {
           return await emailMarkRead(
-            (args.account as string) || 'contact@yorkiebrown.uk',
+            (args.account as string) || DEFAULT_EMAIL_ACCOUNT,
             uid,
-            args.read as boolean,
+            readFlag,
           )
         } catch (e) {
           return `Failed to update email: ${e instanceof Error ? e.message : String(e)}`
@@ -3049,115 +3053,6 @@ function createToolExecutor(deps: ToolExecutorDeps) {
         }
       }
 
-      case 'vonage_read_sms': {
-        const limit = typeof args.limit === 'number' ? args.limit : 20
-        try {
-          const { vonageReadInboundSms } = await import('@/lib/vonage-api')
-          const messages = await vonageReadInboundSms(limit)
-          if (messages.length === 0) return 'No inbound SMS messages found.'
-          return messages.map(m => `From ${m.from} (${m.receivedAt}): ${m.text}`).join('\n')
-        } catch (e) {
-          return `Failed to read SMS: ${e instanceof Error ? e.message : String(e)}`
-        }
-      }
-
-      case 'replicate_search_models': {
-        const query = String(args.query ?? '').trim()
-        if (!query) return 'Missing query.'
-        onStatus?.('Searching Replicate models...')
-        try {
-          const { results } = await replicateBridgeSearchModels({ query })
-          if (results.length === 0) return 'No models found.'
-          return results
-            .map(
-              (r, i) =>
-                `[${i + 1}] ${r.name}\n${r.description.slice(0, 400)}${r.description.length > 400 ? '…' : ''}\nlatest: ${r.latest_version_id ?? '(unknown)'}`,
-            )
-            .join('\n\n')
-        } catch (e) {
-          return `Replicate search failed: ${e instanceof Error ? e.message : String(e)}`
-        }
-      }
-
-      case 'replicate_generate_image': {
-        const prompt = String(args.prompt ?? '').trim()
-        if (!prompt) return 'Missing prompt.'
-        onStatus?.('Replicate: generating image...')
-        onMediaGenerating?.(true)
-        onMediaGeneratingLabel?.('Replicate image...')
-        openMediaCanvas?.()
-        try {
-          const model =
-            typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
-          const result = await replicateBridgeGenerateImage({ prompt, model })
-          const u = result.url
-          if (u && mediaCanvasControl) {
-            mediaCanvasControl.showImage(u, prompt)
-          }
-          const extra = result.local_path ? `\nSaved locally: ${result.local_path}` : ''
-          return `Image generated.${u ? ` URL: ${u}` : ''}${extra}`
-        } catch (e) {
-          return `Replicate image failed: ${e instanceof Error ? e.message : String(e)}`
-        } finally {
-          onMediaGenerating?.(false)
-          onMediaGeneratingLabel?.('')
-        }
-      }
-
-      case 'replicate_transcribe': {
-        const audioUrl = String(args.audio_url ?? '').trim()
-        if (!audioUrl) return 'Missing audio_url.'
-        onStatus?.('Replicate: transcribing audio...')
-        try {
-          const { text } = await replicateBridgeTranscribeAudio({ audio_url: audioUrl })
-          return text || '(empty transcript)'
-        } catch (e) {
-          return `Replicate transcribe failed: ${e instanceof Error ? e.message : String(e)}`
-        }
-      }
-
-      case 'replicate_generate_video': {
-        const prompt = String(args.prompt ?? '').trim()
-        if (!prompt) return 'Missing prompt.'
-        onStatus?.('Replicate: generating video...')
-        onMediaGenerating?.(true)
-        onMediaGeneratingLabel?.('Replicate video...')
-        openMediaCanvas?.()
-        try {
-          const imageUrl =
-            typeof args.image_url === 'string' && args.image_url.trim() !== '' ? args.image_url.trim() : undefined
-          const model =
-            typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
-          const result = await replicateBridgeGenerateVideo({ prompt, image_url: imageUrl, model })
-          const u = result.url
-          if (u && mediaCanvasControl) {
-            mediaCanvasControl.showVideo(u, prompt)
-          }
-          const extra = result.local_path ? `\nSaved locally: ${result.local_path}` : ''
-          return `Video generated.${u ? ` URL: ${u}` : ''}${extra}`
-        } catch (e) {
-          return `Replicate video failed: ${e instanceof Error ? e.message : String(e)}`
-        } finally {
-          onMediaGenerating?.(false)
-          onMediaGeneratingLabel?.('')
-        }
-      }
-
-      case 'replicate_tts': {
-        const text = String(args.text ?? '').trim()
-        if (!text) return 'Missing text.'
-        onStatus?.('Replicate: synthesizing speech...')
-        try {
-          const voice =
-            typeof args.voice === 'string' && args.voice.trim() !== '' ? args.voice.trim() : undefined
-          const result = await replicateBridgeSynthesizeSpeech({ text, voice })
-          const u = result.url
-          return u ? `Speech synthesized. URL: ${u}` : 'Speech synthesis returned no URL.'
-        } catch (e) {
-          return `Replicate TTS failed: ${e instanceof Error ? e.message : String(e)}`
-        }
-      }
-
       case 'native_mouse_click':
       case 'native_keyboard_type':
       case 'native_keyboard_hotkey':
@@ -3240,8 +3135,8 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
 
   const hasBrowser = Boolean(browserControl)
   const hasNative =
-    typeof window !== 'undefined' &&
-    Boolean((window as unknown as { jarvisNative?: unknown }).jarvisNative)
+    globalThis.window !== undefined &&
+    Boolean((globalThis as unknown as { jarvisNative?: unknown }).jarvisNative)
   const nativeControlEnabled = options.userSettings?.nativeControlEnabled !== false
   const nativeToolsAllowed = hasNative && nativeControlEnabled
   let tools = CHAT_TOOLS
@@ -3261,13 +3156,13 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
   const toolsUsed: string[] = []
 
   const rawExecutor = createToolExecutor({
-    primaryChatModel: model,
     browserControl, guideMode, onStatus,
     mediaCanvasControl, onMediaGenerating, onMediaGeneratingLabel, openMediaCanvas,
     codeEditorControl, getCodeEditorControl, openCodeEditor,
     musicPlayerControl, openMusicPlayer, onMusicGenerating, onMusicGeneratingLabel,
     userSettings: options.userSettings,
     setUserSettings: options.setUserSettings,
+    signal,
   })
 
   const trackedExecutor = async (name: string, args: Record<string, unknown>): Promise<string> => {
@@ -3323,10 +3218,11 @@ export async function runChatWithTools(options: ChatWithToolsOptions): Promise<C
       sourceEvidence,
       toolOutputs,
       strictMode: true,
-      auditModel: model,
     })
     finalContent = validated.response
-  } catch { /* use original content */ }
+  } catch (error) {
+    console.warn('[ChatTools] Response verification failed; using original model response.', error)
+  }
 
   const { answer, thinking } = splitThinkingFromModelContent(finalContent, '')
 

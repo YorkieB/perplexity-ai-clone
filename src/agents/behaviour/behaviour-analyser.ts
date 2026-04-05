@@ -76,6 +76,7 @@ export class BehaviourAnalyser {
   /**
    * Compute a DailyAnalysis object from a list of BehaviourEvent.
    */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- aggregates multiple event-type statistics across sessions; decomposition would obscure the analysis contract
   computeDailyAnalysis(date: string, events: BehaviourEvent[]): DailyAnalysis {
     const sessionIds = new Set<string>()
     for (const e of events) {
@@ -116,7 +117,7 @@ export class BehaviourAnalyser {
       }
     }
 
-    let peakHours: number[] = []
+    const peakHours: number[] = []
     if (events.length > 0) {
       const max = Math.max(...hourCounts)
       for (let h = 0; h < 24; h += 1) {

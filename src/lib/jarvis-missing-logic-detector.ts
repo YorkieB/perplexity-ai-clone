@@ -224,9 +224,11 @@ function pushIssue(
   })
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- static-analysis scanner with ~30 pattern checks; each check is an independent heuristic
 function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[]) {
   // Unreachable after return/throw
-  const unreachable = /(?:return|throw)\s+[^;]+;\s*\n\s*([^\s}])/gm
+  // eslint-disable-next-line sonarjs/slow-regex -- code strings are bounded editor content, not user-controlled HTTP input
+  const unreachable = /(?:return|throw)\s+[^;]{1,200};\s*\n\s*([^\s}])/gm
   let m: RegExpExecArray | null
   while ((m = unreachable.exec(code)) !== null) {
     if (!/^(case|default|if|\/\/|\/\*|\})/.test(m[1])) {
@@ -392,7 +394,7 @@ function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[
   }
 
   // Imports
-  const importLines = code.match(/^import\s+.+$/gm) || []
+  const importLines = code.match(/^import\s+.{1,400}$/gm) || []
   const specifiers = new Map<string, number>()
   for (const line of importLines) {
     const names = [...line.matchAll(/\b(\w+)\b/g)].map((x) => x[1]!)
@@ -402,7 +404,7 @@ function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[
     }
   }
   for (const [name, count] of specifiers) {
-    if (count === 1 && !new RegExp(String.raw`\b${name}\b`).test(code.replaceAll(/^import\s+.+$/gm, ''))) {
+    if (count === 1 && !new RegExp(String.raw`\b${name}\b`).test(code.replaceAll(/^import\s+.{1,400}$/gm, ''))) {
       if (name.length > 2 && /^[A-Z]/.test(name)) {
         pushIssue(issues, code, 'unused-imports', `Import "${name}" may be unused`, code.indexOf(name))
         break
@@ -429,7 +431,7 @@ function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[
   }
 
   // Optional chaining gaps
-  if (/\w+\.\w+\.\w+/.test(code) && !/\?\.|\|\||\?\?/.test(code.split('\n').slice(0, 15).join('\n'))) {
+  if (/\w{1,100}\.\w{1,100}\.\w{1,100}/.test(code) && !/\?\.|\|\||\?\?/.test(code.split('\n').slice(0, 15).join('\n'))) {
     pushIssue(issues, code, 'missing-null-checks', 'Deep property access without optional chaining or guards', 0)
   }
 
@@ -450,7 +452,7 @@ function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[
   }
 
   // sync while loop
-  if (/\bwhile\s*\([^)]+\)\s*\{(?![\s\S]*await)/.test(code) && /while/.test(code)) {
+  if (/\bwhile\s*\([^)]{1,100}\)\s*\{/.test(code) && !/\bawait\b/.test(code) && /while/.test(code)) {
     const w = code.indexOf('while')
     if (w >= 0 && !/async/.test(code.slice(0, w))) {
       pushIssue(issues, code, 'blocking-operations', 'Synchronous while loop may block event loop', w)
@@ -473,6 +475,7 @@ function scanTsJsLike(code: string, filename: string, issues: MissingLogicIssue[
     if (!/afterEach|afterAll|cleanup/.test(code) && /render\s*\(/.test(code)) {
       pushIssue(issues, code, 'missing-cleanup', 'Test renders component — consider cleanup', code.indexOf('render'))
     }
+    // eslint-disable-next-line sonarjs/slow-regex -- heuristic on bounded code content
     if (/toMatchSnapshot/.test(code) && !/update.*snapshot/i.test(code) && /#.*snapshot/i.test(code) === false) {
       pushIssue(issues, code, 'missing-snapshot-updates', 'Snapshot matcher present — verify updates on change', code.indexOf('toMatchSnapshot'))
     }
@@ -616,6 +619,7 @@ function scanPython(code: string, issues: MissingLogicIssue[]) {
   }
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- workspace-level scan with independent checks across env, docker, k8s, routing, and auth signals
 function scanWorkspace(ctx: MissingLogicWorkspaceContext, issues: MissingLogicIssue[]) {
   const files = ctx.workspaceRelFiles || []
   const lower = files.map((f) => f.toLowerCase())

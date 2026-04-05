@@ -1,6 +1,6 @@
 /**
- * Dev-only HTTP bridge to Playwright MCP (see `scripts/agent-mcp-bridge.mjs`).
- * Vite proxies `/api/agent-browser` → `http://127.0.0.1:3847` when `npm run agent:mcp` is running.
+ * Dev-only HTTPS bridge to Playwright MCP (see `scripts/agent-mcp-bridge.mjs`).
+ * Vite proxies `/api/agent-browser` → `https://127.0.0.1:3847` when `npm run agent:mcp` is running.
  */
 
 const BASE = '/api/agent-browser'

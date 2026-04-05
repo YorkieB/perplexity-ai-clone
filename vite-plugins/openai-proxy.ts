@@ -3,6 +3,7 @@
  *
  * Routes:
  * - `POST /api/llm` — chat completions (existing).
+ * - `POST /api/tts` — text-to-speech via OpenAI audio/speech (voice pipeline output).
  * - `POST /api/realtime/session` — mints a short-lived Realtime client secret via
  *   `POST https://api.openai.com/v1/realtime/client_secrets` using `OPENAI_API_KEY`.
  *   The browser must **not** receive the long-lived API key; it only gets the returned
@@ -11,10 +12,6 @@
  *
  * No separate Node server is required: this uses Vite’s Connect middleware in dev and
  * preview. Production static hosting still needs an equivalent backend route.
- *
- * - `POST /api/elevenlabs-tts` — streaming PCM TTS (same behaviour as Electron’s handler).
- * - `POST /api/tts` — OpenAI `audio/speech` or ElevenLabs (same behaviour as Electron’s handler).
- * - `/api/replicate/*` — Replicate FastAPI bridge (`npm run replicate-bridge`, `REPLICATE_API_TOKEN`).
  */
 import type { Connect, Plugin } from 'vite'
 import { loadEnv } from 'vite'
@@ -23,104 +20,14 @@ import { randomInt } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { attachJarvisVisionAutostart } from './jarvis-vision-autostart'
-import { pipeline, Readable } from 'node:stream'
 import { tokenGenerate } from '@vonage/jwt'
 
 const requireVonage = createRequire(import.meta.url)
 const _pluginDir = dirname(fileURLToPath(import.meta.url))
-
-/** Same module as Electron — one schema, one `user_facts` / learning store (see `JARVIS_DB_PATH`). */
-const jarvisDb = requireVonage(join(_pluginDir, '..', 'electron', 'jarvis-db.cjs')) as {
-  loadLongTermMemory: (projectRoot?: string) => unknown[]
-  loadShortTermMemory: (projectRoot?: string) => unknown[]
-  loadConversationSummaries: (limit: number, projectRoot?: string) => unknown[]
-  createConversation: (projectRoot?: string) => string
-  addFacts: (facts: Array<{ category: string; fact: string; source?: string }>, projectRoot?: string) => void
-  saveMessages: (
-    conversationId: string,
-    messages: Array<{ role: string; content: string }>,
-    projectRoot?: string,
-  ) => void
-  getConversationMessages: (
-    conversationId: string,
-    projectRoot?: string,
-  ) => Array<{ role: string; content: string }>
-  saveConversationSummary: (
-    conversationId: string,
-    summary: string,
-    topics: string,
-    projectRoot?: string,
-  ) => void
-  buildLearnedContext: (projectRoot?: string) => string
-  savePreference: (domain: string, key: string, value: string, projectRoot?: string) => void
-  saveCorrection: (
-    category: string,
-    mistake: string,
-    correction: string,
-    context: unknown,
-    projectRoot?: string,
-  ) => void
-  savePattern: (
-    patternType: string,
-    description: string,
-    metadata: unknown,
-    projectRoot?: string,
-  ) => void
-  saveKnowledge: (topic: string, content: string, source: string | undefined, projectRoot?: string) => void
-  saveToolOutcome: (
-    toolName: string,
-    queryType: string | null,
-    success: boolean,
-    executionTimeMs: number | null,
-    errorMessage: string | null,
-    projectRoot?: string,
-  ) => void
-  getLearningStats: (projectRoot?: string) => Record<string, number>
-  loadPreferences: (
-    minConfidence: number,
-    projectRoot?: string,
-  ) => Array<{ domain: string; key: string; value: string }>
-  loadCorrections: (limit: number, projectRoot?: string) => unknown[]
-  loadPatterns: (projectRoot?: string) => unknown[]
-  loadAllKnowledge: (limit: number, projectRoot?: string) => unknown[]
-  getToolStats: (projectRoot?: string) => unknown[]
-  getUiLocalSnapshot: (projectRoot?: string) => { entries: Record<string, string>; updatedAt: string } | null
-  saveUiLocalSnapshot: (projectRoot: string | undefined, entries: Record<string, unknown>) => void
-}
 const vonageShared = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-voice-shared.cjs')) as {
   normalizeVonagePhoneDigits: (raw: string) => string
   loadVonagePrivateKeyPem: (env: Record<string, string>) => string
   buildVonageAiVoiceWebSocketUri: (env: Record<string, string>) => string | null
-}
-
-const vonageWebhookVerify = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-webhook-verify.cjs')) as {
-  getVonageWebhookJwt: (req: Connect.IncomingMessage) => string
-  verifyVonageSignedWebhook: (opts: {
-    rawBody: Buffer
-    token: string
-    signatureSecret: string
-    maxSkewSec?: number
-  }) => { ok: true; payload: Record<string, unknown> } | { ok: false; reason: string }
-}
-const vonageEventStore = requireVonage(join(_pluginDir, '..', 'scripts', 'vonage-event-store.cjs')) as { persistEvent: (event: Record<string, unknown>, opts?: { type?: string }) => void; readRecentEvents: (opts?: { type?: string; limit?: number; date?: string }) => Array<Record<string, unknown>> }
-
-const elevenLabsSharedVoices = requireVonage(join(_pluginDir, '..', 'scripts', 'elevenlabs-shared-voices-query.cjs')) as {
-  buildAllowedElevenLabsSharedVoicesQuery: (rawQuery: string) => string
-}
-
-const sunoGenerateBody = requireVonage(join(_pluginDir, '..', 'scripts', 'suno-generate-body.cjs')) as {
-  buildAllowedSunoGenerateBody: (parsed: unknown) => Record<string, unknown>
-}
-
-const llmChatBody = requireVonage(join(_pluginDir, '..', 'scripts', 'llm-chat-completion-body.cjs')) as {
-  normalizeLlmChatCompletionBody: (bodyStr: string, env: Record<string, string | undefined>, provider: 'openai' | 'digitalocean') => string
-}
-
-const openaiTtsSpeechBody = requireVonage(join(_pluginDir, '..', 'scripts', 'openai-tts-speech-body.cjs')) as {
-  normalizeOpenAiAudioSpeechBody: (
-    bodyStr: string
-  ) => { ok: true; body: string } | { ok: false; status: number; message: string }
 }
 
 /** ImapFlow envelope address shape (minimal for formatting). */
@@ -132,6 +39,23 @@ function formatAddrLine(addrs: MailAddr[] | undefined): string {
 
 function formatAddrPlain(addrs: MailAddr[] | undefined): string {
   return (addrs || []).map((a) => a.address || a.name || '').join(', ')
+}
+
+function stripHtmlTags(input: string | undefined): string {
+  let out = ''
+  let inTag = false
+  for (const ch of String(input || '')) {
+    if (ch === '<') {
+      inTag = true
+      continue
+    }
+    if (ch === '>') {
+      inTag = false
+      continue
+    }
+    if (!inTag) out += ch
+  }
+  return out
 }
 
 function plaidApiBaseUrl(plaidEnv: string): string {
@@ -179,6 +103,8 @@ type ImapFlowClient = {
   fetchOne: (uid: number, opts: Record<string, unknown>) => Promise<ImapFetchMsg>
   messageMove: (uid: number, target: string) => Promise<void>
   messageDelete: (uid: number) => Promise<void>
+  messageFlagsAdd: (uid: number, flags: string[]) => Promise<void>
+  messageFlagsRemove: (uid: number, flags: string[]) => Promise<void>
   list: () => Promise<Array<{ name: string; path: string; status?: { messages?: number; unseen?: number } }>>
 }
 
@@ -201,47 +127,37 @@ function readBody(req: Connect.IncomingMessage): Promise<string> {
   })
 }
 
-/** Upper bound for buffered proxy bodies (Whisper uploads, multipart image edits, voice PCM). */
-const MAX_BODY_BYTES = 32 * 1024 * 1024
-
-function isRequestBodyTooLargeError(e: unknown): boolean {
-  return e instanceof Error && e.message.startsWith('Request body exceeds maximum size')
-}
-
 function readBodyRaw(req: Connect.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    let total = 0
-    let settled = false
-    req.on('data', (c: Buffer) => {
-      if (settled) return
-      total += c.length
-      if (total > MAX_BODY_BYTES) {
-        settled = true
-        req.destroy()
-        reject(new Error(`Request body exceeds maximum size (${MAX_BODY_BYTES} bytes)`))
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+async function writeUpstreamBody(upstream: Response, res: ServerResponse): Promise<void> {
+  if (upstream.body) {
+    const reader = upstream.body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        res.end()
         return
       }
-      chunks.push(c)
-    })
-    req.on('end', () => {
-      if (settled) return
-      settled = true
-      resolve(Buffer.concat(chunks))
-    })
-    req.on('error', (err) => {
-      if (settled) return
-      settled = true
-      reject(err)
-    })
-  })
+      res.write(value)
+    }
+  }
+
+  const buf = Buffer.from(await upstream.arrayBuffer())
+  res.end(buf)
 }
 
 function getOpenAiConfig(env: Record<string, string>): {
   key: string | undefined
   base: string
 } {
-  const key = env.OPENAI_API_KEY?.trim()
+  const key = env.OPENAI_API_KEY?.trim() || env.VITE_OPENAI_API_KEY?.trim()
   const base =
     env.OPENAI_BASE_URL?.replace(/\/$/, '') ||
     env.VITE_OPENAI_BASE_URL?.replace(/\/$/, '') ||
@@ -249,83 +165,34 @@ function getOpenAiConfig(env: Record<string, string>): {
   return { key, base }
 }
 
-function getBearerFromReqHeader(req: Connect.IncomingMessage): string | null {
-  const raw = req.headers.authorization?.trim()
-  if (!raw) return null
-  if (raw.toLowerCase().startsWith('bearer ')) return raw.slice(7).trim()
-  return null
-}
-
-function getXiApiKeyFromReqHeader(req: Connect.IncomingMessage): string | null {
-  const raw = req.headers['xi-api-key'] ?? req.headers['x-elevenlabs-api-key']
-  if (!raw) return null
-  const s = Array.isArray(raw) ? raw[0] : raw
-  const t = String(s).trim()
-  return t || null
-}
-
-/** Prefer client `xi-api-key` (Settings), then server `.env` — same pattern as `/api/tts` ElevenLabs branch. */
-function resolveElevenLabsApiKey(req: Connect.IncomingMessage, env: Record<string, string>): string {
-  return (
-    getXiApiKeyFromReqHeader(req) || (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
-  )
-}
-
-/** Max chars of upstream error detail exposed to the client (avoid echoing HTML blobs). */
-const TTS_UPSTREAM_ERROR_MAX = 512
-
-function safeTtsUpstreamMessage(raw: string, fallback: string): string {
-  const t = raw
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, TTS_UPSTREAM_ERROR_MAX)
-  return t || fallback
-}
-
-/**
- * Pipes a `fetch()` Web ReadableStream to `res` and cancels the upstream reader when the
- * client disconnects (navigation, barge-in abort, tab close) so the remote stream does not
- * keep pumping indefinitely. Uses `pipeline` so `res.write()` backpressure is respected.
- */
-function pipeWebReadableToResWithClientAbort(
-  req: Connect.IncomingMessage,
-  res: ServerResponse,
-  webStream: import('stream/web').ReadableStream
-): void {
-  const nodeReadable = Readable.fromWeb(webStream)
-  function cleanup(reason: string) {
-    req.removeListener('aborted', onAbort)
-    res.removeListener('close', onResClose)
-    if (res.writableEnded || nodeReadable.readableEnded) return
-    if (!nodeReadable.destroyed) {
-      nodeReadable.destroy(new Error(reason))
-    }
-    void webStream.cancel(reason).catch(() => {})
+function getOAuthEnvValue(
+  env: Record<string, string>,
+  provider: string,
+  field: 'CLIENT_ID' | 'CLIENT_SECRET',
+): string {
+  const p = provider.toUpperCase()
+  const candidates = [
+    `OAUTH_CLIENT_${field === 'CLIENT_ID' ? 'ID' : 'SECRET'}_${p}`,
+    `OAUTH_${p}_${field}`,
+  ]
+  for (const key of candidates) {
+    const value = env[key]?.trim()
+    if (value) return value
   }
-  function onAbort() {
-    cleanup('client aborted')
-  }
-  function onResClose() {
-    if (!res.writableEnded) cleanup('client disconnected')
-  }
-  req.once('aborted', onAbort)
-  res.once('close', onResClose)
-  pipeline(nodeReadable, res, () => {
-    req.removeListener('aborted', onAbort)
-    res.removeListener('close', onResClose)
-  })
+  return ''
 }
 
 const viteBookCache = new Map<string, { title: string; authors: string[]; fullText: string; fetchedAt: number }>()
 
 function stripGutenbergBoilerplate(text: string): string {
   let content = text
-  const startMatch = content.match(/\*{3}\s*START OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK[^*]*\*{3}/i)
+  const startPattern = /\*{3}\s*START OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK[^*]*\*{3}/i
+  const startMatch = startPattern.exec(content)
   if (startMatch?.index != null) {
     content = content.slice(startMatch.index + startMatch[0].length)
   }
-  const endMatch = content.match(/\*{3}\s*END OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK/i)
+  const endPattern = /\*{3}\s*END OF (?:THE |THIS )?PROJECT GUTENBERG EBOOK/i
+  const endMatch = endPattern.exec(content)
   if (endMatch?.index != null) {
     content = content.slice(0, endMatch.index)
   }
@@ -384,620 +251,11 @@ function mergeRealtimeSessionBody(raw: string): typeof defaultRealtimeSession {
   return defaultRealtimeSession
 }
 
-/**
- * Persists selected `localStorage` keys to SQLite so browser (`https://…`) and desktop (`localhost`)
- * share threads/settings when both use the same `JARVIS_DB_PATH` / project `data/jarvis.db`.
- */
-async function tryHandleUiSyncApi(
-  path: string | undefined,
-  method: string | undefined,
-  req: Connect.IncomingMessage,
-  res: ServerResponse,
-  projectRoot: string,
-): Promise<boolean> {
-  if (path !== '/api/ui-sync') return false
-
-  const jsonErr = (status: number, msg: string) => {
-    res.statusCode = status
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: msg } }))
-  }
-
-  try {
-    if (method === 'GET') {
-      const snap = jarvisDb.getUiLocalSnapshot(projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(
-        JSON.stringify({
-          entries: snap?.entries ?? {},
-          updatedAt: snap?.updatedAt ?? null,
-        }),
-      )
-      return true
-    }
-
-    if (method === 'POST') {
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as { entries?: Record<string, unknown> }
-      if (!body.entries || typeof body.entries !== 'object') {
-        jsonErr(400, 'entries object required')
-        return true
-      }
-      jarvisDb.saveUiLocalSnapshot(projectRoot, body.entries)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true }))
-      return true
-    }
-
-    res.statusCode = 405
-    res.setHeader('Allow', 'GET, POST')
-    res.end()
-    return true
-  } catch (e) {
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(
-      JSON.stringify({
-        error: { message: e instanceof Error ? e.message : 'UI sync error' },
-      }),
-    )
-    return true
-  }
-}
-
-/**
- * Full Jarvis SQLite memory API for Vite dev (parity with `electron/main.cjs`).
- * Uses `electron/jarvis-db.cjs` so facts, learning, and summaries share one DB file with the desktop app.
- */
-async function tryHandleJarvisMemoryApi(
-  path: string | undefined,
-  method: string | undefined,
-  req: Connect.IncomingMessage,
-  res: ServerResponse,
-  projectRoot: string,
-  getEnv: () => Record<string, string>,
-): Promise<boolean> {
-  if (!path?.startsWith('/api/jarvis-memory')) return false
-
-  const jsonErr = (status: number, msg: string) => {
-    res.statusCode = status
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: msg } }))
-  }
-
-  try {
-    if (path === '/api/jarvis-memory/learned-context' && method === 'GET') {
-      const context = jarvisDb.buildLearnedContext(projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ context }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory/learn' && method === 'POST') {
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as {
-        preferences?: Array<{ domain?: string; key?: string; value?: string }>
-        corrections?: Array<{ category?: string; mistake?: string; correction?: string; context?: unknown }>
-        patterns?: Array<{ pattern_type?: string; description?: string; metadata?: unknown }>
-        knowledge?: Array<{ topic?: string; content?: string; source?: string }>
-      }
-      if (body.preferences) {
-        for (const p of body.preferences) {
-          if (p.domain && p.key && p.value) jarvisDb.savePreference(p.domain, p.key, p.value, projectRoot)
-        }
-      }
-      if (body.corrections) {
-        for (const c of body.corrections) {
-          if (c.category && c.mistake && c.correction)
-            jarvisDb.saveCorrection(c.category, c.mistake, c.correction, c.context, projectRoot)
-        }
-      }
-      if (body.patterns) {
-        for (const p of body.patterns) {
-          if (p.pattern_type && p.description)
-            jarvisDb.savePattern(p.pattern_type, p.description, p.metadata, projectRoot)
-        }
-      }
-      if (body.knowledge) {
-        for (const k of body.knowledge) {
-          if (k.topic && k.content) jarvisDb.saveKnowledge(k.topic, k.content, k.source, projectRoot)
-        }
-      }
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory/track-tool' && method === 'POST') {
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as {
-        tool_name?: string
-        query_type?: string
-        success?: boolean
-        execution_time_ms?: number
-        error_message?: string | null
-      }
-      jarvisDb.saveToolOutcome(
-        body.tool_name || 'unknown',
-        body.query_type || null,
-        body.success !== false,
-        body.execution_time_ms ?? null,
-        body.error_message ?? null,
-        projectRoot,
-      )
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory/learning-stats' && method === 'GET') {
-      const stats = jarvisDb.getLearningStats(projectRoot)
-      const preferences = jarvisDb.loadPreferences(0.2, projectRoot)
-      const corrections = jarvisDb.loadCorrections(15, projectRoot)
-      const patterns = jarvisDb.loadPatterns(projectRoot)
-      const knowledge = jarvisDb.loadAllKnowledge(20, projectRoot)
-      const tool_stats = jarvisDb.getToolStats(projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ stats, preferences, corrections, patterns, knowledge, tool_stats }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory/extract' && method === 'POST') {
-      const env = getEnv()
-      const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
-      if (!key) {
-        jsonErr(500, 'Missing OPENAI_API_KEY')
-        return true
-      }
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as { userText?: string; aiText?: string }
-      if (!body.userText) {
-        jsonErr(400, 'userText required')
-        return true
-      }
-      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(
-        /\/$/,
-        '',
-      )
-      const prompt =
-        'You are a fact-extraction engine. Given a user-assistant exchange, extract personal facts about the user (preferences, name, occupation, habits, interests, relationships, etc.). Return ONLY a JSON array of objects with "category" and "fact" fields. If no facts, return [].\n\nUser said: "' +
-        body.userText +
-        '"\nAssistant said: "' +
-        (body.aiText || '') +
-        '"\n\nReturn JSON array only, no markdown, no explanation.'
-      const upstream = await fetch(base + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-        }),
-      })
-      if (!upstream.ok) {
-        const errText = await upstream.text().catch(() => '')
-        jsonErr(upstream.status, errText)
-        return true
-      }
-      const result = (await upstream.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const content = result.choices?.[0]?.message?.content || '[]'
-      let facts: Array<{ category: string; fact: string }> = []
-      try {
-        const parsed = JSON.parse(content) as unknown
-        facts = Array.isArray(parsed) ? (parsed as typeof facts) : ((parsed as { facts?: typeof facts }).facts || [])
-      } catch {
-        /* ignored */
-      }
-      if (facts.length > 0) jarvisDb.addFacts(facts, projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ extracted: facts.length, facts }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory/summarize' && method === 'POST') {
-      const env = getEnv()
-      const key = (env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || '').trim()
-      if (!key) {
-        jsonErr(500, 'Missing OPENAI_API_KEY')
-        return true
-      }
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as { conversationId?: string }
-      if (!body.conversationId) {
-        jsonErr(400, 'conversationId required')
-        return true
-      }
-      const msgs = jarvisDb.getConversationMessages(body.conversationId, projectRoot)
-      if (msgs.length === 0) {
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(JSON.stringify({ ok: true, summary: null }))
-        return true
-      }
-      const transcript = msgs.map((m) => m.role + ': ' + m.content).join('\n')
-      const base = (env.OPENAI_BASE_URL || env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(
-        /\/$/,
-        '',
-      )
-      const prompt =
-        'Summarize this voice conversation in 2-3 sentences. Also extract 1-5 topic keywords. Return JSON with "summary" (string) and "topics" (comma-separated string).\n\nConversation:\n' +
-        transcript +
-        '\n\nReturn JSON only, no markdown.'
-      const upstream = await fetch(base + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.2,
-          response_format: { type: 'json_object' },
-        }),
-      })
-      if (!upstream.ok) {
-        const errText = await upstream.text().catch(() => '')
-        jsonErr(upstream.status, errText)
-        return true
-      }
-      const result = (await upstream.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const content = result.choices?.[0]?.message?.content || '{}'
-      let parsed: { summary?: string; topics?: string } = {}
-      try {
-        parsed = JSON.parse(content) as typeof parsed
-      } catch {
-        /* ignored */
-      }
-      if (parsed.summary)
-        jarvisDb.saveConversationSummary(body.conversationId, parsed.summary, parsed.topics || '', projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true, summary: parsed.summary || null, topics: parsed.topics || '' }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory' && method === 'GET') {
-      const facts = jarvisDb.loadLongTermMemory(projectRoot)
-      const recentTurns = jarvisDb.loadShortTermMemory(projectRoot)
-      const summaries = jarvisDb.loadConversationSummaries(5, projectRoot)
-      const conversationId = jarvisDb.createConversation(projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ conversationId, facts, recentTurns, summaries }))
-      return true
-    }
-
-    if (path === '/api/jarvis-memory' && method === 'POST') {
-      const bodyStr = await readBody(req)
-      const body = JSON.parse(bodyStr) as {
-        facts?: Array<{ category: string; fact: string; source?: string }>
-        conversationId?: string
-        messages?: Array<{ role: string; content: string }>
-      }
-      if (Array.isArray(body.facts) && body.facts.length > 0) {
-        jarvisDb.addFacts(body.facts, projectRoot)
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(JSON.stringify({ ok: true, saved: body.facts.length }))
-        return true
-      }
-      const { conversationId, messages } = body
-      if (!conversationId || !Array.isArray(messages)) {
-        jsonErr(400, 'conversationId and messages[] required')
-        return true
-      }
-      jarvisDb.saveMessages(conversationId, messages, projectRoot)
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ ok: true }))
-      return true
-    }
-
-    res.statusCode = 404
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: { message: 'Unknown jarvis-memory route' } }))
-    return true
-  } catch (e) {
-    console.error('[jarvis-memory] API error:', e instanceof Error ? e.stack || e.message : e)
-    res.statusCode = 500
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(
-      JSON.stringify({
-        error: { message: e instanceof Error ? e.message : 'Jarvis memory error' },
-      }),
-    )
-    return true
-  }
-}
-
-function attachProxy(
-  getEnv: () => Record<string, string>,
-  middlewares: Connect.Server,
-  projectRoot: string,
-) {
-  let vonageInboundWebhookUnsignedLogged = false
-  function checkVonageInboundWebhook(
-    req: Connect.IncomingMessage,
-    rawBody: Buffer,
-    env: Record<string, string>,
-  ): { ok: true } | { ok: false; status: number; body: { error: { message: string } } } {
-    const secret = (env.VONAGE_SIGNATURE_SECRET || '').trim()
-    const token = vonageWebhookVerify.getVonageWebhookJwt(req)
-    if (!secret) {
-      if (!vonageInboundWebhookUnsignedLogged) {
-        vonageInboundWebhookUnsignedLogged = true
-        console.warn(
-          '[vonage] Inbound webhooks: VONAGE_SIGNATURE_SECRET not set — requests are not verified (Tier 5).',
-        )
-      }
-      return { ok: true }
-    }
-    if (!token) {
-      return {
-        ok: false,
-        status: 401,
-        body: {
-          error: {
-            message: 'Missing signed webhook JWT (Authorization: Bearer or Vonage-Signature).',
-          },
-        },
-      }
-    }
-    const v = vonageWebhookVerify.verifyVonageSignedWebhook({
-      rawBody,
-      token,
-      signatureSecret: secret,
-    })
-    if (!v.ok) {
-      return {
-        ok: false,
-        status: 401,
-        body: { error: { message: `Webhook verification failed: ${v.reason}` } },
-      }
-    }
-    return { ok: true }
-  }
-
+function attachProxy(getEnv: () => Record<string, string>, middlewares: Connect.Server) {
+  // Note: High complexity due to 37+ route handlers; architectural decomposition deferred to future refactor.
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   middlewares.use(async (req: Connect.IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => {
     const path = req.url?.split('?')[0]
-
-    /** Electron-only: paste into foreground app (see electron/main.cjs). Dev browser has no OS keyboard access. */
-    if (path === '/api/desktop/paste-text' && req.method === 'POST') {
-      try {
-        await readBody(req)
-      } catch {
-        /* ignore */
-      }
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json')
-      res.end(
-        JSON.stringify({
-          ok: false,
-          error:
-            'Desktop paste is only available in the Jarvis Electron desktop app (npm run desktop). In Vite dev, copy text manually or use the embedded browser tools.',
-        })
-      )
-      return
-    }
-
-    if (path === '/api/desktop/clipboard-text' && req.method === 'GET') {
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json')
-      res.end(
-        JSON.stringify({
-          ok: false,
-          error:
-            'Reading the system clipboard requires the Jarvis Electron desktop app (npm run desktop).',
-        })
-      )
-      return
-    }
-
-    if (path === '/api/desktop/screen-read' && req.method === 'POST') {
-      try {
-        await readBody(req)
-      } catch {
-        /* ignore */
-      }
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json')
-      res.end(
-        JSON.stringify({
-          ok: false,
-          error:
-            'Screen capture and reading requires the Jarvis Electron desktop app (npm run desktop) and OPENAI_API_KEY.',
-        })
-      )
-      return
-    }
-
-    if (path === '/api/desktop/launch' && req.method === 'POST') {
-      try {
-        await readBody(req)
-      } catch {
-        /* ignore */
-      }
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json')
-      res.end(
-        JSON.stringify({
-          ok: false,
-          error:
-            'Launching desktop apps requires the Jarvis Electron desktop app (npm run desktop).',
-        })
-      )
-      return
-    }
-
-    /** Foreground metadata for voice Realtime instructions — full data only in Electron; empty in Vite. */
-    if (path === '/api/desktop/focus-context' && req.method === 'GET') {
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(JSON.stringify({ activeApp: '', windowTitle: '', summary: '' }))
-      return
-    }
-
-    if (await tryHandleUiSyncApi(path, req.method, req, res, projectRoot)) return
-
-    if (await tryHandleJarvisMemoryApi(path, req.method, req, res, projectRoot, getEnv)) return
-
-    /**
-     * RAG (pgvector + Spaces) is implemented only in Electron `main.cjs`.
-     * Plain Vite dev would otherwise fall through to SPA and break JSON clients.
-     */
-    if (path?.startsWith('/api/rag/')) {
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.end(
-        JSON.stringify({
-          error: {
-            message:
-              'Knowledge base (RAG) API runs in the Jarvis Electron app with DATABASE_URL in .env. Use `npm run desktop:dev` or `npm run desktop` (not plain `npm run dev` in the browser) for rag_search and document tools.',
-          },
-          results: [],
-        }),
-      )
-      return
-    }
-
-    /**
-     * Live proxy: `/api/vision/*` → `VISION_ENGINE_URL` (default `http://127.0.0.1:5000`) + `/api/v1/*`.
-     * Same mapping as Electron — no stub responses; start the Jarvis Visual Engine for real frames.
-     */
-    if (path?.startsWith('/api/vision/')) {
-      const env = getEnv()
-      const base = (env.VISION_ENGINE_URL || env.JARVIS_VISION_ENGINE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '')
-      const targetPath = path.replace(/^\/api\/vision/, '/api/v1')
-      const qs = req.url?.includes('?') ? `?${req.url.split('?')[1] || ''}` : ''
-      const targetUrl = `${base}${targetPath}${qs}`
-      const apiKey = env.VISION_API_KEY || 'jarvis-vision-local'
-      const fromEnv = String(env.VISION_CAMERA_LABEL || env.JARVIS_CAMERA_LABEL || '').trim()
-      const incoming = req.headers['x-jarvis-camera-label']
-      const incomingStr = incoming
-        ? String(Array.isArray(incoming) ? incoming[0] : incoming).trim()
-        : ''
-      /** Default `emeet` matches eMeet webcams; override `VISION_CAMERA_LABEL` for other devices. */
-      const cameraLabel = fromEnv || incomingStr || 'emeet'
-      let bodyBuf: Buffer | undefined
-      if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-        try {
-          bodyBuf = await readBodyRaw(req)
-        } catch (e) {
-          if (isRequestBodyTooLargeError(e)) {
-            res.statusCode = 413
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
-            return
-          }
-          throw e
-        }
-      }
-      try {
-        const upstream = await fetch(targetUrl, {
-          method: req.method || 'GET',
-          headers: {
-            ...(req.headers['content-type'] ? { 'Content-Type': String(req.headers['content-type']) } : {}),
-            'X-API-Key': apiKey,
-            'X-Jarvis-Camera-Label': cameraLabel,
-          },
-          body: bodyBuf && bodyBuf.length > 0 ? bodyBuf : undefined,
-        })
-        res.statusCode = upstream.status
-        const ct = upstream.headers.get('content-type')
-        if (ct) res.setHeader('Content-Type', ct)
-        res.end(Buffer.from(await upstream.arrayBuffer()))
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(
-          JSON.stringify({
-            error: {
-              message: `Jarvis Visual Engine not reachable at ${base}. Start the engine and set VISION_ENGINE_URL if it runs elsewhere.`,
-            },
-          }),
-        )
-      }
-      return
-    }
-
-    /**
-     * Replicate bridge: `/api/replicate/*` → `REPLICATE_BRIDGE_URL` (default `http://127.0.0.1:18865`) + `/*`.
-     * Run `npm run replicate-bridge` with `REPLICATE_API_TOKEN` set (default port 18865+; not 8765).
-     */
-    if (path?.startsWith('/api/replicate/')) {
-      const env = getEnv()
-      const base = (env.REPLICATE_BRIDGE_URL || env.VITE_REPLICATE_BRIDGE_URL || 'http://127.0.0.1:18865').replace(/\/$/, '')
-      const targetPath = path.replace(/^\/api\/replicate/, '') || '/'
-      const qs = req.url?.includes('?') ? `?${req.url.split('?')[1] || ''}` : ''
-      const targetUrl = `${base}${targetPath}${qs}`
-      let bodyBuf: Buffer | undefined
-      if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-        try {
-          bodyBuf = await readBodyRaw(req)
-        } catch (e) {
-          if (isRequestBodyTooLargeError(e)) {
-            res.statusCode = 413
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
-            return
-          }
-          throw e
-        }
-      }
-      try {
-        const upstream = await fetch(targetUrl, {
-          method: req.method || 'GET',
-          headers: {
-            ...(req.headers['content-type'] ? { 'Content-Type': String(req.headers['content-type']) } : {}),
-          },
-          body: bodyBuf && bodyBuf.length > 0 ? bodyBuf : undefined,
-        })
-        res.statusCode = upstream.status
-        const ct = upstream.headers.get('content-type')
-        if (ct) res.setHeader('Content-Type', ct)
-        res.end(Buffer.from(await upstream.arrayBuffer()))
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(
-          JSON.stringify({
-            error: {
-              message: `Replicate bridge not reachable at ${base}. Run npm run replicate-bridge and set REPLICATE_API_TOKEN.`,
-            },
-          }),
-        )
-      }
-      return
-    }
-
-    /** Cheap check for voice UI — does not call OpenAI (unlike POST /api/realtime/session). */
-    if (path === '/api/realtime/voice-ready' && req.method === 'GET') {
-      const env = getEnv()
-      const { key } = getOpenAiConfig(env)
-      if (!key) {
-        res.statusCode = 503
-        res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            error: {
-              message:
-                'Missing OPENAI_API_KEY. Add it to .env (dev/preview proxy only) and restart `npm run dev`.',
-            },
-          })
-        )
-        return
-      }
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: true }))
-      return
-    }
 
     if (path === '/api/realtime/session' && req.method === 'POST') {
       const env = getEnv()
@@ -1061,22 +319,95 @@ function attachProxy(
             Authorization: `Bearer ${key}`,
             'Content-Type': contentType,
           },
-          body: rawBody,
+          body: rawBody as unknown as BodyInit,
         })
         const text = await upstream.text()
         res.statusCode = upstream.status
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
         res.end(text)
       } catch (e) {
-        if (isRequestBodyTooLargeError(e)) {
-          res.statusCode = 413
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
-          return
-        }
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Wake word proxy error' } }))
+      }
+      return
+    }
+
+    // ── Text-to-Speech (OpenAI audio/speech) ──
+    if (path === '/api/tts' && req.method === 'POST') {
+      const env = getEnv()
+      const { key, base } = getOpenAiConfig(env)
+      if (!key) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY for TTS.' } }))
+        return
+      }
+      try {
+        const body = await readBody(req)
+        const upstream = await fetch(`${base}/audio/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body,
+        })
+        if (!upstream.ok) {
+          const errText = await upstream.text().catch(() => upstream.statusText)
+          res.statusCode = upstream.status
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: { message: `TTS upstream error: ${upstream.status} ${errText}` } }))
+          return
+        }
+        res.statusCode = 200
+        const ct = upstream.headers.get('content-type')
+        if (ct) res.setHeader('Content-Type', ct)
+        const cl = upstream.headers.get('content-length')
+        if (cl) res.setHeader('Content-Length', cl)
+        await writeUpstreamBody(upstream, res)
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'TTS proxy error' } }))
+      }
+      return
+    }
+
+    // ── Embeddings (CRIT-08 security proxy) ──
+    // SECURITY: Routes embedding requests server-side so the OpenAI API key is never exposed to the browser.
+    // Can be used by SemanticRouter and other client-side components.
+    if (path === '/api/embeddings' && req.method === 'POST') {
+      const env = getEnv()
+      const { key, base } = getOpenAiConfig(env)
+      if (!key) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Missing OPENAI_API_KEY for embeddings.' } }))
+        return
+      }
+      try {
+        const body = await readBody(req)
+        const parsed = JSON.parse(body) as { model?: string; input?: string | string[] }
+        const upstream = await fetch(`${base}/embeddings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model: parsed.model || 'text-embedding-3-small',
+            input: parsed.input,
+          }),
+        })
+        const text = await upstream.text()
+        res.statusCode = upstream.status
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+        res.end(text)
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Embeddings proxy error' } }))
       }
       return
     }
@@ -1116,19 +447,13 @@ function attachProxy(
         const upstream = await fetch(`${base}/images/edits`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${key}`, 'Content-Type': contentType },
-          body: rawBody,
+          body: rawBody as unknown as BodyInit,
         })
         const text = await upstream.text()
         res.statusCode = upstream.status
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
         res.end(text)
       } catch (e) {
-        if (isRequestBodyTooLargeError(e)) {
-          res.statusCode = 413
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
-          return
-        }
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Image edit proxy error' } }))
@@ -1199,25 +524,23 @@ function attachProxy(
         if (ct) res.setHeader('Content-Type', ct)
         const cl = upstream.headers.get('content-length')
         if (cl) res.setHeader('Content-Length', cl)
-        if (upstream.body) {
-          const reader = upstream.body.getReader()
-          const pump = async () => {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) { res.end(); return }
-              res.write(value)
-            }
-          }
-          await pump()
-        } else {
-          const buf = Buffer.from(await upstream.arrayBuffer())
-          res.end(buf)
-        }
+        await writeUpstreamBody(upstream, res)
       } catch (e) {
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Video content proxy error' } }))
       }
+      return
+    }
+
+    // ── DigitalOcean: tell the client whether `DIGITALOCEAN_API_KEY` is set server-side (.env)
+    // so the UI loads the DO catalog without requiring `VITE_USE_DO_INFERENCE` at build time.
+    if (path === '/api/digitalocean/config' && req.method === 'GET') {
+      const env = getEnv()
+      const has = Boolean((env.DIGITALOCEAN_API_KEY || env.VITE_DIGITALOCEAN_API_KEY || '').trim())
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ inferenceKeyFromEnv: has }))
       return
     }
 
@@ -1263,7 +586,8 @@ function attachProxy(
     }
 
     // ── DigitalOcean LLM proxy (dev proxy) ──
-    if (path === '/api/llm' && req.method === 'POST' && (req.headers['x-llm-provider'] || '').toLowerCase() === 'digitalocean') {
+    const llmProviderHeader = typeof req.headers['x-llm-provider'] === 'string' ? req.headers['x-llm-provider'] : ''
+    if (path === '/api/llm' && req.method === 'POST' && llmProviderHeader.toLowerCase() === 'digitalocean') {
       const env = getEnv()
       const doKey = (env.DIGITALOCEAN_API_KEY || env.VITE_DIGITALOCEAN_API_KEY || '').trim()
       const fromClient = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim()
@@ -1275,8 +599,7 @@ function attachProxy(
         return
       }
       try {
-        const bodyRaw = await readBody(req)
-        const body = llmChatBody.normalizeLlmChatCompletionBody(bodyRaw, env, 'digitalocean')
+        const body = await readBody(req)
         const upstream = await fetch('https://inference.do-ai.run/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1297,7 +620,7 @@ function attachProxy(
     // ── ElevenLabs voice library (dev proxy) ──
     if (path === '/api/elevenlabs/my-voices' && req.method === 'GET') {
       const env = getEnv()
-      const elKey = resolveElevenLabsApiKey(req, env)
+      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -1320,7 +643,7 @@ function attachProxy(
 
     if (path === '/api/elevenlabs/voices' && req.method === 'GET') {
       const env = getEnv()
-      const elKey = resolveElevenLabsApiKey(req, env)
+      const elKey = (env.ELEVENLABS_API_KEY || env.VITE_ELEVENLABS_API_KEY || '').trim()
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -1328,12 +651,8 @@ function attachProxy(
         return
       }
       try {
-        const rawQuery = (req.url || '').split('?')[1] || ''
-        const query = elevenLabsSharedVoices.buildAllowedElevenLabsSharedVoicesQuery(rawQuery)
-        const upstream = await fetch(
-          `https://api.elevenlabs.io/v1/shared-voices${query ? `?${query}` : ''}`,
-          { headers: { 'xi-api-key': elKey } },
-        )
+        const query = (req.url || '').split('?')[1] || ''
+        const upstream = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${query}`, { headers: { 'xi-api-key': elKey } })
         const text = await upstream.text()
         res.statusCode = upstream.status
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
@@ -1349,7 +668,8 @@ function attachProxy(
     // ── ElevenLabs sound effects (dev proxy) ──
     if (path === '/api/elevenlabs/sound-effect' && req.method === 'POST') {
       const env = getEnv()
-      const elKey = resolveElevenLabsApiKey(req, env)
+      // SECURITY (CRIT-17): Removed VITE_ELEVENLABS_API_KEY (client-bundled).
+      const elKey = (env.ELEVENLABS_API_KEY || '').trim()
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
@@ -1376,13 +696,7 @@ function attachProxy(
           const errText = await upstream.text().catch(() => upstream.statusText)
           res.statusCode = upstream.status
           res.setHeader('Content-Type', 'application/json')
-          res.end(
-            JSON.stringify({
-              error: {
-                message: safeTtsUpstreamMessage(String(errText), `ElevenLabs error (${upstream.status})`),
-              },
-            })
-          )
+          res.end(JSON.stringify({ error: { message: errText } }))
           return
         }
         res.statusCode = 200
@@ -1397,45 +711,22 @@ function attachProxy(
       return
     }
 
-    // ── ElevenLabs streaming TTS (PCM) — matches `handleElevenLabsStreamingTts` in electron/main.cjs
-    if (path === '/api/elevenlabs-tts' && req.method === 'POST') {
+    // ── ElevenLabs Text-to-Speech (CRIT-17 security proxy) ──
+    if (path === '/api/tts/elevenlabs' && req.method === 'POST') {
       const env = getEnv()
-      const elKey = resolveElevenLabsApiKey(req, env)
+      const elKey = (env.ELEVENLABS_API_KEY || '').trim()
       if (!elKey) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            error: {
-              message:
-                'Missing ElevenLabs API key: add ELEVENLABS_API_KEY to .env or paste your key under Settings → API Keys.',
-            },
-          }),
-        )
+        res.end(JSON.stringify({ error: { message: 'Missing ELEVENLABS_API_KEY (server-side only, no VITE_ prefix)' } }))
         return
       }
       try {
-        const bodyStr = await readBody(req)
-        const body = JSON.parse(bodyStr) as {
-          text?: string
-          voice_id?: string
-          model_id?: string
-          voice_settings?: Record<string, unknown>
-        }
-        const text = String(body.text || '').trim()
-        if (!text) {
-          res.statusCode = 400
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: 'Empty text' } }))
-          return
-        }
-        const voiceId =
-          String(body.voice_id || '').trim() ||
-          (env.ELEVENLABS_VOICE_ID || env.VITE_ELEVENLABS_VOICE_ID || '').trim() ||
-          'pNInz6obpgDQGcFmaJgB'
-
+        const rawBody = await readBody(req)
+        const body = JSON.parse(rawBody)
+        const voiceId = body.voiceId || 'pNInz6obpgDQGcFmaJgB'
         const upstream = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=pcm_24000&optimize_streaming_latency=3`,
+          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000&optimize_streaming_latency=3`,
           {
             method: 'POST',
             headers: {
@@ -1443,220 +734,219 @@ function attachProxy(
               'xi-api-key': elKey,
             },
             body: JSON.stringify({
-              text,
-              model_id: body.model_id || 'eleven_turbo_v2_5',
-              voice_settings: body.voice_settings || {
-                stability: 0.5,
-                similarity_boost: 0.75,
-                style: 0,
-                use_speaker_boost: true,
-              },
+              text: body.text,
+              model_id: body.modelId || 'eleven_turbo_v2_5',
+              voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true },
             }),
           },
         )
-
         if (!upstream.ok) {
           const errText = await upstream.text().catch(() => upstream.statusText)
           res.statusCode = upstream.status
           res.setHeader('Content-Type', 'application/json')
-          res.end(
-            JSON.stringify({
-              error: {
-                message: safeTtsUpstreamMessage(String(errText), `ElevenLabs error (${upstream.status})`),
-              },
-            })
-          )
+          res.end(JSON.stringify({ error: { message: errText } }))
           return
         }
-
         res.statusCode = 200
         res.setHeader('Content-Type', 'audio/pcm')
-        if (upstream.body) {
-          pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
-        } else {
-          res.end()
-        }
+        const buf = Buffer.from(await upstream.arrayBuffer())
+        res.end(buf)
       } catch (e) {
         res.statusCode = 502
         res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            error: {
-              message: safeTtsUpstreamMessage(
-                e instanceof Error ? e.message : 'ElevenLabs TTS error',
-                'ElevenLabs TTS error'
-              ),
-            },
-          })
-        )
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'ElevenLabs TTS proxy error' } }))
       }
       return
     }
 
-    // ── POST /api/tts — OpenAI audio/speech or ElevenLabs (matches `handleTtsProxy` in electron/main.cjs) ──
-    if (path === '/api/tts' && req.method === 'POST') {
+    // ── OAuth Token Exchange (CRIT-04 security proxy) ──
+    if (path === '/api/oauth/exchange' && req.method === 'POST') {
       const env = getEnv()
-      const bodyStr = await readBody(req)
-      let parsed: Record<string, unknown> | null = null
       try {
-        parsed = JSON.parse(bodyStr) as Record<string, unknown>
-      } catch {
-        parsed = null
-      }
-
-      if (parsed?.provider === 'elevenlabs') {
-        const xiKey = resolveElevenLabsApiKey(req, env)
-        const voiceId =
-          String(parsed.voice_id || '').trim() ||
-          (env.ELEVENLABS_VOICE_ID || env.VITE_ELEVENLABS_VOICE_ID || '').trim()
-        if (!xiKey || !voiceId) {
-          res.statusCode = 200
-          res.setHeader('Content-Type', 'application/json; charset=utf-8')
-          res.setHeader('X-Tts-Unavailable', 'missing-elevenlabs-config')
-          res.end(
-            JSON.stringify({
-              error: {
-                message:
-                  'ElevenLabs TTS requires an API key and voice ID (Settings → API Keys, or ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID in .env).',
-              },
-            })
-          )
-          return
-        }
-        const text = String(parsed.text || '').trim().slice(0, 5000)
-        if (!text) {
+        const rawBody = await readBody(req)
+        const body = JSON.parse(rawBody)
+        const { provider, code, clientId, redirectUri } = body
+        
+        if (!provider || !code || !clientId) {
           res.statusCode = 400
-          res.setHeader('Content-Type', 'application/json; charset=utf-8')
-          res.end(JSON.stringify({ error: { message: 'Empty text' } }))
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Missing provider, code, or clientId' }))
           return
         }
-        const modelId = String(
-          parsed.model_id || env.ELEVENLABS_MODEL_ID || env.VITE_ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2'
-        ).trim()
-        try {
-          const upstream = await fetch(
-            `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'xi-api-key': xiKey,
-                Accept: 'audio/mpeg',
-              },
-              body: JSON.stringify({ text, model_id: modelId }),
-            }
-          )
-          if (!upstream.ok) {
-            const errText = await upstream.text()
-            let msg = 'ElevenLabs TTS error'
-            try {
-              const j = JSON.parse(errText) as { detail?: string; message?: string }
-              const raw = typeof j.detail === 'string' ? j.detail : j.message
-              msg = safeTtsUpstreamMessage(typeof raw === 'string' ? raw : '', msg)
-            } catch {
-              msg = safeTtsUpstreamMessage(errText, msg)
-            }
-            res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
-            res.setHeader('Content-Type', 'application/json; charset=utf-8')
-            res.end(JSON.stringify({ error: { message: msg } }))
-            return
-          }
-          const ct = upstream.headers.get('content-type') || 'audio/mpeg'
-          res.statusCode = upstream.status
-          res.setHeader('Content-Type', ct)
-          if (upstream.body) {
-            pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
-          } else {
-            const buf = await upstream.arrayBuffer()
-            res.end(Buffer.from(buf))
-          }
-        } catch (e) {
-          res.statusCode = 502
-          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+
+        // Read server-side OAuth secrets (no VITE_ prefix — not sent to client)
+        const providerKey = provider.toUpperCase()
+        const clientSecret = getOAuthEnvValue(env, provider, 'CLIENT_SECRET')
+
+        if (!clientSecret) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
           res.end(
             JSON.stringify({
-              error: {
-                message: safeTtsUpstreamMessage(
-                  e instanceof Error ? e.message : 'ElevenLabs TTS proxy error',
-                  'ElevenLabs TTS proxy error'
-                ),
-              },
-            })
+              error: `OAuth client secret not configured. Expected one of OAUTH_CLIENT_SECRET_${providerKey} or OAUTH_${providerKey}_CLIENT_SECRET`,
+            }),
           )
+          return
         }
-        return
-      }
 
-      const normalized = openaiTtsSpeechBody.normalizeOpenAiAudioSpeechBody(bodyStr)
-      if (!normalized.ok) {
-        res.statusCode = normalized.status
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(JSON.stringify({ error: { message: normalized.message } }))
-        return
-      }
+        // Look up token URL for this provider
+        const tokenUrls: Record<string, string> = {
+          dropbox: 'https://api.dropboxapi.com/oauth2/token',
+          googledrive: 'https://oauth2.googleapis.com/token',
+          onedrive: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+          github: 'https://github.com/login/oauth/access_token',
+        }
+        const tokenUrl = tokenUrls[provider.toLowerCase()]
+        if (!tokenUrl) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: `Unknown OAuth provider: ${provider}` }))
+          return
+        }
 
-      const fromClient = getBearerFromReqHeader(req)
-      const key =
-        (fromClient ? fromClient : '') || (env.OPENAI_API_KEY || '').trim()
-      if (!key) {
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.setHeader('X-Tts-Unavailable', 'missing-openai-key')
-        res.end(
-          JSON.stringify({
-            error: {
-              message:
-                'TTS requires an OpenAI API key: add OPENAI_API_KEY to .env or paste your key in Settings → API Keys.',
-            },
-          })
-        )
-        return
-      }
+        // Exchange code for token (client secret added server-side)
+        const tokenBody = new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        })
 
-      const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+        const upstream = await fetch(tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+          },
+          body: tokenBody.toString(),
+        })
+
+        const text = await upstream.text()
+        res.statusCode = upstream.status
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+        res.end(text)
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'OAuth exchange proxy error' } }))
+      }
+      return
+    }
+
+    // ── OAuth Token Refresh (Secure Server-Side) ──
+    // SECURITY: Token refresh always uses server-side client secrets.
+    // Browser sends only refresh token; server adds clientSecret from .env.
+    if (path === '/api/oauth/refresh' && req.method === 'POST') {
+      const env = getEnv()
       try {
-        const upstream = await fetch(`${base}/audio/speech`, {
+        const rawBody = await readBody(req)
+        const body = JSON.parse(rawBody)
+        const { provider, refreshToken } = body
+
+        if (!provider || !refreshToken) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Missing provider or refreshToken' }))
+          return
+        }
+
+        // Read server-side OAuth secrets (no VITE_ prefix — not sent to client)
+        const providerKey = provider.toUpperCase()
+        const clientSecret = getOAuthEnvValue(env, provider, 'CLIENT_SECRET')
+        const clientId = getOAuthEnvValue(env, provider, 'CLIENT_ID')
+
+        if (!clientSecret || !clientId) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(
+            JSON.stringify({
+              error: `OAuth client config missing. Expected one of OAUTH_CLIENT_ID_${providerKey}/OAUTH_${providerKey}_CLIENT_ID and OAUTH_CLIENT_SECRET_${providerKey}/OAUTH_${providerKey}_CLIENT_SECRET`,
+            }),
+          )
+          return
+        }
+
+        // Look up token URL for this provider
+        const tokenUrls: Record<string, string> = {
+          dropbox: 'https://api.dropboxapi.com/oauth2/token',
+          googledrive: 'https://oauth2.googleapis.com/token',
+          onedrive: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+          github: 'https://github.com/login/oauth/access_token',
+        }
+        const tokenUrl = tokenUrls[provider.toLowerCase()]
+        if (!tokenUrl) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: `Unknown OAuth provider: ${provider}` }))
+          return
+        }
+
+        // Refresh token (client secret added server-side)
+        const tokenBody = new URLSearchParams({
+          refresh_token: refreshToken,
+          client_id: clientId,
+          client_secret: clientSecret,
+          grant_type: 'refresh_token',
+        })
+
+        const upstream = await fetch(tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+          },
+          body: tokenBody.toString(),
+        })
+
+        const text = await upstream.text()
+        res.statusCode = upstream.status
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+        res.end(text)
+      } catch (e) {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'OAuth refresh proxy error' } }))
+      }
+      return
+    }
+
+    // ── Tavily Search (API key security proxy) ──
+    if (path === '/api/search/tavily' && req.method === 'POST') {
+      const env = getEnv()
+      const apiKey = (env.TAVILY_API_KEY || '').trim()
+      if (!apiKey) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: 'Missing TAVILY_API_KEY (server-side only, no VITE_ prefix)' } }))
+        return
+      }
+      try {
+        const rawBody = await readBody(req)
+        const body = JSON.parse(rawBody)
+        
+        const upstream = await fetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
           },
-          body: normalized.body,
+          body: JSON.stringify({
+            api_key: apiKey,  // Added server-side
+            query: body.query,
+            search_depth: body.searchDepth || 'basic',
+            include_answer: body.includeAnswer ?? false,
+            max_results: body.maxResults || 6,
+          }),
         })
-        if (!upstream.ok) {
-          const text = await upstream.text()
-          let msg = 'OpenAI TTS request failed'
-          try {
-            const j = JSON.parse(text) as { error?: { message?: string }; message?: string }
-            const raw = j.error?.message || j.message || ''
-            msg = safeTtsUpstreamMessage(String(raw), msg)
-          } catch {
-            msg = safeTtsUpstreamMessage(text, msg)
-          }
-          res.statusCode = upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502
-          res.setHeader('Content-Type', 'application/json; charset=utf-8')
-          res.end(JSON.stringify({ error: { message: msg } }))
-          return
-        }
-        const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+
+        const text = await upstream.text()
         res.statusCode = upstream.status
-        res.setHeader('Content-Type', ct)
-        if (upstream.body) {
-          pipeWebReadableToResWithClientAbort(req, res, upstream.body as import('stream/web').ReadableStream)
-        } else {
-          const buf = await upstream.arrayBuffer()
-          res.end(Buffer.from(buf))
-        }
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
+        res.end(text)
       } catch (e) {
         res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(
-          JSON.stringify({
-            error: {
-              message: safeTtsUpstreamMessage(e instanceof Error ? e.message : 'TTS proxy error', 'TTS proxy error'),
-            },
-          })
-        )
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: { message: e instanceof Error ? e.message : 'Tavily search proxy error' } }))
       }
       return
     }
@@ -1668,19 +958,13 @@ function attachProxy(
         const upstream = await fetch('http://localhost:5199/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
-          body: rawBody,
+          body: rawBody as unknown as BodyInit,
         })
         const text = await upstream.text()
         res.statusCode = upstream.status
         res.setHeader('Content-Type', 'application/json')
         res.end(text)
-      } catch (e) {
-        if (isRequestBodyTooLargeError(e)) {
-          res.statusCode = 413
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: { message: 'Request body too large' } }))
-          return
-        }
+      } catch {
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ error: 'Voice analysis service unavailable', vocalState: 'Unable to analyse voice' }))
@@ -1691,29 +975,17 @@ function attachProxy(
     // ── X (Twitter) API proxy ──
     if (path === '/api/x/tweet' && req.method === 'POST') {
       const env = getEnv()
-      const apiKey = (env.X_API_KEY || '').trim()
-      const apiSecret = (env.X_API_SECRET || '').trim()
-      const accessToken = (env.X_ACCESS_TOKEN || '').trim()
-      const accessTokenSecret = (env.X_ACCESS_TOKEN_SECRET || '').trim()
-      if (!apiKey || !apiSecret || !accessToken || !accessTokenSecret) {
+      const bearerToken = (env.X_BEARER_TOKEN || env.X_ACCESS_TOKEN || '').trim()
+      if (!bearerToken) {
         res.statusCode = 401; res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: 'Missing X API credentials' } })); return
+        res.end(JSON.stringify({ error: { message: 'Missing X bearer credential' } })); return
       }
       try {
         const body = JSON.parse(await readBody(req))
-        const OAuth = (await import('oauth-1.0a')).default
-        const CryptoJS = (await import('crypto-js')).default
-        const oauth = OAuth({
-          consumer: { key: apiKey, secret: apiSecret },
-          signature_method: 'HMAC-SHA1',
-          hash_function(baseString: string, key: string) { return CryptoJS.HmacSHA1(baseString, key).toString(CryptoJS.enc.Base64) },
-        })
-        const token = { key: accessToken, secret: accessTokenSecret }
         const url = 'https://api.twitter.com/2/tweets'
-        const oauthHeader = oauth.toHeader(oauth.authorize({ url, method: 'POST' }, token))
         const upstream = await fetch(url, {
           method: 'POST',
-          headers: { ...oauthHeader, 'Content-Type': 'application/json' },
+          headers: { Authorization: `Bearer ${bearerToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         })
         const text = await upstream.text()
@@ -1810,16 +1082,16 @@ function attachProxy(
     // ── Email IMAP/SMTP proxy ──
     if (path?.startsWith('/api/email/') && req.method === 'POST') {
       const env = getEnv()
-      const emailAction = path.replace('/api/email/', '')
+      const emailAction = path.replaceAll('/api/email/', '')
       const body = JSON.parse(await readBody(req) || '{}')
 
       const acctId = (body.account || env.EMAIL_1_ADDRESS || '').trim()
       let emailAddr = ''
       let emailPass = ''
       const imapHost = (env.EMAIL_IMAP_HOST || 'mail.livemail.co.uk').trim()
-      const imapPort = parseInt(env.EMAIL_IMAP_PORT || '993', 10)
+      const imapPort = Number.parseInt(env.EMAIL_IMAP_PORT || '993', 10)
       const smtpHost = (env.EMAIL_SMTP_HOST || 'smtp.livemail.co.uk').trim()
-      const smtpPort = parseInt(env.EMAIL_SMTP_PORT || '465', 10)
+      const smtpPort = Number.parseInt(env.EMAIL_SMTP_PORT || '465', 10)
 
       if (acctId === (env.EMAIL_2_ADDRESS || '').trim()) {
         emailAddr = (env.EMAIL_2_ADDRESS || '').trim()
@@ -1836,7 +1108,7 @@ function attachProxy(
       }
 
       try {
-        const { ImapFlow } = await import('imapflow') as ImapFlowModule
+        const { ImapFlow } = (await import('imapflow')) as unknown as ImapFlowModule
 
         if (emailAction === 'inbox' || emailAction === 'search') {
           const client = new ImapFlow({ host: imapHost, port: imapPort, secure: true, auth: { user: emailAddr, pass: emailPass }, logger: false })
@@ -1847,12 +1119,12 @@ function attachProxy(
             const limit = body.limit || 20
             let msgUids: number[]
             if (emailAction === 'search' && body.query) {
-              msgUids = (await client.search({ or: [{ subject: body.query }, { from: body.query }, { body: body.query }] })) as number[]
+              msgUids = await client.search({ or: [{ subject: body.query }, { from: body.query }, { body: body.query }] })
               msgUids = msgUids.slice(-limit).reverse()
             } else {
               const total = client.mailbox?.exists || 0
               const from = Math.max(1, total - limit + 1)
-              msgUids = (await client.search({ seq: `${from}:*` })) as number[]
+              msgUids = await client.search({ seq: `${from}:*` })
               msgUids = msgUids.reverse()
             }
             const messages: MailListRow[] = []
@@ -1868,7 +1140,7 @@ function attachProxy(
                 subject: env2.subject || '(no subject)',
                 date: env2.date ? new Date(env2.date).toISOString() : '',
                 snippet: '',
-                seen: (msg.flags || new Set()).has('\\Seen'),
+                seen: (msg.flags || new Set()).has(String.raw`\Seen`),
                 hasAttachments: !!(msg.bodyStructure?.childNodes?.length),
               })
             }
@@ -1898,9 +1170,9 @@ function attachProxy(
                 cc: formatAddrPlain(env2.cc),
                 subject: env2.subject || '(no subject)',
                 date: env2.date ? new Date(env2.date).toISOString() : '',
-                body: parsed.text || parsed.html?.replace(/<[^>]+>/g, '') || '(empty)',
+                body: parsed.text || stripHtmlTags(parsed.html) || '(empty)',
                 replyTo: formatAddrPlain(env2.replyTo),
-                seen: (msg.flags || new Set()).has('\\Seen'),
+                seen: (msg.flags || new Set()).has(String.raw`\Seen`),
                 hasAttachments: (parsed.attachments || []).length > 0,
                 snippet: (parsed.text || '').slice(0, 200),
               },
@@ -1957,8 +1229,8 @@ function attachProxy(
           await client.connect()
           const lock = await client.getMailboxLock(body.folder || 'INBOX')
           try {
-            if (body.read) { await client.messageFlagsAdd(body.uid, ['\\Seen']) }
-            else { await client.messageFlagsRemove(body.uid, ['\\Seen']) }
+            if (body.read) { await client.messageFlagsAdd(body.uid, [String.raw`\Seen`]) }
+            else { await client.messageFlagsRemove(body.uid, [String.raw`\Seen`]) }
           } finally { lock.release(); await client.logout() }
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ ok: true }))
@@ -2002,7 +1274,13 @@ function attachProxy(
           res.end(JSON.stringify({ error: { message: 'SMS text too long (max 1000 characters)' } }))
           return
         }
-        const digits = vonageShared.normalizeVonagePhoneDigits(rawTo)
+        let digits = rawTo.replaceAll(/\s+/g, '')
+        if (digits.startsWith('00')) digits = digits.slice(2)
+        if (digits.startsWith('+')) digits = digits.slice(1)
+        digits = digits.replaceAll(/\D/g, '')
+        if (digits.length === 11 && digits.startsWith('0')) {
+          digits = `44${digits.slice(1)}`
+        }
         if (digits.length < 8 || digits.length > 15) {
           res.statusCode = 400
           res.setHeader('Content-Type', 'application/json')
@@ -2022,7 +1300,7 @@ function attachProxy(
         })
         const data = await upstream.json() as { messages?: Array<{ status?: string; 'message-id'?: string; to?: string; 'error-text'?: string }> }
         const msg = data.messages?.[0]
-        if (!msg || msg.status !== '0') {
+        if (msg?.status !== '0') {
           const errText = msg?.['error-text'] || `Vonage status ${msg?.status ?? 'unknown'}`
           res.statusCode = 502
           res.setHeader('Content-Type', 'application/json')
@@ -2093,7 +1371,7 @@ function attachProxy(
           res.end(JSON.stringify({ error: { message: 'Invalid phone number. Use international format (e.g. +447700900123).' } }))
           return
         }
-        const fromDigits = fromRaw.replace(/\D/g, '')
+        const fromDigits = fromRaw.replaceAll(/\D/g, '')
         if (fromDigits.length < 8 || fromDigits.length > 15) {
           res.statusCode = 400
           res.setHeader('Content-Type', 'application/json')
@@ -2173,132 +1451,12 @@ function attachProxy(
       return
     }
 
-    // ── Vonage inbound webhooks (Tier 5 — signed JWT) ──
-    if (
-      (path === '/api/vonage/webhook/answer' && (req.method === 'GET' || req.method === 'POST')) ||
-      (path === '/api/vonage/webhook/event' && req.method === 'POST')
-    ) {
-      try {
-        const env = getEnv()
-        let rawBody = Buffer.alloc(0)
-        if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-          rawBody = await readBodyRaw(req)
-        }
-        const gate = checkVonageInboundWebhook(req, rawBody, env)
-        if (!gate.ok) {
-          res.statusCode = gate.status
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify(gate.body))
-          return
-        }
-        if (path === '/api/vonage/webhook/event') {
-          try {
-            const payload = rawBody.length > 0 ? JSON.parse(rawBody.toString()) : {}
-            vonageEventStore.persistEvent(payload, { type: 'voice-event' })
-          } catch { /* ignore parse errors — still return 204 */ }
-          res.statusCode = 204
-          res.end()
-          return
-        }
-        const wsUri = vonageShared.buildVonageAiVoiceWebSocketUri(env)
-        const ncco = wsUri
-          ? [
-              {
-                action: 'connect',
-                endpoint: [
-                  {
-                    type: 'websocket',
-                    uri: wsUri,
-                    'content-type': 'audio/l16;rate=16000',
-                  },
-                ],
-              },
-            ]
-          : [
-              {
-                action: 'talk',
-                text: 'Jarvis voice bridge is not configured. Set VONAGE_PUBLIC_WS_URL and run the AI voice bridge.',
-                language: 'en-GB',
-              },
-            ]
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(JSON.stringify(ncco))
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
-      }
-      return
-    }
-
-    // ── Vonage inbound SMS webhook ──
-    if (
-      (path === '/api/vonage/webhook/inbound-sms' && (req.method === 'GET' || req.method === 'POST'))
-    ) {
-      try {
-        const env = getEnv()
-        let rawBody = Buffer.alloc(0)
-        let smsPayload: Record<string, unknown> = {}
-        if (req.method === 'POST') {
-          rawBody = await readBodyRaw(req)
-          try { smsPayload = JSON.parse(rawBody.toString()) } catch { /* try form-encoded below */ }
-          if (!smsPayload.msisdn && rawBody.length > 0) {
-            // Classic SMS webhooks may be form-encoded
-            const params = new URLSearchParams(rawBody.toString())
-            smsPayload = Object.fromEntries(params.entries())
-          }
-        } else {
-          // GET — params in query string
-          const u = new URL(req.url || '', 'http://localhost')
-          smsPayload = Object.fromEntries(u.searchParams.entries())
-        }
-        // Persist the inbound SMS
-        vonageEventStore.persistEvent(smsPayload, { type: 'inbound-sms' })
-        console.log('[vonage] Inbound SMS received:', {
-          from: smsPayload.msisdn || smsPayload.from || 'unknown',
-          text: typeof smsPayload.text === 'string' ? smsPayload.text.slice(0, 100) : '',
-          messageId: smsPayload.messageId || smsPayload['message-id'] || null,
-        })
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ ok: true }))
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
-      }
-      return
-    }
-
-    // ── Vonage inbound SMS read ──
-    if (path === '/api/vonage/inbound-sms' && req.method === 'GET') {
-      try {
-        const limit = parseInt(new URL(req.url || '', 'http://localhost').searchParams.get('limit') || '20', 10)
-        const events = vonageEventStore.readRecentEvents({ type: 'inbound-sms', limit })
-        const messages = events.map((e: Record<string, unknown>) => ({
-          from: e.msisdn || e.from || 'unknown',
-          text: typeof e.text === 'string' ? e.text : '',
-          receivedAt: e._receivedAt || '',
-          messageId: e.messageId || e['message-id'] || null,
-        }))
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ ok: true, messages }))
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: { message: (e as Error).message } }))
-      }
-      return
-    }
-
     // ── Story library proxy ──
     if (path === '/api/stories/search' && req.method === 'GET') {
       const params = new URL(req.url || '', 'http://localhost').searchParams
       const q = params.get('q') || ''
       const source = params.get('source') || 'all'
-      const limit = parseInt(params.get('limit') || '10', 10)
+      const limit = Number.parseInt(params.get('limit') || '10', 10)
       const results: Array<{ id: string; title: string; authors: string[]; source: string; subjects?: string[]; snippet?: string }> = []
       try {
         if (source === 'all' || source === 'gutenberg') {
@@ -2380,7 +1538,7 @@ function attachProxy(
           res.statusCode = 200; res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ title: cached.title, authors: cached.authors, content, page: p, totalPages, totalChars: cached.fullText.length, hasMore: p < totalPages, truncated: p < totalPages }))
         } else {
-          const rowIdx = id.replace('hf-tinystories-', '')
+          const rowIdx = id.replaceAll('hf-tinystories-', '')
           const hfCtrl = new AbortController()
           const hfTimer = setTimeout(() => hfCtrl.abort(), 10000)
           const hfRes = await fetch(`https://datasets-server.huggingface.co/rows?dataset=roneneldan/TinyStories&config=default&split=train&offset=${rowIdx}&length=1`, { signal: hfCtrl.signal })
@@ -2460,11 +1618,11 @@ function attachProxy(
       try {
         const raw = await readBody(req)
         const parsed = JSON.parse(raw)
-        const body = sunoGenerateBody.buildAllowedSunoGenerateBody(parsed)
+        if (!parsed.callBackUrl) parsed.callBackUrl = 'https://localhost/suno-callback'
         const upstream = await fetch('https://api.sunoapi.org/api/v1/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sunoKey}` },
-          body: JSON.stringify(body),
+          body: JSON.stringify(parsed),
         })
         const text = await upstream.text()
         res.statusCode = upstream.status
@@ -2585,8 +1743,7 @@ function attachProxy(
     }
 
     try {
-      const bodyRaw = await readBody(req)
-      const body = llmChatBody.normalizeLlmChatCompletionBody(bodyRaw, env, 'openai')
+      const body = await readBody(req)
       const upstream = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -2611,6 +1768,13 @@ function attachProxy(
   })
 }
 
+export function attachOpenAiProxyForTests(
+  getEnv: () => Record<string, string>,
+  middlewares: Connect.Server,
+) {
+  attachProxy(getEnv, middlewares)
+}
+
 /**
  * Proxies POST /api/llm → OpenAI-compatible chat completions so the API key stays server-side during dev/preview.
  * Also exposes POST /api/realtime/session → OpenAI `client_secrets` for browser WebRTC Realtime sessions.
@@ -2619,26 +1783,16 @@ export function openaiProxyPlugin(): Plugin {
   return {
     name: 'openai-proxy',
     configureServer(server) {
-      const loaded = loadEnv(server.config.mode, server.config.envDir, '')
-      attachProxy(() => ({ ...loaded }), server.middlewares, server.config.root)
-      const stopVision = attachJarvisVisionAutostart({
-        projectRoot: server.config.root,
-        loadedEnv: loaded,
-      })
-      return () => {
-        stopVision()
-      }
+      attachProxy(
+        () => loadEnv(server.config.mode, server.config.envDir, ''),
+        server.middlewares
+      )
     },
     configurePreviewServer(server) {
-      const loaded = loadEnv(server.config.mode, server.config.envDir, '')
-      attachProxy(() => ({ ...loaded }), server.middlewares, server.config.root)
-      const stopVision = attachJarvisVisionAutostart({
-        projectRoot: server.config.root,
-        loadedEnv: loaded,
-      })
-      return () => {
-        stopVision()
-      }
+      attachProxy(
+        () => loadEnv(server.config.mode, server.config.envDir, ''),
+        server.middlewares
+      )
     },
   }
 }

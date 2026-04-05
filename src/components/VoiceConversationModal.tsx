@@ -104,6 +104,7 @@ export function VoiceConversationModal({
   }, [])
 
   const runVoiceTurn = useCallback(
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- voice turn handler coordinates model selection, TTS, interrupt, and error paths in a single user-facing flow
     async (userText: string) => {
       if (busyRef.current) return
       busyRef.current = true

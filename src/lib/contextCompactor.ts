@@ -136,7 +136,7 @@ function buildMiddleTruncatedMessages(messages: ConversationTurn[]): Conversatio
   let lastKeptNonSystemIndex = -1
 
   for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]!
+    const m = messages[i]
     if (m.role === 'system') {
       out.push(m)
       continue
@@ -147,7 +147,7 @@ function buildMiddleTruncatedMessages(messages: ConversationTurn[]): Conversatio
     }
     let droppedBetween = false
     for (let j = lastKeptNonSystemIndex + 1; j < i; j++) {
-      const mid = messages[j]!
+      const mid = messages[j]
       if (mid.role !== 'system' && !keepNonSystem.has(j)) {
         droppedBetween = true
         break
@@ -225,7 +225,7 @@ function contentLooksLikeKnowledgeLookup(content: string): boolean {
     const ch = content[i]
     if (ch >= '0' && ch <= '9') {
       let j = i
-      while (j < content.length && /[\d.]/.test(content[j]!)) j++
+      while (j < content.length && /[\d.]/.test(content[j])) j++
       if (content[j] === '%') {
         return true
       }
@@ -251,7 +251,7 @@ export function selectiveFilter(messages: ConversationTurn[], intentRoute: strin
   const lastUserIndex = messages.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1)
 
   for (let i = 0; i < n; i++) {
-    if (messages[i]!.role === 'system') {
+    if (messages[i].role === 'system') {
       keep.add(i)
     }
   }

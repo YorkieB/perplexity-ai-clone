@@ -170,7 +170,6 @@ describe('Screen agent — runtime regression (voice coexistence)', () => {
       expect(gate.isBlocked(action)).toBe(true)
       n += 1
     }
-    // eslint-disable-next-line no-console
     console.info(`[regression] DENYLIST entries tested: ${String(n)}`)
     expect(n).toBe(entries.length)
   })

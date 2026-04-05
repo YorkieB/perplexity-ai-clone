@@ -24,7 +24,7 @@ function base64UrlEncode(buffer: ArrayBuffer): string {
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]!)
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/={1,16}$/, '')
 }
 
 async function sha256(plain: string): Promise<ArrayBuffer> {

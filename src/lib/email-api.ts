@@ -3,6 +3,11 @@
  * All calls go through /api/email/* to keep credentials server-side.
  */
 
+/** Primary email account used as default when no account is specified. */
+export const DEFAULT_EMAIL_ACCOUNT = 'contact@yorkiebrown.uk'
+/** Secondary email account. */
+export const SECONDARY_EMAIL_ACCOUNT = 'yorkie@yorkiebrown.uk'
+
 export interface EmailMessage {
   uid: number
   messageId: string

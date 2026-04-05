@@ -292,10 +292,10 @@ export async function listCalendars(accessToken: string): Promise<CalendarInfo[]
 
   const data = (await res.json()) as { items?: Array<{ id?: string; summary?: string; primary?: boolean; accessRole?: string }> }
   return (data.items ?? [])
-    .filter(c => c.id)
+    .filter((c): c is { id: string; summary?: string; primary?: boolean; accessRole?: string } => Boolean(c.id))
     .map(c => ({
-      id: c.id!,
-      summary: c.summary || c.id!,
+      id: c.id,
+      summary: c.summary || c.id,
       primary: c.primary ?? false,
       accessRole: c.accessRole || 'reader',
     }))

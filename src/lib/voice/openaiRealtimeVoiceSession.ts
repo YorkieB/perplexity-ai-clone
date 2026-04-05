@@ -122,6 +122,7 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     this.setSessionState('error')
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- WebRTC setup with SDP negotiation, ICE, DataChannel, and MediaStream branches; splitting would break sequential handshake flow
   async connect(): Promise<void> {
     if (typeof RTCPeerConnection === 'undefined' || typeof navigator?.mediaDevices?.getUserMedia !== 'function') {
       const err = new VoiceRealtimeError(
@@ -383,9 +384,8 @@ export class OpenAIRealtimeVoiceSession implements VoiceSession {
     this.activeResponseId = null
   }
 
-  sendAudioChunk(chunk: ArrayBuffer | Uint8Array): void {
+  sendAudioChunk(_chunk: ArrayBuffer | Uint8Array): void {
     /* WebRTC sends mic audio via the added MediaStreamTrack; chunk APIs are for future/non-WebRTC paths. */
-    if (chunk.byteLength < 0) return
   }
 
   abortAssistant(): void {

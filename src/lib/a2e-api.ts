@@ -1,5 +1,5 @@
-/**
- * A2E (video.a2e.ai) — all requests go through same-origin `/api/a2e/*` proxy
+﻿/**
+ * A2E (video.a2e.ai) â€” all requests go through same-origin `/api/a2e/*` proxy
  * so the API key stays in server `.env` (Vite dev + Electron production).
  */
 import type { A2EMediaType, A2EModelId, A2ETask, UploadedFile } from '@/lib/types'
@@ -25,42 +25,46 @@ export const A2E_TEXT_TO_IMAGE_REQ_KEYS: readonly { readonly value: 'high_aes_ge
   { value: 'high_aes', label: 'Manga style' },
 ]
 
-/** localStorage key — QueryInput and chat T2I share this. */
+/** localStorage key â€” QueryInput and chat T2I share this. */
 export const A2E_T2I_REQ_KEY_STORAGE = 'a2e-t2i-req-key'
+
+function logA2eDegradedPath(message: string, error: unknown): void {
+  console.warn(`[A2E] ${message}`, error)
+}
 
 export function readStoredT2iReqKey(): 'high_aes_general_v21_L' | 'high_aes' {
   if (globalThis.window === undefined) return 'high_aes_general_v21_L'
   try {
     const v = globalThis.window.localStorage.getItem(A2E_T2I_REQ_KEY_STORAGE)
     if (v === 'high_aes' || v === 'high_aes_general_v21_L') return v
-  } catch {
-    /* ignore */
+  } catch (error) {
+    logA2eDegradedPath('Failed to read stored text-to-image req_key; using default.', error)
   }
   return 'high_aes_general_v21_L'
 }
 
 export const A2E_MODELS: A2EModelOption[] = [
-  { id: 'a2e-text-to-image', name: 'A2E · Text to Image', description: 'Generate images from a text prompt' },
-  { id: 'a2e-nano-banana', name: 'A2E · Gemini Image (Nano)', description: 'Gemini-powered image generation & editing' },
-  { id: 'a2e-image-to-video', name: 'A2E · Image to Video', description: 'Animate a still image into a short video' },
-  { id: 'a2e-talking-photo', name: 'A2E · Talking Photo', description: 'Animate a photo with your audio' },
-  { id: 'a2e-talking-video', name: 'A2E · Talking Video', description: 'Drive a video with new audio + prompts' },
-  { id: 'a2e-avatar-video', name: 'A2E · Avatar Lip-sync Video', description: 'AI avatar video with lip-sync from audio' },
-  { id: 'a2e-tts', name: 'A2E · Text to Speech', description: 'Synthesize speech audio from text' },
-  { id: 'a2e-voice-clone', name: 'A2E · Voice Clone Training', description: 'Train a custom voice from a sample URL' },
-  { id: 'a2e-caption-removal', name: 'A2E · Caption Removal', description: 'Remove on-screen text from a video' },
-  { id: 'a2e-dubbing', name: 'A2E · AI Dubbing', description: 'Translate / dub audio to another language' },
-  { id: 'a2e-live-stream', name: 'A2E · Live Streaming', description: 'Interactive streaming avatars (see A2E docs)' },
-  { id: 'a2e-virtual-try-on', name: 'A2E · Virtual Try-On', description: 'Four mask images: person, person mask, clothing, clothing mask' },
-  { id: 'a2e-motion-transfer', name: 'A2E · Motion Transfer', description: 'Drive a video with a reference image (video→video)' },
-  { id: 'a2e-face-swap', name: 'A2E · Face Swap', description: 'Swap a face image onto a video' },
-  { id: 'a2e-watermark', name: 'A2E · Watermark', description: 'Add text or image watermark to media' },
-  { id: 'a2e-custom-avatar', name: 'A2E · Custom Avatar (train)', description: 'Train a custom avatar from video or image URL' },
+  { id: 'a2e-text-to-image', name: 'A2E Â· Text to Image', description: 'Generate images from a text prompt' },
+  { id: 'a2e-nano-banana', name: 'A2E Â· Gemini Image (Nano)', description: 'Gemini-powered image generation & editing' },
+  { id: 'a2e-image-to-video', name: 'A2E Â· Image to Video', description: 'Animate a still image into a short video' },
+  { id: 'a2e-talking-photo', name: 'A2E Â· Talking Photo', description: 'Animate a photo with your audio' },
+  { id: 'a2e-talking-video', name: 'A2E Â· Talking Video', description: 'Drive a video with new audio + prompts' },
+  { id: 'a2e-avatar-video', name: 'A2E Â· Avatar Lip-sync Video', description: 'AI avatar video with lip-sync from audio' },
+  { id: 'a2e-tts', name: 'A2E Â· Text to Speech', description: 'Synthesize speech audio from text' },
+  { id: 'a2e-voice-clone', name: 'A2E Â· Voice Clone Training', description: 'Train a custom voice from a sample URL' },
+  { id: 'a2e-caption-removal', name: 'A2E Â· Caption Removal', description: 'Remove on-screen text from a video' },
+  { id: 'a2e-dubbing', name: 'A2E Â· AI Dubbing', description: 'Translate / dub audio to another language' },
+  { id: 'a2e-live-stream', name: 'A2E Â· Live Streaming', description: 'Interactive streaming avatars (see A2E docs)' },
+  { id: 'a2e-virtual-try-on', name: 'A2E Â· Virtual Try-On', description: 'Four mask images: person, person mask, clothing, clothing mask' },
+  { id: 'a2e-motion-transfer', name: 'A2E Â· Motion Transfer', description: 'Drive a video with a reference image (videoâ†’video)' },
+  { id: 'a2e-face-swap', name: 'A2E Â· Face Swap', description: 'Swap a face image onto a video' },
+  { id: 'a2e-watermark', name: 'A2E Â· Watermark', description: 'Add text or image watermark to media' },
+  { id: 'a2e-custom-avatar', name: 'A2E Â· Custom Avatar (train)', description: 'Train a custom avatar from video or image URL' },
 ]
 
 /** A2E OpenAPI "Start Text-to-Image" only documents two `req_key` values (no separate Flux key). */
 export const A2E_T2I_REQ_KEY_DOCUMENTATION =
-  'Official A2E OpenAPI lists `req_key` as: high_aes_general_v21_L (general) and high_aes (manga). There is no Flux enum in the published spec; newer backends may accept other keys—check your A2E dashboard or refreshed API docs.'
+  'Official A2E OpenAPI lists `req_key` as: high_aes_general_v21_L (general) and high_aes (manga). There is no Flux enum in the published spec; newer backends may accept other keysâ€”check your A2E dashboard or refreshed API docs.'
 
 export function isA2eEnabled(): boolean {
   return Boolean(import.meta.env.VITE_ENABLE_A2E)
@@ -115,22 +119,43 @@ function asA2eRecord(input: unknown): Record<string, unknown> {
   return {}
 }
 
+function toSafeString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return fallback
+}
+
+function toSafeTrimmedString(value: unknown, fallback = ''): string {
+  return toSafeString(value, fallback).trim()
+}
+
 /** A2E sometimes returns `_id`, sometimes `id` / `task_id` depending on endpoint version. */
 export function extractA2TaskId(data: unknown): string {
   const d = asA2eRecord(data)
   const raw = d._id ?? d.id ?? d.task_id ?? d.taskId
-  return String(raw ?? '').trim()
+  return toSafeTrimmedString(raw)
 }
 
 async function findTextToImageRowInList(id: string): Promise<Record<string, unknown> | null> {
   const res = await a2eFetch(`/v1/userText2image/allRecords?pageNum=1&pageSize=50`)
-  if (!res.ok) return null
+  if (!res.ok) {
+    console.warn('[A2E] Text-to-image list lookup failed during polling fallback; returning null row.', {
+      status: res.status,
+      statusText: res.statusText,
+      id,
+    })
+    return null
+  }
   try {
     const json = await parseJson<A2eEnvelope<{ rows?: Record<string, unknown>[] }>>(res)
     const data = assertOk(json)
     const rows = data.rows ?? []
     return rows.find((r) => String(r._id ?? r.id) === id) ?? null
-  } catch {
+  } catch (error) {
+    console.warn('[A2E] Text-to-image list lookup parsing failed during polling fallback; returning null row.', {
+      id,
+      error,
+    })
     return null
   }
 }
@@ -144,7 +169,7 @@ async function pollTextToImage(id: string): Promise<{ image_urls?: string[]; cur
     if (res.status === 404) {
       const row = await findTextToImageRowInList(id)
       if (row) {
-        const st = String(row.current_status || '')
+        const st = toSafeString(row.current_status)
         if (isTerminalStatus(st)) {
           return {
             image_urls: row.image_urls as string[] | undefined,
@@ -159,7 +184,7 @@ async function pollTextToImage(id: string): Promise<{ image_urls?: string[]; cur
 
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = asA2eRecord(assertOk(json))
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) {
       return {
         image_urls: data.image_urls as string[] | undefined,
@@ -177,7 +202,7 @@ async function pollNanoBanana(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/userNanoBanana/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -189,7 +214,7 @@ async function pollImageToVideo(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/userImage2Video/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -201,7 +226,7 @@ async function pollTalkingPhoto(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/talkingPhoto/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -215,7 +240,7 @@ async function pollTalkingVideoList(id: string): Promise<Record<string, unknown>
     const data = assertOk(json)
     const row = data.rows?.find((r) => String(r._id) === id)
     if (row) {
-      const st = String(row.current_status || '')
+      const st = toSafeString(row.current_status)
       if (isTerminalStatus(st)) return row
     }
     await sleep(3000)
@@ -228,7 +253,7 @@ async function pollCaptionRemoval(id: string): Promise<Record<string, unknown>> 
     const res = await a2eFetch(`/v1/userCaptionRemoval/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -242,7 +267,7 @@ async function pollDubbing(id: string): Promise<Record<string, unknown>> {
     const data = assertOk(json)
     const row = data.rows?.find((r) => String(r._id) === id)
     if (row) {
-      const st = String(row.current_status || '')
+      const st = toSafeString(row.current_status)
       if (isTerminalStatus(st)) return row
     }
     await sleep(3000)
@@ -257,7 +282,7 @@ async function pollVoiceTraining(id: string): Promise<Record<string, unknown>> {
     const rows = assertOk(json)
     const row = rows.find((r) => String(r._id) === id)
     if (row) {
-      const st = String(row.current_status || '')
+      const st = toSafeString(row.current_status)
       if (isTerminalStatus(st)) return row
     }
     await sleep(2000)
@@ -276,7 +301,7 @@ async function pollAvatarVideoAwsResult(id: string): Promise<Record<string, unkn
     const arr = assertOk(json)
     const row = Array.isArray(arr) ? arr.find((r) => String(r._id) === id) || arr[0] : null
     if (row) {
-      const st = String(row.status || '').toLowerCase()
+      const st = toSafeString(row.status).toLowerCase()
       if (st === 'success' || st === 'fail') return row
     }
     await sleep(3000)
@@ -289,7 +314,7 @@ async function pollVirtualTryOn(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/virtualTryOn/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -301,7 +326,7 @@ async function pollMotionTransfer(id: string): Promise<Record<string, unknown>> 
     const res = await a2eFetch(`/v1/motionTransfer/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '')
+    const st = toSafeString(data.current_status)
     if (isTerminalStatus(st)) return data
     await sleep(3000)
   }
@@ -313,7 +338,7 @@ async function pollFaceSwap(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/userFaceSwapTask/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '').toLowerCase()
+    const st = toSafeString(data.current_status).toLowerCase()
     if (st === 'completed' || st === 'failed') return data
     await sleep(3000)
   }
@@ -325,8 +350,8 @@ async function pollUserVideoTwin(id: string): Promise<Record<string, unknown>> {
     const res = await a2eFetch(`/v1/userVideoTwin/${encodeURIComponent(id)}`)
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = assertOk(json)
-    const st = String(data.current_status || '').toLowerCase()
-    const anchor = String(data.anchor_id || '').trim()
+    const st = toSafeString(data.current_status).toLowerCase()
+    const anchor = toSafeTrimmedString(data.anchor_id)
     if (st === 'failed') return data
     if (anchor || st === 'completed') return data
     await sleep(4000)
@@ -401,7 +426,9 @@ function inferMediaFromUrl(url: string): A2EMediaType {
   return 'video'
 }
 
-export async function runA2eChatGeneration(
+// NOSONAR: single orchestration gateway intentionally handles all A2E generation modes.
+// eslint-disable-next-line sonarjs/cognitive-complexity -- single gateway spanning all A2E model dispatch paths; splitting would break shared task/summary assembly
+export async function runA2eChatGeneration( // NOSONAR
   modelId: A2EModelId,
   query: string,
   _files?: UploadedFile[]
@@ -423,9 +450,9 @@ export async function runA2eChatGeneration(
         '',
         `- [Open streaming console](${consoleUrl})`,
         `- [API hub](${A2E_STREAMING_API_ROOT}) (search docs for *streaming* / Agora)`,
-        `- [Tutorial](${A2E_STREAMING_HELP.tutorial}) · [Discord](${A2E_STREAMING_HELP.discord})`,
+        `- [Tutorial](${A2E_STREAMING_HELP.tutorial}) Â· [Discord](${A2E_STREAMING_HELP.discord})`,
         '',
-        'In this app: **A2E Studio → Live stream** has launch links and steps.',
+        'In this app: **A2E Studio â†’ Live stream** has launch links and steps.',
       ].join('\n'),
     }
   }
@@ -455,13 +482,13 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollTalkingPhoto(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Talking photo failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Talking photo ready.' }
   }
 
@@ -490,13 +517,13 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollTalkingVideoList(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Talking video failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Talking video ready.' }
   }
 
@@ -528,13 +555,13 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollDubbing(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'audio', readFailedMsg(polled) || 'Failed'),
         summary: 'Dubbing failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'audio', out ? [out] : []), summary: 'Dubbed audio ready.' }
   }
 
@@ -543,7 +570,7 @@ export async function runA2eChatGeneration(
     const anchor_id = lines[0] && !/^https?:\/\//i.test(lines[0]) ? lines[0] : ''
     const audioSrc = lines.find((l) => /^https?:\/\//i.test(l)) || ''
     const typeStr = lines.find((l) => l === '0' || l === '1')
-    const anchor_type = typeStr !== undefined ? Number(typeStr) : 0
+    const anchor_type = typeStr === undefined ? 0 : Number(typeStr)
     if (!anchor_id || !audioSrc) {
       return {
         task: taskFail(modelId, 'video', 'Line 1: anchor_id from character_list. Line 2: audio URL. Optional line 3: anchor_type 0 or 1.'),
@@ -572,14 +599,14 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('No video task id in response')
     const polled = await pollAvatarVideoAwsResult(id)
-    const st = String(polled.status || '').toLowerCase()
+    const st = toSafeString(polled.status).toLowerCase()
     if (st !== 'success') {
       return {
-        task: taskFail(modelId, 'video', String(polled.error || 'Failed')),
+        task: taskFail(modelId, 'video', toSafeString(polled.error, 'Failed')),
         summary: 'Avatar lip-sync failed.',
       }
     }
-    const u = String(polled.result || '')
+    const u = toSafeString(polled.result)
     return { task: taskOk(modelId, 'video', u ? [u] : []), summary: 'Avatar video ready.' }
   }
 
@@ -589,7 +616,7 @@ export async function runA2eChatGeneration(
     const trainName = lines.find((l) => !/^https?:\/\//i.test(l)) || 'My voice'
     if (urls.length < 1) {
       return {
-        task: taskFail(modelId, 'info', 'Provide at least one training audio URL (https…).'),
+        task: taskFail(modelId, 'info', 'Provide at least one training audio URL (httpsâ€¦).'),
         summary: 'Need training audio URL.',
       }
     }
@@ -609,7 +636,7 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollVoiceTraining(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'info', readFailedMsg(polled) || 'Training failed'),
         summary: 'Voice training failed.',
@@ -639,13 +666,13 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollVirtualTryOn(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'image', readFailedMsg(polled) || 'Failed'),
         summary: 'Virtual try-on failed.',
       }
     }
-    const out = String(polled.result_image_url || '')
+    const out = toSafeString(polled.result_image_url)
     return { task: taskOk(modelId, 'image', out ? [out] : []), summary: 'Try-on image ready.' }
   }
 
@@ -676,13 +703,13 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollMotionTransfer(id)
-    if (!isSuccessStatus(String(polled.current_status))) {
+    if (!isSuccessStatus(toSafeString(polled.current_status))) {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Motion transfer failed.',
       }
     }
-    const out = String(polled.result_video_url || '')
+    const out = toSafeString(polled.result_video_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Motion transfer video ready.' }
   }
 
@@ -708,21 +735,22 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollFaceSwap(id)
-    const st = String(polled.current_status || '').toLowerCase()
+    const st = toSafeString(polled.current_status).toLowerCase()
     if (st !== 'completed') {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Face swap failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Face swap video ready.' }
   }
 
   if (modelId === 'a2e-watermark') {
     const urls = extractHttpUrls(query)
     const lines = query.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-    const wt = (lines.find((l) => l === 'text' || l === 'image') || 'text') as 'text' | 'image'
+    const mode = lines.find((l) => l === 'text' || l === 'image')
+    const wt: 'text' | 'image' = mode === 'image' ? 'image' : 'text'
     if (urls.length < 1) {
       return {
         task: taskFail(modelId, 'video', 'Line 1: media URL. Include the word **text** or **image**, then watermark text or watermark image URL.'),
@@ -752,7 +780,7 @@ export async function runA2eChatGeneration(
     })
     const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
     const data = asA2eRecord(assertOk(json))
-    const out = String(data.result_url || '')
+    const out = toSafeString(data.result_url)
     const mt = inferMediaFromUrl(out || urls[0])
     if (!out) {
       return {
@@ -789,8 +817,8 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollUserVideoTwin(id)
-    const anchor = String(polled.anchor_id || '').trim()
-    const preview = String(polled.preview_result_url || '').trim()
+    const anchor = toSafeTrimmedString(polled.anchor_id)
+    const preview = toSafeTrimmedString(polled.preview_result_url)
     if (!anchor && !preview) {
       return {
         task: taskFail(modelId, 'info', readFailedMsg(polled) || 'Training failed'),
@@ -821,7 +849,7 @@ export async function runA2eChatGeneration(
     const data = asA2eRecord(assertOk(json))
     const id = extractA2TaskId(data)
     if (!id) throw new Error('Missing task id from A2E')
-    if (isSuccessStatus(String(data.current_status))) {
+    if (isSuccessStatus(toSafeString(data.current_status))) {
       const urls = (data.image_urls as string[] | undefined) || []
       if (urls.length > 0) {
         return { task: taskOk(modelId, 'image', urls), summary: `Generated ${urls.length} image(s).` }
@@ -852,7 +880,7 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollNanoBanana(id)
-    const st = String(polled.current_status || '')
+    const st = toSafeString(polled.current_status)
     if (!isSuccessStatus(st)) {
       return {
         task: taskFail(modelId, 'image', readFailedMsg(polled) || 'Failed'),
@@ -887,14 +915,14 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollImageToVideo(id)
-    const st = String(polled.current_status || '')
+    const st = toSafeString(polled.current_status)
     if (!isSuccessStatus(st)) {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Image-to-video failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Video ready.' }
   }
 
@@ -903,7 +931,7 @@ export async function runA2eChatGeneration(
     try {
       const res = await a2eFetch('/v1/anchor/voice_list', { method: 'GET' })
       const raw = await res.text()
-      const m = raw.match(/[a-f0-9]{24}/i)
+      const m = /[a-f0-9]{24}/i.exec(raw)
       if (m) ttsId = m[0]
     } catch {
       /* optional */
@@ -951,14 +979,14 @@ export async function runA2eChatGeneration(
     const id = extractA2TaskId(data)
     if (!id) throw new Error('A2E did not return a task id')
     const polled = await pollCaptionRemoval(id)
-    const st = String(polled.current_status || '')
+    const st = toSafeString(polled.current_status)
     if (!isSuccessStatus(st)) {
       return {
         task: taskFail(modelId, 'video', readFailedMsg(polled) || 'Failed'),
         summary: 'Caption removal failed.',
       }
     }
-    const out = String(polled.result_url || '')
+    const out = toSafeString(polled.result_url)
     return { task: taskOk(modelId, 'video', out ? [out] : []), summary: 'Processed video ready.' }
   }
 
@@ -986,7 +1014,7 @@ export async function studioTextToImage(params: {
   const data = asA2eRecord(assertOk(json))
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
-  if (isSuccessStatus(String(data.current_status))) {
+  if (isSuccessStatus(toSafeString(data.current_status))) {
     const urls = (data.image_urls as string[] | undefined) || []
     if (urls.length > 0) {
       return taskOk('a2e-text-to-image', 'image', urls)
@@ -1010,7 +1038,7 @@ export async function studioNanoBanana(params: { name: string; prompt: string; i
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollNanoBanana(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-nano-banana', 'image', readFailedMsg(polled) || 'Failed')
   }
   const urls = (polled.image_urls as string[]) || []
@@ -1033,10 +1061,10 @@ export async function studioImageToVideo(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollImageToVideo(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-image-to-video', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-image-to-video', 'video', u ? [u] : [])
 }
 
@@ -1058,10 +1086,10 @@ export async function studioTalkingPhoto(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollTalkingPhoto(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-talking-photo', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-talking-photo', 'video', u ? [u] : [])
 }
 
@@ -1083,10 +1111,10 @@ export async function studioTalkingVideo(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollTalkingVideoList(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-talking-video', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-talking-video', 'video', u ? [u] : [])
 }
 
@@ -1125,7 +1153,7 @@ export async function studioVoiceTrain(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollVoiceTraining(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-voice-clone', 'info', readFailedMsg(polled) || 'Training failed')
   }
   return taskOk('a2e-voice-clone', 'info', [], `Voice clone ready. ID: ${id}`)
@@ -1142,10 +1170,10 @@ export async function studioCaptionRemoval(name: string, source_url: string): Pr
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollCaptionRemoval(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-caption-removal', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-caption-removal', 'video', u ? [u] : [])
 }
 
@@ -1167,10 +1195,10 @@ export async function studioDubbing(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollDubbing(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-dubbing', 'audio', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-dubbing', 'audio', u ? [u] : [])
 }
 
@@ -1200,11 +1228,11 @@ export async function studioAvatarVideo(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('No video task id in response')
   const polled = await pollAvatarVideoAwsResult(id)
-  const st = String(polled.status || '').toLowerCase()
+  const st = toSafeString(polled.status).toLowerCase()
   if (st !== 'success') {
-    return taskFail('a2e-avatar-video', 'video', String(polled.error || 'Failed'))
+    return taskFail('a2e-avatar-video', 'video', toSafeString(polled.error, 'Failed'))
   }
-  const u = String(polled.result || '')
+  const u = toSafeString(polled.result)
   return taskOk('a2e-avatar-video', 'video', u ? [u] : [])
 }
 
@@ -1219,10 +1247,10 @@ export async function studioVirtualTryOn(params: { name: string; image_urls: str
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollVirtualTryOn(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-virtual-try-on', 'image', readFailedMsg(polled) || 'Failed')
   }
-  const out = String(polled.result_image_url || '')
+  const out = toSafeString(polled.result_image_url)
   return taskOk('a2e-virtual-try-on', 'image', out ? [out] : [])
 }
 
@@ -1243,10 +1271,10 @@ export async function studioMotionTransfer(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollMotionTransfer(id)
-  if (!isSuccessStatus(String(polled.current_status))) {
+  if (!isSuccessStatus(toSafeString(polled.current_status))) {
     return taskFail('a2e-motion-transfer', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_video_url || '')
+  const u = toSafeString(polled.result_video_url)
   return taskOk('a2e-motion-transfer', 'video', u ? [u] : [])
 }
 
@@ -1261,10 +1289,10 @@ export async function studioFaceSwap(params: { name: string; face_url: string; v
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollFaceSwap(id)
-  if (String(polled.current_status || '').toLowerCase() !== 'completed') {
+  if (toSafeString(polled.current_status).toLowerCase() !== 'completed') {
     return taskFail('a2e-face-swap', 'video', readFailedMsg(polled) || 'Failed')
   }
-  const u = String(polled.result_url || '')
+  const u = toSafeString(polled.result_url)
   return taskOk('a2e-face-swap', 'video', u ? [u] : [])
 }
 
@@ -1286,7 +1314,7 @@ export async function studioWatermark(params: {
   })
   const json = await a2eReadJsonOrThrow<A2eEnvelope<Record<string, unknown>>>(res)
   const data = asA2eRecord(assertOk(json))
-  const out = String(data.result_url || '')
+  const out = toSafeString(data.result_url)
   if (!out) return taskFail('a2e-watermark', 'video', 'No result URL')
   const mt = inferMediaFromUrl(out)
   return taskOk('a2e-watermark', mt, [out])
@@ -1309,8 +1337,8 @@ export async function studioCustomAvatar(params: {
   const id = extractA2TaskId(data)
   if (!id) throw new Error('A2E did not return a task id')
   const polled = await pollUserVideoTwin(id)
-  const anchor = String(polled.anchor_id || '').trim()
-  const preview = String(polled.preview_result_url || '').trim()
+  const anchor = toSafeTrimmedString(polled.anchor_id)
+  const preview = toSafeTrimmedString(polled.preview_result_url)
   if (!anchor && !preview) {
     return taskFail('a2e-custom-avatar', 'info', readFailedMsg(polled) || 'Failed')
   }
@@ -1350,3 +1378,4 @@ export async function fetchPublicTtsVoices(): Promise<string> {
   const text = await res.text()
   return text
 }
+

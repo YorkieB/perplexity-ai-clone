@@ -92,6 +92,7 @@ function formatRelativeTime(date: Date): string {
  * Called on an interval from App.tsx.
  * Only handles X via API; Threads requires browser control (handled separately).
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- scheduler iterates posts with due-time, platform, and API-call branches; state mutations are coupled by design
 export async function checkAndFireScheduled(
   onThreadsPost?: (text: string) => Promise<void>,
 ): Promise<void> {

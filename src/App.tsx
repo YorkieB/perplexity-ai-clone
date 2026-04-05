@@ -52,10 +52,17 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
-import { shouldPushUiSync } from '@/lib/ui-sync'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
+
+function logAppDegradedPath(message: string, error: unknown): void {
+  console.warn(`[App] ${message}`, error)
+}
+
+type BrowserActBridge = {
+  onJarvisBrowserAct?: (handler: (payload: unknown) => void) => void | (() => void)
+}
 
 function toWorkspaceFile(file: UploadedFile): WorkspaceFile {
   const isImage = file.type.startsWith('image/')
@@ -75,6 +82,20 @@ function toWorkspaceFile(file: UploadedFile): WorkspaceFile {
     content: truncatedContent,
     uploadedAt: file.uploadedAt,
   }
+}
+
+function notifyWorkspaceUploadSummary(
+  existingCount: number,
+  processedCount: number,
+  truncatedCount: number,
+): void {
+  if (existingCount + processedCount > MAX_WORKSPACE_FILES) {
+    toast.info(`Workspace file cap reached (${MAX_WORKSPACE_FILES}). Kept most recent files.`)
+  }
+  if (truncatedCount > 0) {
+    toast.info(`${truncatedCount} file${truncatedCount > 1 ? 's were' : ' was'} truncated for local storage`)
+  }
+  toast.success(`${processedCount} workspace file${processedCount > 1 ? 's' : ''} uploaded`)
 }
 
 function MainApp() {
@@ -111,28 +132,6 @@ function MainApp() {
     enabled: Boolean(wakeWordEnabled) && !voiceModalOpen,
     onWake: () => setVoiceModalOpen(true),
   })
-
-  useEffect(() => {
-    if (!shouldPushUiSync(threads, workspaces, userSettings, Boolean(wakeWordEnabled))) return
-    const t = window.setTimeout(() => {
-      const entries: Record<string, string> = {}
-      try {
-        entries['user-settings'] = JSON.stringify(userSettings)
-        entries['threads'] = JSON.stringify(threads)
-        entries['wake-word-enabled'] = JSON.stringify(wakeWordEnabled)
-        entries['workspaces'] = JSON.stringify(workspaces)
-      } catch {
-        return
-      }
-      void fetch('/api/ui-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entries }),
-        credentials: 'same-origin',
-      }).catch(() => {})
-    }, 2000)
-    return () => window.clearTimeout(t)
-  }, [threads, userSettings, wakeWordEnabled, workspaces])
 
   const [mainAutopilot, setMainAutopilot] = useState(false)
   const [mainAutopilotRunning, setMainAutopilotRunning] = useState(false)
@@ -175,7 +174,11 @@ function MainApp() {
   }, [activeThread?.messages.length])
 
   useEffect(() => {
-    const id = setInterval(() => { checkAndFireScheduled().catch(() => {}) }, 30000)
+    const id = setInterval(() => {
+      checkAndFireScheduled().catch((error) => {
+        logAppDegradedPath('Scheduled social task check failed; continuing with next interval.', error)
+      })
+    }, 30000)
     return () => clearInterval(id)
   }, [])
 
@@ -183,17 +186,19 @@ function MainApp() {
     try {
       if (globalThis.sessionStorage?.getItem(HEALTH_DASHBOARD_403_FLAG)) {
         globalThis.sessionStorage.removeItem(HEALTH_DASHBOARD_403_FLAG)
+        // SECURITY (ADD-CRIT-01): Removed VITE_JARVIS_ADMIN_KEY error message.
+        // Admin validation is server-only; no client-side credential checking.
         toast.error(
-          '403 Forbidden: Health dashboard is only available in development or when VITE_JARVIS_ADMIN_KEY is set (use the same value as server JARVIS_ADMIN_KEY).',
+          '403 Forbidden: Health dashboard authentication failed. Contact your administrator.',
         )
       }
-    } catch {
-      /* storage blocked */
+    } catch (error) {
+      logAppDegradedPath('Session storage access for health-dashboard 403 flag failed; continuing without flag reset.', error)
     }
   }, [])
 
   useEffect(() => {
-    const api = window.electronAPI
+    const api = (globalThis as typeof globalThis & { electronAPI?: BrowserActBridge }).electronAPI
     if (api?.onJarvisBrowserAct === undefined) {
       return
     }
@@ -201,14 +206,21 @@ function MainApp() {
       if (payload === null || typeof payload !== 'object') {
         return
       }
-      const goal = typeof payload.goal === 'string' ? payload.goal : ''
-      const rawSlots = payload.slots
-      const slots =
-        rawSlots !== null && typeof rawSlots === 'object' && !Array.isArray(rawSlots)
-          ? (rawSlots as Record<string, string | undefined>)
-          : {}
-      void handleBrowserActGoal(goal, slots, () => {
+      const safePayload = payload as Record<string, unknown>
+      const goal = typeof safePayload.goal === 'string' ? safePayload.goal : ''
+      const rawSlots = safePayload.slots
+      const slots: Record<string, string | undefined> = {}
+      if (rawSlots !== null && typeof rawSlots === 'object' && !Array.isArray(rawSlots)) {
+        for (const [key, value] of Object.entries(rawSlots as Record<string, unknown>)) {
+          if (typeof value === 'string') {
+            slots[key] = value
+          }
+        }
+      }
+      handleBrowserActGoal(goal, slots, () => {
         setWebBrowserOpen(true)
+      }).catch((error: unknown) => {
+        logAppDegradedPath('Jarvis browser-act callback handling failed; continuing.', error)
       })
     })
   }, [])
@@ -338,13 +350,11 @@ function MainApp() {
         }
       })
 
-      if ((activeWorkspace.workspaceFiles || []).length + processedFiles.length > MAX_WORKSPACE_FILES) {
-        toast.info(`Workspace file cap reached (${MAX_WORKSPACE_FILES}). Kept most recent files.`)
-      }
-      if (truncatedCount > 0) {
-        toast.info(`${truncatedCount} file${truncatedCount > 1 ? 's were' : ' was'} truncated for local storage`)
-      }
-      toast.success(`${processedFiles.length} workspace file${processedFiles.length > 1 ? 's' : ''} uploaded`)
+      notifyWorkspaceUploadSummary(
+        (activeWorkspace.workspaceFiles || []).length,
+        processedFiles.length,
+        truncatedCount,
+      )
     } finally {
       setIsUploadingWorkspaceFiles(false)
       if (workspaceFileInputRef.current) {
@@ -353,6 +363,7 @@ function MainApp() {
     }
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilotFlag?: boolean) => {
     setIsGenerating(true)
     const isAutopilot = autopilotFlag === true
@@ -434,7 +445,9 @@ function MainApp() {
             .map((r) => `[From: ${r.document_title}]\n${r.content}`)
             .join('\n---\n')}`
         }
-      } catch { /* RAG unavailable — continue without it */ }
+      } catch (error) {
+        logAppDegradedPath('RAG search failed during chat query; continuing without RAG context.', error)
+      }
 
       let fileContext = ''
       if (files && files.length > 0) {
@@ -499,7 +512,10 @@ function MainApp() {
         )
       } else {
         const thinkingDepth = classifyComplexity(query)
-        const learnedContext = await getLearnedContext().catch(() => '')
+        const learnedContext = await getLearnedContext().catch((error) => {
+          logAppDegradedPath('Learned-context retrieval failed during chat query; continuing without learned context.', error)
+          return ''
+        })
 
         const sysPrompt = buildJarvisToolSystemPrompt({
           workspaceSystemPrompt: systemPrompt,
@@ -646,7 +662,10 @@ ${sourceGuidance}${autopilotHint}`
     else if (payload.reasoningMode === 'full') thinkingDepth = 'deep'
     else if (payload.reasoningMode === 'minimal') thinkingDepth = 'standard'
     else thinkingDepth = classifyComplexity(payload.userMessage)
-    const learnedContext = await getLearnedContext().catch(() => '')
+    const learnedContext = await getLearnedContext().catch((error) => {
+      logAppDegradedPath('Learned-context retrieval failed during IDE chat; continuing without learned context.', error)
+      return ''
+    })
 
     let ragContext = ''
     try {
@@ -656,8 +675,8 @@ ${sourceGuidance}${autopilotHint}`
           .map((r) => `[From: ${r.document_title}]\n${r.content}`)
           .join('\n---\n')}`
       }
-    } catch {
-      /* RAG optional */
+    } catch (error) {
+      logAppDegradedPath('RAG search failed during IDE chat; continuing without RAG context.', error)
     }
 
     const sysPrompt = buildJarvisToolSystemPrompt({
@@ -724,6 +743,122 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
     return { content, reasoning: reasoning || undefined }
   }
 
+  const renderWorkspaceLanding = () => {
+    if (!activeWorkspace) return null
+
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="max-w-3xl w-full space-y-6">
+          <div className="space-y-2">
+            <h2 className="text-2xl font-bold">{activeWorkspace.name}</h2>
+            {activeWorkspace.description && (
+              <p className="text-muted-foreground">{activeWorkspace.description}</p>
+            )}
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Custom System Prompt</h3>
+            <div className="p-4 bg-card border border-border rounded-lg">
+              <p className="text-sm whitespace-pre-wrap">
+                {activeWorkspace.customSystemPrompt || 'No custom prompt set'}
+              </p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-medium">Workspace Web Search</h3>
+                <p className="text-xs text-muted-foreground">
+                  Workspace override takes precedence over global setting when active.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="workspace-web-search"
+                  checked={isWorkspaceWebSearchEnabled}
+                  onCheckedChange={handleWorkspaceWebSearchToggle}
+                />
+                <Label htmlFor="workspace-web-search" className="text-sm">
+                  {isWorkspaceWebSearchEnabled ? 'Enabled' : 'Disabled'}
+                </Label>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">
+                {activeWorkspace.includeWebSearch === undefined ? 'Inheriting global default' : 'Workspace override'}
+              </Badge>
+              {activeWorkspace.includeWebSearch !== undefined && (
+                <Button variant="ghost" size="sm" onClick={handleResetWorkspaceWebSearch}>
+                  Use global default
+                </Button>
+              )}
+            </div>
+          </div>
+          <Separator />
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-medium">Workspace Files</h3>
+                <p className="text-xs text-muted-foreground">
+                  Files are saved locally for this workspace and automatically added to prompts.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={handleWorkspaceUploadClick}
+                disabled={isUploadingWorkspaceFiles}
+              >
+                <UploadSimple size={16} />
+                {isUploadingWorkspaceFiles ? 'Uploading...' : 'Upload files'}
+              </Button>
+            </div>
+            <input
+              ref={workspaceFileInputRef}
+              type="file"
+              className="hidden"
+              multiple
+              accept="text/plain,text/markdown,text/csv,application/json,application/pdf,image/jpeg,image/png,image/gif,image/webp"
+              onChange={handleWorkspaceFileSelect}
+              disabled={isUploadingWorkspaceFiles}
+            />
+            {(activeWorkspace.workspaceFiles || []).length === 0 ? (
+              <p className="text-sm text-muted-foreground border border-dashed rounded-lg p-4">
+                No files attached to this workspace yet.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {(activeWorkspace.workspaceFiles || []).map((file) => (
+                  <FileAttachment
+                    key={file.id}
+                    file={file}
+                    onRemove={() => handleWorkspaceFileRemove(file.id)}
+                    onPreview={() => handleWorkspaceFilePreview(file)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="pt-4">
+            <QueryInput
+              onSubmit={handleQuery}
+              isLoading={isGenerating}
+              placeholder={`Ask a question in ${activeWorkspace.name}...`}
+              advancedMode={advancedMode || false}
+              onAdvancedModeChange={setAdvancedMode}
+              onVoiceOpen={() => setVoiceModalOpen(true)}
+              autopilot={mainAutopilot}
+              onToggleAutopilot={() => setMainAutopilot((p) => !p)}
+              onStopAutopilot={stopMainAutopilot}
+              autopilotRunning={mainAutopilotRunning}
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderMainContent = () => {
     if (mainView === 'dashboard') {
       return (
@@ -742,117 +877,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
     }
 
     if (activeWorkspace && !activeThread) {
-      return (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="max-w-3xl w-full space-y-6">
-            <div className="space-y-2">
-              <h2 className="text-2xl font-bold">{activeWorkspace.name}</h2>
-              {activeWorkspace.description && (
-                <p className="text-muted-foreground">{activeWorkspace.description}</p>
-              )}
-            </div>
-            <Separator />
-            <div className="space-y-2">
-              <h3 className="text-sm font-medium">Custom System Prompt</h3>
-              <div className="p-4 bg-card border border-border rounded-lg">
-                <p className="text-sm whitespace-pre-wrap">
-                  {activeWorkspace.customSystemPrompt || 'No custom prompt set'}
-                </p>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-medium">Workspace Web Search</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Workspace override takes precedence over global setting when active.
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Switch
-                    id="workspace-web-search"
-                    checked={isWorkspaceWebSearchEnabled}
-                    onCheckedChange={handleWorkspaceWebSearchToggle}
-                  />
-                  <Label htmlFor="workspace-web-search" className="text-sm">
-                    {isWorkspaceWebSearchEnabled ? 'Enabled' : 'Disabled'}
-                  </Label>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline">
-                  {activeWorkspace.includeWebSearch === undefined ? 'Inheriting global default' : 'Workspace override'}
-                </Badge>
-                {activeWorkspace.includeWebSearch !== undefined && (
-                  <Button variant="ghost" size="sm" onClick={handleResetWorkspaceWebSearch}>
-                    Use global default
-                  </Button>
-                )}
-              </div>
-            </div>
-            <Separator />
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-medium">Workspace Files</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Files are saved locally for this workspace and automatically added to prompts.
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                  onClick={handleWorkspaceUploadClick}
-                  disabled={isUploadingWorkspaceFiles}
-                >
-                  <UploadSimple size={16} />
-                  {isUploadingWorkspaceFiles ? 'Uploading...' : 'Upload files'}
-                </Button>
-              </div>
-              <input
-                ref={workspaceFileInputRef}
-                type="file"
-                className="hidden"
-                multiple
-                accept="text/plain,text/markdown,text/csv,application/json,application/pdf,image/jpeg,image/png,image/gif,image/webp"
-                onChange={handleWorkspaceFileSelect}
-                disabled={isUploadingWorkspaceFiles}
-              />
-              {(activeWorkspace.workspaceFiles || []).length === 0 ? (
-                <p className="text-sm text-muted-foreground border border-dashed rounded-lg p-4">
-                  No files attached to this workspace yet.
-                </p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {(activeWorkspace.workspaceFiles || []).map((file) => (
-                    <FileAttachment
-                      key={file.id}
-                      file={file}
-                      onRemove={() => handleWorkspaceFileRemove(file.id)}
-                      onPreview={() => handleWorkspaceFilePreview(file)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="pt-4">
-              <QueryInput
-                onSubmit={handleQuery}
-                isLoading={isGenerating}
-                placeholder={`Ask a question in ${activeWorkspace.name}...`}
-                advancedMode={advancedMode || false}
-                onAdvancedModeChange={setAdvancedMode}
-                onVoiceOpen={() => setVoiceModalOpen(true)}
-                autopilot={mainAutopilot}
-                onToggleAutopilot={() => setMainAutopilot((p) => !p)}
-                onStopAutopilot={stopMainAutopilot}
-                autopilotRunning={mainAutopilotRunning}
-              />
-            </div>
-          </div>
-        </div>
-      )
+      return renderWorkspaceLanding()
     }
 
     if (activeThread) {
@@ -948,10 +973,6 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
       <Toaster position="top-center" />
       <ProactiveVisionLoop />
 
-      <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
-        <main className="flex-1 overflow-hidden min-w-0">{renderMainContent()}</main>
-      </AppModuleRails>
-
       <AppSidebar
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
@@ -986,6 +1007,10 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
         reasoningDashboardActive={mainView === 'dashboard'}
         onOpenReasoningDashboard={() => setMainView('dashboard')}
       />
+
+      <AppModuleRails onOpenSettings={() => setSettingsDialogOpen(true)}>
+        <main className="flex-1 overflow-hidden">{renderMainContent()}</main>
+      </AppModuleRails>
 
       <WorkspaceDialog
         open={workspaceDialogOpen}

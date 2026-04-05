@@ -9,17 +9,17 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import {
-  CloudArrowDown,
-  Folder,
-  FileText,
-  MagnifyingGlass,
-  CheckCircle
+  CloudArrowDownIcon as CloudArrowDownGlyph,
+  FolderIcon as FolderGlyph,
+  FileTextIcon as FileTextGlyph,
+  MagnifyingGlassIcon as MagnifyingGlassGlyph,
+  CheckCircleIcon as CheckCircleGlyph
 } from '@phosphor-icons/react'
 
 interface CloudFileBrowserProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onSelectFiles: (files: CloudFile[]) => void
+  readonly open: boolean
+  readonly onOpenChange: (open: boolean) => void
+  readonly onSelectFiles: (files: CloudFile[]) => void
 }
 
 export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFileBrowserProps) {
@@ -55,7 +55,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     {
       id: 'googledrive' as const,
       name: 'Google Drive',
-      icon: CloudArrowDown,
+      icon: CloudArrowDownGlyph,
       color: 'text-blue-500',
       bgColor: 'bg-blue-500/10',
       connected: connectedServicesData.googledrive,
@@ -63,7 +63,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     {
       id: 'onedrive' as const,
       name: 'OneDrive',
-      icon: CloudArrowDown,
+      icon: CloudArrowDownGlyph,
       color: 'text-blue-600',
       bgColor: 'bg-blue-600/10',
       connected: connectedServicesData.onedrive,
@@ -71,7 +71,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     {
       id: 'github' as const,
       name: 'GitHub',
-      icon: CloudArrowDown,
+      icon: CloudArrowDownGlyph,
       color: 'text-gray-500',
       bgColor: 'bg-gray-500/10',
       connected: connectedServicesData.github,
@@ -79,7 +79,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
     {
       id: 'dropbox' as const,
       name: 'Dropbox',
-      icon: CloudArrowDown,
+      icon: CloudArrowDownGlyph,
       color: 'text-blue-400',
       bgColor: 'bg-blue-400/10',
       connected: connectedServicesData.dropbox,
@@ -201,7 +201,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
                     <h3 className="font-semibold">{service.name}</h3>
                     {service.connected ? (
                       <Badge variant="outline" className="text-green-500">
-                        <CheckCircle size={14} className="mr-1" weight="fill" />
+                        <CheckCircleGlyph size={14} className="mr-1" weight="fill" />
                         Connected
                       </Badge>
                     ) : (
@@ -230,7 +230,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
               </Button>
               <Separator orientation="vertical" className="h-6" />
               <div className="flex items-center gap-2">
-                <Folder className="text-muted-foreground" size={16} />
+                <FolderGlyph className="text-muted-foreground" size={16} />
                 <span className="text-sm font-medium">
                   {connectedServices.find((s) => s.id === activeService)?.name}
                 </span>
@@ -238,7 +238,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
             </div>
 
             <div className="relative">
-              <MagnifyingGlass
+              <MagnifyingGlassGlyph
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
                 size={16}
               />
@@ -262,7 +262,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
                 <div className="space-y-2">
                   {filteredFiles.length === 0 ? (
                     <div className="py-12 text-center text-muted-foreground">
-                      <FileText size={48} className="mx-auto mb-3 opacity-50" />
+                      <FileTextGlyph size={48} className="mx-auto mb-3 opacity-50" />
                       <p>No files found</p>
                     </div>
                   ) : (
@@ -281,7 +281,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
                                 selectedFiles.has(file.id) ? 'bg-primary/20' : 'bg-muted'
                               }`}
                             >
-                              <FileText
+                              <FileTextGlyph
                                 size={20}
                                 className={selectedFiles.has(file.id) ? 'text-primary' : ''}
                               />
@@ -297,7 +297,7 @@ export function CloudFileBrowser({ open, onOpenChange, onSelectFiles }: CloudFil
                             </div>
                           </div>
                           {selectedFiles.has(file.id) && (
-                            <CheckCircle size={20} className="text-primary" weight="fill" />
+                            <CheckCircleGlyph size={20} className="text-primary" weight="fill" />
                           )}
                         </div>
                       </button>

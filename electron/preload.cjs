@@ -2,8 +2,10 @@
  * Preload for the main BrowserWindow: exposes a minimal, read-only API for the in-app browser.
  */
 const { contextBridge, ipcRenderer } = require('electron')
+const { buildJarvisIdeRendererApis } = require('./jarvis-ide-preload-api.cjs')
 
 const PARTITION = 'persist:ai-search-browser'
+const jarvisIdeRenderer = buildJarvisIdeRendererApis(ipcRenderer)
 
 contextBridge.exposeInMainWorld('jarvisIde', {
   appRoot: () => ipcRenderer.invoke('jarvis-ide-app-root'),
@@ -44,6 +46,7 @@ contextBridge.exposeInMainWorld('jarvisIde', {
 
 /** Renderer → main: voice transcript classified as a screen intent (see `registerJarvisOrchestratorIpc` in main.cjs). */
 contextBridge.exposeInMainWorld('electronAPI', {
+  ...jarvisIdeRenderer.ideElectronApi,
   /**
    * Always true in this preload — lets the renderer detect the Jarvis desktop shell even if
    * `emitIntent` is ever shadowed; use `useRealtimeVoice` hasJarvisDesktopScreenAgentForVoice().
@@ -69,6 +72,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('jarvis-screen-context-update', fn)
   },
 })
+
+contextBridge.exposeInMainWorld('jarvis', jarvisIdeRenderer.jarvis)
 
 contextBridge.exposeInMainWorld('electronInAppBrowser', {
   /** Same string as webview `partition` attribute */
@@ -135,31 +140,196 @@ contextBridge.exposeInMainWorld('electronInAppBrowser', {
 })
 
 /** Native OS automation (Windows): mouse, keyboard, screen, clipboard, PowerShell exec — see `jarvis-desktop-automation.cjs`. */
-/** Must match `JARVIS_NATIVE_VOICE_BRIDGE_TOKEN` in `src/lib/jarvis-native-bridge.ts`. */
-contextBridge.exposeInMainWorld('jarvisNative', {
-  bridgeToken: 'jarvis-native-voice-v1',
-  bridgeVersion: 1,
-  onDesktopFocusContext: (handler) => {
-    const fn = (_e, payload) => {
-      handler(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {})
+const jarvisNativeValidators = {
+  /**
+   * SECURITY: Validate PowerShell command opts before forwarding to IPC.
+   * Blocks dangerous PowerShell cmdlets use for system disruption or privilege escalation.
+   */
+  powershellCommand(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid PowerShell options')
     }
-    ipcRenderer.on('jarvis-desktop-focus-context', fn)
-    return () => ipcRenderer.removeListener('jarvis-desktop-focus-context', fn)
+    const { command, cwd } = opts
+    if (typeof command !== 'string' || !command.trim()) {
+      throw new Error('PowerShell command must be a non-empty string')
+    }
+    if (cwd && typeof cwd !== 'string') {
+      throw new Error('PowerShell cwd must be a string')
+    }
+
+    // Block dangerous PowerShell cmdlets
+    const dangerous = [
+      /shutdown/i,
+      /restart-computer/i,
+      /stop-computer/i,
+      /\blogoff\b/i,
+      /format\s+[a-z]:\\/i,
+      /remove-item/i,
+      /rm\s+-rf/i,
+      /del\s+\/s/i,
+      /diskpart/i,
+      /cipher\s+\/w/i,
+      /invoke-expression/i,
+      /iex\b/i,
+      /powershell\s+-[a-z]*e/i,
+      /&\s*\{/,
+    ]
+
+    for (const pattern of dangerous) {
+      if (pattern.test(command)) {
+        throw new Error(`Dangerous command blocked: ${pattern.source}`)
+      }
+    }
+
+    return { command: command.trim(), cwd: cwd || undefined }
   },
-  mouseMove: (pos) => ipcRenderer.invoke('jarvis-native-mouse-move', pos),
-  mouseClick: (opts) => ipcRenderer.invoke('jarvis-native-mouse-click', opts),
-  mouseScroll: (opts) => ipcRenderer.invoke('jarvis-native-mouse-scroll', opts),
-  mouseDrag: (opts) => ipcRenderer.invoke('jarvis-native-mouse-drag', opts),
-  keyboardType: (opts) => ipcRenderer.invoke('jarvis-native-keyboard-type', opts),
-  keyboardPress: (opts) => ipcRenderer.invoke('jarvis-native-keyboard-press', opts),
-  keyboardHotkey: (opts) => ipcRenderer.invoke('jarvis-native-keyboard-hotkey', opts),
+
+  /**
+   * SECURITY: Validate mouse/keyboard position and option types.
+   */
+  mousePosition(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid mouse options')
+    }
+    const { x, y } = opts
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      throw new TypeError('Mouse position must have numeric x, y')
+    }
+    if (x < 0 || y < 0 || x > 100000 || y > 100000) {
+      throw new Error('Mouse position out of bounds')
+    }
+    return { x, y }
+  },
+
+  keyboardText(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new TypeError('Invalid keyboard options')
+    }
+    const { text } = opts
+    if (typeof text !== 'string') {
+      throw new TypeError('Keyboard text must be a string')
+    }
+    if (text.length > 10000) {
+      throw new Error('Keyboard text too long (>10000 chars)')
+    }
+    return { text }
+  },
+
+  keyboardKeys(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid keyboard options')
+    }
+    const { keys } = opts
+    if (!Array.isArray(keys) || keys.length === 0) {
+      throw new Error('Keyboard keys must be a non-empty array')
+    }
+    if (keys.length > 100) {
+      throw new Error('Too many keyboard keys')
+    }
+    if (!keys.every((k) => typeof k === 'string' && k.length < 50)) {
+      throw new Error('Invalid keyboard key')
+    }
+    return { keys }
+  },
+
+  keyboardCombo(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid keyboard combo options')
+    }
+    const { combo } = opts
+    if (typeof combo !== 'string' || combo.length > 100) {
+      throw new Error('Invalid keyboard combo')
+    }
+    return { combo }
+  },
+
+  windowTitle(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid window options')
+    }
+    const { title } = opts
+    if (typeof title !== 'string' || title.length > 500) {
+      throw new Error('Window title invalid')
+    }
+    return { title }
+  },
+
+  clipboardText(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('Invalid clipboard options')
+    }
+    const { text } = opts
+    if (typeof text !== 'string' || text.length > 10_000_000) {
+      throw new Error('Clipboard text too large')
+    }
+    return { text }
+  },
+}
+
+contextBridge.exposeInMainWorld('jarvisNative', {
+  mouseMove: (pos) => {
+    const v = jarvisNativeValidators.mousePosition(pos)
+    return ipcRenderer.invoke('jarvis-native-mouse-move', v)
+  },
+  mouseClick: (opts) => {
+    if (!opts || typeof opts !== 'object') throw new Error('Invalid options')
+    const buttons = ['left', 'right', undefined]
+    if (opts.button && !buttons.includes(opts.button)) throw new Error('Invalid button')
+    if (opts.x !== undefined) jarvisNativeValidators.mousePosition(opts)
+    return ipcRenderer.invoke('jarvis-native-mouse-click', opts)
+  },
+  mouseScroll: (opts) => {
+    if (!opts || typeof opts !== 'object') throw new Error('Invalid options')
+    if (opts.amount !== undefined && (typeof opts.amount !== 'number' || opts.amount < -100 || opts.amount > 100)) {
+      throw new Error('Invalid scroll amount')
+    }
+    return ipcRenderer.invoke('jarvis-native-mouse-scroll', opts)
+  },
+  mouseDrag: (opts) => {
+    if (!opts || typeof opts !== 'object') throw new Error('Invalid options')
+    const { startX, startY, endX, endY } = opts
+    if (typeof startX !== 'number' || typeof startY !== 'number' || typeof endX !== 'number' || typeof endY !== 'number') {
+      throw new TypeError('Drag coordinates must be numbers')
+    }
+    return ipcRenderer.invoke('jarvis-native-mouse-drag', opts)
+  },
+  keyboardType: (opts) => {
+    const v = jarvisNativeValidators.keyboardText(opts)
+    return ipcRenderer.invoke('jarvis-native-keyboard-type', v)
+  },
+  keyboardPress: (opts) => {
+    const v = jarvisNativeValidators.keyboardKeys(opts)
+    return ipcRenderer.invoke('jarvis-native-keyboard-press', v)
+  },
+  keyboardHotkey: (opts) => {
+    const v = jarvisNativeValidators.keyboardCombo(opts)
+    return ipcRenderer.invoke('jarvis-native-keyboard-hotkey', v)
+  },
   screenSize: () => ipcRenderer.invoke('jarvis-native-screen-size'),
-  screenCapture: (opts) => ipcRenderer.invoke('jarvis-native-screen-capture', opts),
+  screenCapture: (opts) => {
+    if (opts?.region) {
+      const { x, y, width, height, left, top } = opts.region
+      const nums = [x, y, width, height, left, top]
+      if (nums.some((n) => n !== undefined && (typeof n !== 'number' || n < 0 || n > 100000))) {
+        throw new Error('Invalid screen region')
+      }
+    }
+    return ipcRenderer.invoke('jarvis-native-screen-capture', opts)
+  },
   clipboardRead: () => ipcRenderer.invoke('jarvis-native-clipboard-read'),
-  clipboardWrite: (opts) => ipcRenderer.invoke('jarvis-native-clipboard-write', opts),
+  clipboardWrite: (opts) => {
+    const v = jarvisNativeValidators.clipboardText(opts)
+    return ipcRenderer.invoke('jarvis-native-clipboard-write', v)
+  },
   windowList: () => ipcRenderer.invoke('jarvis-native-window-list'),
-  windowFocus: (opts) => ipcRenderer.invoke('jarvis-native-window-focus', opts),
+  windowFocus: (opts) => {
+    const v = jarvisNativeValidators.windowTitle(opts)
+    return ipcRenderer.invoke('jarvis-native-window-focus', v)
+  },
   activeWindow: () => ipcRenderer.invoke('jarvis-native-active-window'),
-  powershellExec: (opts) => ipcRenderer.invoke('jarvis-powershell-exec', opts),
+  powershellExec: (opts) => {
+    const v = jarvisNativeValidators.powershellCommand(opts)
+    return ipcRenderer.invoke('jarvis-powershell-exec', v)
+  },
   getScreenSources: () => ipcRenderer.invoke('jarvis-screen-sources'),
 })

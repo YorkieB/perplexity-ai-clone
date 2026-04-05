@@ -67,7 +67,7 @@ export class BehaviourLogger {
     this.listenersAttached = true
 
     this.flushTimer = setInterval(() => {
-      void this.flush()
+      this.flush().catch(() => {})
     }, 60_000)
   }
 

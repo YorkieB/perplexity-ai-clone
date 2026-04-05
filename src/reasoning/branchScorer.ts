@@ -218,6 +218,7 @@ export default class BranchScorer {
   /**
    * Scores one node, mutates {@link ThoughtNode.score}, feasibility fields, and `status`.
    */
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- ToT node scorer combines feasibility, novelty, and LLM eval in one coordinated method
   async scoreNode(
     node: ThoughtNode,
     siblings: ThoughtNode[],

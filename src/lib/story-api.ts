@@ -14,7 +14,7 @@ async function fetchWithRetry(url: string, retries = MAX_RETRIES): Promise<Respo
     if (res.ok || !RETRYABLE_CODES.has(res.status) || attempt === retries) return res
     await new Promise(r => setTimeout(r, BASE_DELAY_MS * 2 ** attempt))
   }
-  return fetch(url) // unreachable but satisfies TS
+  throw new Error('fetchWithRetry: unreachable — all retry attempts consumed')
 }
 
 export interface StoryResult {

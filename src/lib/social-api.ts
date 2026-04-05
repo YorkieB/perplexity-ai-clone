@@ -6,6 +6,29 @@
 
 import type { BrowserControl } from '@/contexts/BrowserControlContext'
 
+const THREADS_COMPOSE_PATTERNS: RegExp[] = [
+  /ref="([^"]+)"[^>]*(?:Start a thread|What's new|new thread|Create a thread)/i,
+  /ref="([^"]+)"[^>]*placeholder="[^"]*thread[^"]*"/i,
+  /ref="([^"]+)"[^>]*aria-label="[^"]*thread[^"]*"/i,
+]
+
+const THREADS_POST_PATTERNS: RegExp[] = [
+  /ref="([^"]+)"[^>]*>\s*Post\s*</i,
+  /ref="([^"]+)"[^>]*(?:^|\s)Post(?:\s|$)/i,
+  /ref="([^"]+)"[^>]*aria-label="Post"/i,
+  /ref="([^"]+)"[^>]*(?:Submit|Share thread)/i,
+]
+
+const THREADS_POST_SUCCESS_INDICATORS = /(?:Your thread|thread was posted|Posted|post shared)/i
+
+function matchRef(snapshot: string, patterns: readonly RegExp[]): string | null {
+  for (const pattern of patterns) {
+    const match = pattern.exec(snapshot)
+    if (match?.[1]) return match[1]
+  }
+  return null
+}
+
 // ── X API (via proxy) ───────────────────────────────────────────────────────
 
 export interface TweetResult {
@@ -107,27 +130,31 @@ export async function postToThreadsViaBrowser(
   await new Promise(r => setTimeout(r, 3000))
 
   const snapshot = await browserControl.snapshot()
-
-  // Look for the compose area — Threads has a "Start a thread..." input
-  const composeMatch = snapshot.match(/ref="([^"]+)"[^>]*(?:Start a thread|What's new|new thread)/i)
-  if (composeMatch) {
-    await browserControl.click(composeMatch[1])
-    await new Promise(r => setTimeout(r, 1000))
-    await browserControl.type(composeMatch[1], text)
-    await new Promise(r => setTimeout(r, 500))
-
-    // Look for post/submit button
-    const postSnapshot = await browserControl.snapshot()
-    const postBtn = postSnapshot.match(/ref="([^"]+)"[^>]*(?:Post|Submit|Share)/i)
-    if (postBtn) {
-      await browserControl.click(postBtn[1])
-      await new Promise(r => setTimeout(r, 2000))
-      return 'Posted to Threads successfully.'
-    }
-    return 'Typed the post but could not find the Post/Submit button. You may need to post manually.'
+  const composeRef = matchRef(snapshot, THREADS_COMPOSE_PATTERNS)
+  if (!composeRef) {
+    return 'Could not find the compose area on Threads. The UI may have changed or you may need to log in. Snapshot:\n' + snapshot.slice(0, 2000)
   }
 
-  return 'Could not find the compose area on Threads. Make sure you are logged in via the browser. Snapshot:\n' + snapshot.slice(0, 2000)
+  await browserControl.click(composeRef)
+  await new Promise(r => setTimeout(r, 1000))
+  await browserControl.type(composeRef, text)
+  await new Promise(r => setTimeout(r, 500))
+
+  const postSnapshot = await browserControl.snapshot()
+  const postRef = matchRef(postSnapshot, THREADS_POST_PATTERNS)
+  if (!postRef) {
+    return 'Typed the post but could not find the Post button. The Threads UI may have changed. You may need to post manually.'
+  }
+
+  await browserControl.click(postRef)
+  await new Promise(r => setTimeout(r, 3000))
+
+  const afterSnapshot = await browserControl.snapshot()
+  if (!THREADS_POST_SUCCESS_INDICATORS.test(afterSnapshot)) {
+    return 'Clicked Post but could not confirm the post was submitted. Please check Threads manually.'
+  }
+
+  return 'Posted to Threads successfully.'
 }
 
 export async function replyViaBrowser(
@@ -144,7 +171,7 @@ export async function replyViaBrowser(
   const snapshot = await browserControl.snapshot()
 
   // Look for reply input
-  const replyMatch = snapshot.match(/ref="([^"]+)"[^>]*(?:Reply|Add a comment|Post your reply)/i)
+  const replyMatch = /ref="([^"]+)"[^>]*(?:Reply|Add a comment|Post your reply)/i.exec(snapshot)
   if (replyMatch) {
     await browserControl.click(replyMatch[1])
     await new Promise(r => setTimeout(r, 800))
@@ -152,7 +179,7 @@ export async function replyViaBrowser(
     await new Promise(r => setTimeout(r, 500))
 
     const postSnapshot = await browserControl.snapshot()
-    const postBtn = postSnapshot.match(/ref="([^"]+)"[^>]*(?:Reply|Post|Submit|Send)/i)
+    const postBtn = /ref="([^"]+)"[^>]*(?:Reply|Post|Submit|Send)/i.exec(postSnapshot)
     if (postBtn) {
       await browserControl.click(postBtn[1])
       await new Promise(r => setTimeout(r, 2000))

@@ -77,7 +77,6 @@ describe('Voice boundary — static analysis (screen agent)', () => {
       }
     }
     if (violations.length > 0) {
-      // eslint-disable-next-line no-console
       console.error(violations.join('\n'))
     }
     expect(violations).toEqual([])
@@ -108,13 +107,13 @@ describe('Voice boundary — static analysis (screen agent)', () => {
     }
     if (violations.length > 0) {
       for (const v of violations) {
-        // eslint-disable-next-line no-console
         console.error(`${v.file}:${v.line} — matched ${JSON.stringify(v.pattern)} — ${v.text}`)
       }
     }
     expect(violations).toEqual([])
   })
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- test validates source-level voice boundary across all production files; multi-pass inspection is inherent
   it('jarvis:speak is the only voice output mechanism in screen agent', () => {
     let jarvisSpeakThisEmitCount = 0
     let jarvisSpeakEmitterEmitCount = 0
@@ -153,7 +152,6 @@ describe('Voice boundary — static analysis (screen agent)', () => {
       }
     }
 
-    // eslint-disable-next-line no-console
     console.info(
       `[voice-boundary] this.emit('jarvis:speak'…) count: ${String(jarvisSpeakThisEmitCount)}; this.emitter.emit('jarvis:speak'…) count: ${String(jarvisSpeakEmitterEmitCount)}`,
     )
@@ -177,7 +175,6 @@ describe('Voice boundary — static analysis (screen agent)', () => {
       }
     }
     walk(voiceDir)
-    // eslint-disable-next-line no-console
     console.info(`[voice-boundary] src/agents/voice/ .ts files: ${tsFiles.join(', ') || '(none)'}`)
     expect(tsFiles.length).toBeGreaterThanOrEqual(1)
   })
@@ -202,7 +199,6 @@ describe('Voice boundary — static analysis (screen agent)', () => {
       }
     }
     if (missing.length > 0) {
-      // eslint-disable-next-line no-console
       console.error(`Missing screen-agent files:\n${missing.join('\n')}`)
     }
     expect(missing).toEqual([])

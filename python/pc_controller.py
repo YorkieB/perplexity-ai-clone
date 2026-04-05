@@ -26,6 +26,9 @@ if not _log.handlers:
     _log.addHandler(_h)
 _log.setLevel(logging.INFO)
 
+ERR_PYGETWINDOW_NOT_INSTALLED = "pygetwindow not installed"
+ERR_INVALID_PATH = "Invalid path"
+
 # --- Optional dependencies ---
 try:
     import pyautogui
@@ -125,11 +128,12 @@ class MouseController:
     ) -> PCActionResult:
         """Click at coordinates."""
         try:
+            pyautogui.moveTo(int(x), int(y), duration=duration)
             if double:
-                pyautogui.click(int(x), int(y), button=button, clicks=2, interval=0.1)
+                pyautogui.click(button=button, clicks=2, interval=0.1)
                 _log.info(f"Double-clicked at ({x}, {y}) with {button} button")
             else:
-                pyautogui.click(int(x), int(y), button=button)
+                pyautogui.click(button=button)
                 _log.info(f"Clicked at ({x}, {y}) with {button} button")
             return PCActionResult(ok=True, message=f"Clicked at ({x}, {y})")
         except Exception as e:
@@ -259,7 +263,7 @@ class WindowController:
         """Get list of all windows."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             windows = gw.getWindowsWithTitle("")
             data = [
                 {
@@ -282,7 +286,7 @@ class WindowController:
         """Get active window information."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             active = gw.getActiveWindow()
             if not active:
                 return PCActionResult(ok=False, error="No active window")
@@ -304,7 +308,7 @@ class WindowController:
         """Focus/activate a window by title or pattern."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             
             # Find window by exact title or pattern
             search_term = pattern or title
@@ -325,7 +329,7 @@ class WindowController:
         """Maximize a window."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             windows = gw.getWindowsWithTitle(title)
             if not windows:
                 return PCActionResult(ok=False, error=f"Window not found: {title}")
@@ -340,7 +344,7 @@ class WindowController:
         """Minimize a window."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             windows = gw.getWindowsWithTitle(title)
             if not windows:
                 return PCActionResult(ok=False, error=f"Window not found: {title}")
@@ -355,7 +359,7 @@ class WindowController:
         """Close a window."""
         try:
             if gw is None:
-                return PCActionResult(ok=False, error="pygetwindow not installed")
+                return PCActionResult(ok=False, error=ERR_PYGETWINDOW_NOT_INSTALLED)
             windows = gw.getWindowsWithTitle(title)
             if not windows:
                 return PCActionResult(ok=False, error=f"Window not found: {title}")
@@ -372,27 +376,28 @@ class WindowController:
 class FileSystemController:
     """Handle file system operations."""
 
-    def __init__(self, base_path: Optional[str] = None):
-        self.base_path = base_path or os.path.expanduser("~")
+    def __init__(self):
 
     def _safe_path(self, path: str) -> Optional[Path]:
         """Validate and resolve path safely."""
         try:
             resolved = Path(path).resolve()
-            # Ensure path is within user's home directory (safety)
+            # SECURITY: Use is_relative_to() (Python 3.9+) instead of startswith()
+            # to correctly check path containment and prevent prefix-collision bugs.
             user_home = Path.home()
-            if not str(resolved).startswith(str(user_home)):
-                _log.warning(f"Path access denied (outside home): {path}")
-                return None
+            # This will raise ValueError if resolved is not under user_home
+            resolved.relative_to(user_home)
             return resolved
         except Exception:
+            # ValueError: path is not relative to user_home
+            # Other exceptions: invalid path, permission errors, etc.
             return None
 
     def exists(self, path: str) -> PCActionResult:
         """Check if file/directory exists."""
         safe_path = self._safe_path(path)
         if safe_path is None:
-            return PCActionResult(ok=False, error="Invalid path")
+            return PCActionResult(ok=False, error=ERR_INVALID_PATH)
         exists = safe_path.exists()
         return PCActionResult(ok=True, data={"exists": exists})
 
@@ -400,7 +405,7 @@ class FileSystemController:
         """List files in directory."""
         safe_path = self._safe_path(path)
         if safe_path is None:
-            return PCActionResult(ok=False, error="Invalid path")
+            return PCActionResult(ok=False, error=ERR_INVALID_PATH)
         if not safe_path.is_dir():
             return PCActionResult(ok=False, error="Not a directory")
         try:
@@ -419,7 +424,7 @@ class FileSystemController:
         """Read file contents."""
         safe_path = self._safe_path(path)
         if safe_path is None:
-            return PCActionResult(ok=False, error="Invalid path")
+            return PCActionResult(ok=False, error=ERR_INVALID_PATH)
         if not safe_path.is_file():
             return PCActionResult(ok=False, error="Not a file")
         try:
@@ -432,7 +437,7 @@ class FileSystemController:
         """Write file contents."""
         safe_path = self._safe_path(path)
         if safe_path is None:
-            return PCActionResult(ok=False, error="Invalid path")
+            return PCActionResult(ok=False, error=ERR_INVALID_PATH)
         try:
             if append:
                 safe_path.write_text(safe_path.read_text(encoding="utf-8") + content)
@@ -447,7 +452,7 @@ class FileSystemController:
         """Delete a file."""
         safe_path = self._safe_path(path)
         if safe_path is None:
-            return PCActionResult(ok=False, error="Invalid path")
+            return PCActionResult(ok=False, error=ERR_INVALID_PATH)
         if not safe_path.is_file():
             return PCActionResult(ok=False, error="Not a file")
         try:

@@ -1,0 +1,201 @@
+ai-search-engine@0.0.0 C:\Users\conta\AI Chat\perplexity-ai-clone
+Ôö£ÔöÇÔöÇ @aws-sdk/client-s3@3.1019.0
+Ôö£ÔöÇÔöÇ @aws-sdk/s3-request-presigner@3.1019.0
+Ôö£ÔöÇÔöÇ @codemirror/lang-cpp@6.0.3
+Ôö£ÔöÇÔöÇ @codemirror/lang-css@6.3.1
+Ôö£ÔöÇÔöÇ @codemirror/lang-html@6.4.11
+Ôö£ÔöÇÔöÇ @codemirror/lang-java@6.0.2
+Ôö£ÔöÇÔöÇ @codemirror/lang-javascript@6.2.5
+Ôö£ÔöÇÔöÇ @codemirror/lang-json@6.0.2
+Ôö£ÔöÇÔöÇ @codemirror/lang-markdown@6.5.0
+Ôö£ÔöÇÔöÇ @codemirror/lang-php@6.0.2
+Ôö£ÔöÇÔöÇ @codemirror/lang-python@6.2.1
+Ôö£ÔöÇÔöÇ @codemirror/lang-rust@6.0.2
+Ôö£ÔöÇÔöÇ @codemirror/lang-sql@6.10.0
+Ôö£ÔöÇÔöÇ @codemirror/lang-xml@6.1.0
+Ôö£ÔöÇÔöÇ @codemirror/lint@6.9.5
+Ôö£ÔöÇÔöÇ @codemirror/search@6.6.0
+Ôö£ÔöÇÔöÇ @emnapi/core@1.9.1 extraneous
+Ôö£ÔöÇÔöÇ @emnapi/runtime@1.9.1 extraneous
+Ôö£ÔöÇÔöÇ @emnapi/wasi-threads@1.2.0 extraneous
+Ôö£ÔöÇÔöÇ @eslint/js@9.39.4
+Ôö£ÔöÇÔöÇ @heroicons/react@2.2.0
+Ôö£ÔöÇÔöÇ @hookform/resolvers@4.1.3
+Ôö£ÔöÇÔö¼ @jarvis/ide@1.0.0 -> .\packages\jarvis-ide
+Ôöé Ôö£ÔöÇÔöÇ @anthropic-ai/sdk@0.82.0
+Ôöé Ôö£ÔöÇÔöÇ @electron/rebuild@4.0.3
+Ôöé Ôö£ÔöÇÔöÇ @monaco-editor/react@4.7.0 deduped
+Ôöé Ôö£ÔöÇÔöÇ @playwright/test@1.59.0
+Ôöé Ôö£ÔöÇÔöÇ @reduxjs/toolkit@2.11.2
+Ôöé Ôö£ÔöÇÔöÇ @testing-library/jest-dom@6.9.1
+Ôöé Ôö£ÔöÇÔöÇ @testing-library/react@16.3.2
+Ôöé Ôö£ÔöÇÔöÇ @testing-library/user-event@14.6.1
+Ôöé Ôö£ÔöÇÔöÇ @types/node@22.19.15 deduped
+Ôöé Ôö£ÔöÇÔöÇ @types/react-dom@19.2.3 deduped
+Ôöé Ôö£ÔöÇÔöÇ @types/react-syntax-highlighter@15.5.13
+Ôöé Ôö£ÔöÇÔöÇ @types/react@19.2.14 deduped
+Ôöé Ôö£ÔöÇÔöÇ @types/ws@8.18.1 deduped
+Ôöé Ôö£ÔöÇÔöÇ @vitejs/plugin-react@4.7.0
+Ôöé Ôö£ÔöÇÔöÇ @vscode/codicons@0.0.45
+Ôöé Ôö£ÔöÇÔöÇ @vscode/debugadapter@1.68.0
+Ôöé Ôö£ÔöÇÔöÇ @vscode/debugprotocol@1.68.0
+Ôöé Ôö£ÔöÇÔöÇ @xterm/addon-fit@0.11.0
+Ôöé Ôö£ÔöÇÔöÇ @xterm/addon-search@0.16.0
+Ôöé Ôö£ÔöÇÔöÇ @xterm/addon-web-links@0.12.0
+Ôöé Ôö£ÔöÇÔöÇ @xterm/xterm@6.0.0
+Ôöé Ôö£ÔöÇÔöÇ autoprefixer@10.4.27
+Ôöé Ôö£ÔöÇÔöÇ chokidar@5.0.0
+Ôöé Ôö£ÔöÇÔöÇ dotenv@17.3.1
+Ôöé Ôö£ÔöÇÔöÇ electron-store@11.0.2
+Ôöé Ôö£ÔöÇÔöÇ electron@41.1.1
+Ôöé Ôö£ÔöÇÔöÇ isomorphic-git@1.37.4
+Ôöé Ôö£ÔöÇÔöÇ jsdom@25.0.1
+Ôöé Ôö£ÔöÇÔöÇ jszip@3.10.1
+Ôöé Ôö£ÔöÇÔöÇ lucide-react@1.7.0
+Ôöé Ôö£ÔöÇÔöÇ monaco-editor@0.55.1
+Ôöé Ôö£ÔöÇÔöÇ msw@2.12.14
+Ôöé Ôö£ÔöÇÔöÇ node-pty@1.1.0
+Ôöé Ôö£ÔöÇÔöÇ openai@6.33.0
+Ôöé Ôö£ÔöÇÔöÇ postcss@8.5.8
+Ôöé Ôö£ÔöÇÔöÇ react-arborist@3.4.3
+Ôöé Ôö£ÔöÇÔöÇ react-dom@19.2.4 deduped
+Ôöé Ôö£ÔöÇÔöÇ react-markdown@10.1.0
+Ôöé Ôö£ÔöÇÔöÇ react-redux@9.2.0
+Ôöé Ôö£ÔöÇÔöÇ react-resizable-panels@4.8.0
+Ôöé Ôö£ÔöÇÔöÇ react-syntax-highlighter@16.1.1
+Ôöé Ôö£ÔöÇÔöÇ react@19.2.4 deduped
+Ôöé Ôö£ÔöÇÔöÇ tailwindcss@3.4.19
+Ôöé Ôö£ÔöÇÔöÇ typescript@5.9.3
+Ôöé Ôö£ÔöÇÔöÇ vite@6.4.1
+Ôöé Ôö£ÔöÇÔöÇ vitest@4.1.2
+Ôöé Ôö£ÔöÇÔöÇ vscode-jsonrpc@8.2.1
+Ôöé Ôö£ÔöÇÔöÇ vscode-languageserver-protocol@3.17.5
+Ôöé ÔööÔöÇÔöÇ ws@8.20.0 deduped
+Ôö£ÔöÇÔöÇ @monaco-editor/react@4.7.0
+Ôö£ÔöÇÔöÇ @napi-rs/wasm-runtime@0.2.12 extraneous
+Ôö£ÔöÇÔöÇ @octokit/core@6.1.6
+Ôö£ÔöÇÔöÇ @phosphor-icons/react@2.1.10
+Ôö£ÔöÇÔöÇ @radix-ui/colors@3.0.0
+Ôö£ÔöÇÔöÇ @radix-ui/react-accordion@1.2.12
+Ôö£ÔöÇÔöÇ @radix-ui/react-alert-dialog@1.1.15
+Ôö£ÔöÇÔöÇ @radix-ui/react-aspect-ratio@1.1.8
+Ôö£ÔöÇÔöÇ @radix-ui/react-avatar@1.1.11
+Ôö£ÔöÇÔöÇ @radix-ui/react-checkbox@1.3.3
+Ôö£ÔöÇÔöÇ @radix-ui/react-collapsible@1.1.12
+Ôö£ÔöÇÔöÇ @radix-ui/react-context-menu@2.2.16
+Ôö£ÔöÇÔöÇ @radix-ui/react-dialog@1.1.15
+Ôö£ÔöÇÔöÇ @radix-ui/react-dropdown-menu@2.1.16
+Ôö£ÔöÇÔöÇ @radix-ui/react-hover-card@1.1.15
+Ôö£ÔöÇÔöÇ @radix-ui/react-label@2.1.8
+Ôö£ÔöÇÔöÇ @radix-ui/react-menubar@1.1.16
+Ôö£ÔöÇÔöÇ @radix-ui/react-navigation-menu@1.2.14
+Ôö£ÔöÇÔöÇ @radix-ui/react-popover@1.1.15
+Ôö£ÔöÇÔöÇ @radix-ui/react-progress@1.1.8
+Ôö£ÔöÇÔöÇ @radix-ui/react-radio-group@1.3.8
+Ôö£ÔöÇÔöÇ @radix-ui/react-scroll-area@1.2.10
+Ôö£ÔöÇÔöÇ @radix-ui/react-select@2.2.6
+Ôö£ÔöÇÔöÇ @radix-ui/react-separator@1.1.8
+Ôö£ÔöÇÔöÇ @radix-ui/react-slider@1.3.6
+Ôö£ÔöÇÔöÇ @radix-ui/react-slot@1.2.4
+Ôö£ÔöÇÔöÇ @radix-ui/react-switch@1.2.6
+Ôö£ÔöÇÔöÇ @radix-ui/react-tabs@1.1.13
+Ôö£ÔöÇÔöÇ @radix-ui/react-toggle-group@1.1.11
+Ôö£ÔöÇÔöÇ @radix-ui/react-toggle@1.1.10
+Ôö£ÔöÇÔöÇ @radix-ui/react-tooltip@1.2.8
+Ôö£ÔöÇÔöÇ @tailwindcss/container-queries@0.1.1
+Ôö£ÔöÇÔöÇ @tailwindcss/postcss@4.2.2
+Ôö£ÔöÇÔöÇ @tailwindcss/vite@4.2.2
+Ôö£ÔöÇÔöÇ @tanstack/react-query@5.95.2
+Ôö£ÔöÇÔöÇ @tybys/wasm-util@0.10.1 extraneous
+Ôö£ÔöÇÔöÇ @types/express@5.0.6
+Ôö£ÔöÇÔöÇ @types/jest@30.0.0
+Ôö£ÔöÇÔöÇ @types/natural@5.1.5
+Ôö£ÔöÇÔöÇ @types/node@22.19.15
+Ôö£ÔöÇÔöÇ @types/nodemailer@7.0.11
+Ôö£ÔöÇÔöÇ @types/react-dom@19.2.3
+Ôö£ÔöÇÔöÇ @types/react@19.2.14
+Ôö£ÔöÇÔöÇ @types/uuid@10.0.0
+Ôö£ÔöÇÔöÇ @types/ws@8.18.1
+Ôö£ÔöÇÔöÇ @uiw/react-codemirror@4.25.9
+Ôö£ÔöÇÔöÇ @vitejs/plugin-react-swc@4.3.0
+Ôö£ÔöÇÔöÇ @vonage/jwt@1.14.0
+Ôö£ÔöÇÔöÇ @vscode/tree-sitter-wasm@0.3.0
+Ôö£ÔöÇÔöÇ @xenova/transformers@2.17.2
+Ôö£ÔöÇÔöÇ aproba@1.2.0 extraneous
+Ôö£ÔöÇÔöÇ better-sqlite3@12.8.0
+Ôö£ÔöÇÔöÇ chromadb@3.4.0
+Ôö£ÔöÇÔöÇ class-variance-authority@0.7.1
+Ôö£ÔöÇÔöÇ clsx@2.1.1
+Ôö£ÔöÇÔöÇ cmdk@1.1.1
+Ôö£ÔöÇÔöÇ console-control-strings@1.1.0 extraneous
+Ôö£ÔöÇÔöÇ crypto-js@4.2.0
+Ôö£ÔöÇÔöÇ d3@7.9.0
+Ôö£ÔöÇÔöÇ date-fns@4.1.0
+Ôö£ÔöÇÔöÇ delegates@1.0.0 extraneous
+Ôö£ÔöÇÔöÇ docx@9.6.1
+Ôö£ÔöÇÔöÇ electron@41.1.0
+Ôö£ÔöÇÔöÇ embla-carousel-react@8.6.0
+Ôö£ÔöÇÔöÇ esbuild@0.25.12
+Ôö£ÔöÇÔöÇ eslint-plugin-react-hooks@5.2.0
+Ôö£ÔöÇÔöÇ eslint-plugin-react-refresh@0.4.26
+Ôö£ÔöÇÔöÇ eslint-plugin-sonarjs@4.0.2
+Ôö£ÔöÇÔöÇ eslint@9.39.4
+Ôö£ÔöÇÔöÇ eventemitter3@5.0.4
+Ôö£ÔöÇÔöÇ express@5.2.1
+Ôö£ÔöÇÔöÇ faiss-node@0.5.1
+Ôö£ÔöÇÔöÇ framer-motion@12.38.0
+Ôö£ÔöÇÔöÇ glob@13.0.6
+Ôö£ÔöÇÔöÇ globals@17.4.0
+Ôö£ÔöÇÔöÇ has-unicode@2.0.1 extraneous
+Ôö£ÔöÇÔöÇ imapflow@1.2.18
+Ôö£ÔöÇÔöÇ input-otp@1.4.2
+Ôö£ÔöÇÔöÇ jest@30.3.0
+Ôö£ÔöÇÔöÇ jspdf@4.2.1
+Ôö£ÔöÇÔöÇ lucide-react@0.484.0
+Ôö£ÔöÇÔöÇ mailparser@3.9.6
+Ôö£ÔöÇÔöÇ marked@15.0.12
+Ôö£ÔöÇÔöÇ natural@8.1.1
+Ôö£ÔöÇÔöÇ next-themes@0.4.6
+Ôö£ÔöÇÔöÇ nodemailer@8.0.4
+Ôö£ÔöÇÔöÇ oauth-1.0a@2.2.6
+Ôö£ÔöÇÔöÇ octokit@4.1.4
+Ôö£ÔöÇÔöÇ openai@4.104.0
+Ôö£ÔöÇÔöÇ pdfjs-dist@5.6.205
+Ôö£ÔöÇÔöÇ pg@8.20.0
+Ôö£ÔöÇÔöÇ prism-react-renderer@2.4.1
+Ôö£ÔöÇÔöÇ react-day-picker@9.14.0
+Ôö£ÔöÇÔöÇ react-dom@19.2.4
+Ôö£ÔöÇÔöÇ react-error-boundary@6.1.1
+Ôö£ÔöÇÔöÇ react-hook-form@7.72.0
+Ôö£ÔöÇÔöÇ react-is@19.2.4
+Ôö£ÔöÇÔöÇ react-plaid-link@4.1.1
+Ôö£ÔöÇÔöÇ react-resizable-panels@2.1.9
+Ôö£ÔöÇÔöÇ react@19.2.4
+Ôö£ÔöÇÔöÇ recharts@3.8.1
+Ôö£ÔöÇÔöÇ UNMET OPTIONAL DEPENDENCY robotjs@^0.7.0
+Ôö£ÔöÇÔöÇ semantic-router@1.0.0
+Ôö£ÔöÇÔöÇ set-blocking@2.0.0 extraneous
+Ôö£ÔöÇÔöÇ sonner@2.0.7
+Ôö£ÔöÇÔöÇ tailwind-merge@3.5.0
+Ôö£ÔöÇÔöÇ tailwindcss@4.2.2
+Ôö£ÔöÇÔöÇ three@0.175.0
+Ôö£ÔöÇÔöÇ tiktoken@1.0.22
+Ôö£ÔöÇÔöÇ tree-sitter-javascript@0.23.1
+Ôö£ÔöÇÔöÇ tree-sitter-python@0.21.0
+Ôö£ÔöÇÔöÇ tree-sitter-typescript@0.23.2
+Ôö£ÔöÇÔöÇ tree-sitter@0.21.1
+Ôö£ÔöÇÔöÇ ts-jest@29.4.6
+Ôö£ÔöÇÔöÇ tsx@4.21.0
+Ôö£ÔöÇÔöÇ tw-animate-css@1.4.0
+Ôö£ÔöÇÔöÇ typescript-eslint@8.57.2
+Ôö£ÔöÇÔöÇ typescript@5.7.3
+Ôö£ÔöÇÔöÇ uuid@11.1.0
+Ôö£ÔöÇÔöÇ vaul@1.1.2
+Ôö£ÔöÇÔöÇ victory-vendor@37.3.6
+Ôö£ÔöÇÔöÇ vite@7.3.1
+Ôö£ÔöÇÔöÇ web-tree-sitter@0.26.7
+Ôö£ÔöÇÔöÇ wide-align@1.1.5 extraneous
+Ôö£ÔöÇÔöÇ ws@8.20.0
+Ôö£ÔöÇÔöÇ zod@3.25.76
+ÔööÔöÇÔöÇ zustand@5.0.12
+

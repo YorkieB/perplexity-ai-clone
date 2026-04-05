@@ -38,6 +38,7 @@ function dedupeProblems(problems: JarvisWorkspaceQualityProblem[]): JarvisWorksp
 }
 
 /** ESLint `-f json` (array of file results). */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- ESLint JSON output parser handles nested message objects with multiple optional fields
 export function parseEslintJsonOutput(stdout: string, workspaceRoot: string): JarvisWorkspaceQualityProblem[] {
   const trimmed = stdout.trim()
   const start = trimmed.indexOf('[')
@@ -88,7 +89,7 @@ export function parseEslintJsonOutput(stdout: string, workspaceRoot: string): Ja
 export function parseTscOutput(combined: string, workspaceRoot: string): JarvisWorkspaceQualityProblem[] {
   const out: JarvisWorkspaceQualityProblem[] = []
   const lines = combined.split(/\r?\n/)
-  const re = /^(.+?)\((\d+),(\d+)\):\s*(error|warning)\s+(.+)$/
+  const re = /^([^\n(]{1,500})\((\d+),(\d+)\):\s*(error|warning)\s+([^\n]{1,500})$/
   for (const line of lines) {
     const m = re.exec(line)
     if (!m) continue
@@ -112,7 +113,7 @@ export function parseGraphqlSchemaLinterStdout(text: string, defaultRel: string,
   const lines = text.split(/\r?\n/)
   let current = defaultRel
   const fileHeader = /^(.+\.(?:graphql|gql))$/i
-  const issueRe = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+)$/
+  const issueRe = /^\s*(\d+):(\d+)\s+(error|warning)\s+([^\n]{1,500})$/
   for (const line of lines) {
     const fh = fileHeader.exec(line.trim())
     if (fh && !/\s/.test(line.trim())) {

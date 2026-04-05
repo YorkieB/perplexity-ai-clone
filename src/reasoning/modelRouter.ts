@@ -8,7 +8,7 @@ import { telemetry } from '@/lib/observability/telemetryCollector'
 
 import { costTracker, DEFAULT_BUDGET, type SessionCostSummary } from './costTracker'
 import type { ModelTier } from './modelRegistry'
-import { ROUTING_RULES, estimateCost, getModelSpec } from './modelRegistry'
+import { estimateCost, getModelSpec } from './modelRegistry'
 import RoutingClassifier, {
   type RoutingDecision,
   type RoutingSignals,
@@ -108,8 +108,6 @@ export default class ModelRouter {
    * Produces a tier/model for the next LLM call and records routing telemetry.
    */
   async route(config: ModelRouterConfig): Promise<RouterResult> {
-    void ROUTING_RULES
-
     const pad = scratchpadStore.getForSession(config.sessionId)
 
     const signals: RoutingSignals = {

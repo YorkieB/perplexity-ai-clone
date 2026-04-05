@@ -23,7 +23,7 @@ export const TUNEIN_DEFAULT_PRESETS: readonly TuneInPreset[] = [
 function normalizeStationId(raw: string): string {
   const t = raw.trim()
   if (!t) return 's24939'
-  const id = t.replace(/^\/+|\/+$/g, '')
+  const id = t.replace(/^\/{1,100}|\/{1,100}$/g, '')
   return id.startsWith('s') ? id : `s${id}`
 }
 

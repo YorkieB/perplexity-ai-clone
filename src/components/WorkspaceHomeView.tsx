@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
-import { Thread, Workspace } from '@/lib/types'
+import { Thread, Workspace, WorkspaceFile } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Card } from '@/components/ui/card'
-import { FileText, Folder, LinkSimple } from '@phosphor-icons/react'
+import {
+  FileTextIcon as FileText,
+  FolderIcon as Folder,
+  LinkSimpleIcon as LinkSimple,
+} from '@phosphor-icons/react'
 import { CalendarClock, FileStack, PencilLine, Table2 } from 'lucide-react'
 import {
   WorkspaceFilesModal,
-  WORKSPACE_FILES_DEMO,
   type WorkspaceFileRow,
 } from '@/components/WorkspaceFilesModal'
 import { cn } from '@/lib/utils'
@@ -20,7 +23,11 @@ function threadPreview(thread: Thread): string {
   if (thread.messages.length === 0) return 'No messages yet'
   const last = thread.messages[thread.messages.length - 1]
   const raw = last?.content ?? ''
-  const plain = raw.replace(/[#*`_[\]()]/g, ' ').replace(/\s+/g, ' ').trim()
+  let plain = raw
+  for (const token of ['#', '*', '`', '_', '[', ']', '(', ')']) {
+    plain = plain.replaceAll(token, ' ')
+  }
+  plain = plain.replaceAll(/\s+/g, ' ').trim()
   const slice = plain.slice(0, 140)
   return slice.length < plain.length ? `${slice}…` : slice || '…'
 }
@@ -42,6 +49,16 @@ interface WorkspaceHomeViewProps {
   onEditWorkspace: () => void
 }
 
+function toWorkspaceFileRows(files: readonly WorkspaceFile[] | undefined): WorkspaceFileRow[] {
+  return (files ?? []).map((file) => ({
+    id: file.id,
+    name: file.name,
+    origin: 'Upload',
+    date: file.uploadedAt ?? file.addedAt ?? Date.now(),
+    status: 'Ready',
+  }))
+}
+
 export function WorkspaceHomeView({
   workspace,
   threads,
@@ -49,18 +66,18 @@ export function WorkspaceHomeView({
   onUpdateWorkspace,
   onOpenThread,
   onEditWorkspace,
-}: WorkspaceHomeViewProps) {
+}: Readonly<WorkspaceHomeViewProps>) {
   const [description, setDescription] = useState(workspace.description)
   const [filesModalOpen, setFilesModalOpen] = useState(false)
-  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRow[]>(() => [...WORKSPACE_FILES_DEMO])
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRow[]>(() => toWorkspaceFileRows(workspace.workspaceFiles))
 
   useEffect(() => {
     setDescription(workspace.description)
   }, [workspace.id, workspace.description])
 
   useEffect(() => {
-    setWorkspaceFiles([...WORKSPACE_FILES_DEMO])
-  }, [workspace.id])
+    setWorkspaceFiles(toWorkspaceFileRows(workspace.workspaceFiles))
+  }, [workspace.id, workspace.workspaceFiles])
 
   const sorted = [...threads].sort((a, b) => b.updatedAt - a.updatedAt)
 

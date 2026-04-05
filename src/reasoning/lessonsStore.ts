@@ -264,7 +264,7 @@ export default class LessonsStore {
   constructor() {
     // PRE-WARM: Schedule persistence load at singleton construction (import time).
     // void = non-blocking; correctness still guaranteed via _ensureLoaded() on every entrypoint.
-    void this.ensureLoaded()
+    this.ensureLoaded().catch(() => {})
   }
 
   /**

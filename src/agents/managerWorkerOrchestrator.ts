@@ -8,8 +8,7 @@ import type { TaskState, TaskType } from './taskState'
 import type { RouteResult } from '@/lib/router/semanticRouter'
 import SessionIndex from '@/memory/sessionIndex'
 import { telemetry } from '@/lib/observability/telemetryCollector'
-import ReflexionController from '@/reasoning/reflexionController'
-import { MAX_REFLEXION_ITERATIONS } from '@/reasoning/reflexionController'
+import ReflexionController, { MAX_REFLEXION_ITERATIONS } from '@/reasoning/reflexionController'
 import ComplexityDetector from '@/reasoning/complexityDetector'
 import { lessonsStore } from '@/reasoning/lessonsStore'
 import ReActLoopController from '@/reasoning/reactLoopController'
@@ -21,19 +20,19 @@ import { confidenceOrchestrator } from '@/reasoning/confidenceOrchestrator'
 import type { ReflexionResult } from '@/reasoning/reflexionController'
 
 const LOG = '[MWOrchestrator]'
-const PRE_TASK_LOG = '[Orchestrator]'
+const PRE_TASK_LOG = '[MWOrchestrator]'
 
 // NOTE: These routes use ReAct (planning) + Reflexion (quality).
 // ReAct handles Thought→Action→Observation structure.
 // Reflexion handles critique and verbal reinforcement.
 // Both run on every Worker execution for these routes.
 /** Intent routes that run the full Thought → Action → Observation loop before returning. */
-const FULL_REACT_ROUTES: readonly TaskType[] = [
+const FULL_REACT_ROUTES = new Set<TaskType>([
   'code_instruction',
   'voice_task',
   'image_task',
   'browser_task',
-]
+])
 
 /**
  * Clarification-only outcome: pre-task gate, confidence hard-block, Manager/ReAct clarify, etc.
@@ -87,7 +86,7 @@ export function isMwOrchestratorClarificationRequired(
 }
 
 /** @deprecated Alias for {@link MAX_REFLEXION_ITERATIONS}; kept for older imports. */
-export const MAX_WORKER_ITERATIONS = MAX_REFLEXION_ITERATIONS
+export { MAX_REFLEXION_ITERATIONS as MAX_WORKER_ITERATIONS } from '@/reasoning/reflexionController'
 
 /**
  * End-to-end Manager → Worker → Verifier pipeline for a single user turn.
@@ -241,7 +240,8 @@ export default class ManagerWorkerOrchestrator {
           `${PRE_TASK_LOG} Pre-task confidence low (${String(preTaskEstimate.confidence)}) — proceeding with flag`,
         )
         const missing = preTaskEstimate.missingInfo.slice(0, 2).join(', ')
-        effectiveBrief += `\n\n⚠ Pre-task note: Proceeding with limited information. Missing: ${missing}.${preTaskEstimate.suggestedApproach ? ` Suggested approach: ${preTaskEstimate.suggestedApproach}` : ''}`
+        const approachHint = preTaskEstimate.suggestedApproach.length > 0 ? ` Suggested approach: ${preTaskEstimate.suggestedApproach}` : ''
+        effectiveBrief += `\n\n⚠ Pre-task note: Proceeding with limited information. Missing: ${missing}.${approachHint}`
       }
 
       if (preTaskEstimate.confidence >= 0.8 && preTaskEstimate.suggestedApproach.length > 0) {
@@ -254,293 +254,10 @@ export default class ManagerWorkerOrchestrator {
       )
       const complexityScore = complexityAssessment.score
 
-      if (FULL_REACT_ROUTES.includes(taskType)) {
-        this.reflexionController.reset()
-        this._pendingConfidenceClarification = undefined
-
-        let reActWorkerBrief = effectiveBrief
-
-        const loopController = new ReActLoopController({
-          taskType: intentResult.route,
-          sessionId: this.sessionId,
-          model: 'gpt-4o',
-          complexityScore,
-        })
-
-        const loopResult = await loopController.run(
-          {
-            userMessage,
-            taskType: intentResult.route,
-            priorSteps: [],
-            ragContent,
-            taskBrief: effectiveBrief,
-            iterationCount: 0,
-          },
-          async (decision) => {
-            if (decision.action === 'execute_task') {
-              const phase = await this._executeWithWorker(
-                managerDecision,
-                {
-                  brief: reActWorkerBrief,
-                  userMessage,
-                  activeBasePrompt,
-                  complexityScore,
-                  taskType: managerDecision.taskState.taskType,
-                },
-                0,
-              )
-              if (!phase.ok) {
-                this._pendingConfidenceClarification = phase.clarificationQuestion
-                return {
-                  actionType: 'execute_task',
-                  rawOutput: '',
-                  success: false,
-                  error: 'confidence_clarification',
-                }
-              }
-              const workerResult = phase.workerResult
-              if (!workerResult.success) {
-                return {
-                  actionType: 'execute_task',
-                  rawOutput: workerResult.content,
-                  success: false,
-                  tokensUsed: workerResult.tokensUsed,
-                  error: workerResult.error,
-                }
-              }
-              const reflexionResult = phase.reflexionResult
-              if (reflexionResult === undefined) {
-                return {
-                  actionType: 'execute_task',
-                  rawOutput: workerResult.content,
-                  success: true,
-                  tokensUsed: workerResult.tokensUsed,
-                }
-              }
-              if (reflexionResult.shouldRetry) {
-                reActWorkerBrief = reflexionResult.enrichedBrief
-                return {
-                  actionType: 'execute_task',
-                  rawOutput: reflexionResult.enrichedBrief,
-                  success: false,
-                  tokensUsed: workerResult.tokensUsed,
-                  error: `Reflexion: ${reflexionResult.retryInstruction}`,
-                }
-              }
-
-              return {
-                actionType: 'execute_task',
-                rawOutput: workerResult.content,
-                success: true,
-                tokensUsed: workerResult.tokensUsed,
-              }
-            }
-            return {
-              actionType: decision.action,
-              rawOutput: '',
-              success: true,
-            }
-          },
-        )
-
-        this.manager.ingestReActLoopResult(loopResult)
-
-        if (this._pendingConfidenceClarification !== undefined) {
-          const q = this._pendingConfidenceClarification
-          this._pendingConfidenceClarification = undefined
-          return {
-            type: 'clarification_required',
-            question: q,
-            response: q,
-            action: 'clarified',
-            success: false,
-            taskType,
-            iterationCount: loopResult.trace.steps.length,
-            reActTrace: loopResult.trace,
-            reasoningSummary: loopResult.reasoningSummary,
-          }
-        }
-
-        if (loopResult.shouldRequestClarification) {
-          const q = loopResult.finalDecision.thought.content
-          return {
-            type: 'clarification_required',
-            question: q,
-            response: q,
-            action: 'clarified',
-            success: false,
-            taskType,
-            iterationCount: loopResult.trace.steps.length,
-            reActTrace: loopResult.trace,
-            reasoningSummary: loopResult.reasoningSummary,
-          }
-        }
-
-        const lastExecuteStep = loopResult.trace.steps
-          .filter((s) => s.action.type === 'execute_task')
-          .at(-1)
-        const lastWorkerOutput =
-          lastExecuteStep?.observation.content ??
-          loopResult.finalDecision.finalAnswer ??
-          ''
-
-        return {
-          type: 'standard',
-          response: lastWorkerOutput,
-          action: 'briefed_worker',
-          success: true,
-          taskType,
-          iterationCount: loopResult.trace.steps.length,
-          reActTrace: loopResult.trace,
-          reasoningSummary: loopResult.reasoningSummary,
-          verificationPassed: true,
-        }
+      if (FULL_REACT_ROUTES.has(taskType)) {
+        return await this._processReActRoute(userMessage, intentResult, ragContent, managerDecision, { effectiveBrief, activeBasePrompt, complexityScore, taskType })
       }
-
-      let brief = effectiveBrief
-      let bestOutput = ''
-      let bestScore = 0
-      let finalVerificationPassed = false
-      let totalIterations = 0
-      let workerResult: WorkerResult | null = null
-      const allOutputs: string[] = []
-
-      this.reflexionController.reset()
-
-      for (let iteration = 1; iteration <= MAX_REFLEXION_ITERATIONS; iteration++) {
-        totalIterations = iteration
-        const phase = await this._executeWithWorker(
-          managerDecision,
-          {
-            brief,
-            userMessage,
-            activeBasePrompt,
-            complexityScore,
-            taskType,
-          },
-          0,
-        )
-
-        if (!phase.ok) {
-          const q = phase.clarificationQuestion
-          return {
-            type: 'clarification_required',
-            question: q,
-            response: q,
-            action: 'clarified',
-            success: false,
-            taskType,
-            iterationCount: totalIterations,
-          }
-        }
-
-        workerResult = phase.workerResult
-
-        if (!workerResult.success) {
-          break
-        }
-
-        const reflexionResult = phase.reflexionResult
-        if (reflexionResult === undefined) {
-          break
-        }
-
-        allOutputs.push(workerResult.content)
-        this.manager.recordAssistantTurn(workerResult.content)
-
-        if (reflexionResult.critique.overallScore > bestScore) {
-          bestScore = reflexionResult.critique.overallScore
-          bestOutput = workerResult.content
-        }
-
-        if (reflexionResult.critique.passed) {
-          finalVerificationPassed = true
-          break
-        }
-
-        if (!reflexionResult.shouldRetry) {
-          break
-        }
-
-        brief = reflexionResult.enrichedBrief
-        console.log(
-          `${LOG} Reflexion retry ${String(iteration + 1)}: ${reflexionResult.retryInstruction.slice(0, 80)}`,
-        )
-      }
-
-      if (bestScore < 0.5 && !finalVerificationPassed) {
-        console.warn(
-          `${LOG} All iterations failed critique — returning best attempt (score: ${String(bestScore)})`,
-        )
-      }
-
-      const finalOutput = finalVerificationPassed
-        ? (workerResult?.content ?? '')
-        : this.reflexionController.getBestOutput(allOutputs) || bestOutput || workerResult?.content || ''
-
-      if (finalVerificationPassed) {
-        for (const c of this.reflexionController.getIterationHistory()) {
-          for (const l of c.lessonsForFuture) {
-            const lesson = await lessonsStore.findLessonByExactContent(this.sessionId, l)
-            if (lesson !== undefined) {
-              await lessonsStore.markEffective(lesson.id, this.sessionId, true)
-            }
-          }
-        }
-      }
-
-      const reflexionSummary = {
-        totalIterations,
-        finalScore: bestScore,
-        lessonsLearned: this.reflexionController.getIterationHistory().flatMap((c) => c.lessonsForFuture),
-      }
-
-      if (workerResult === null || !workerResult.success) {
-        return {
-          type: 'standard',
-          response: 'I encountered an error completing that task. Could you try again?',
-          action: 'error',
-          success: false,
-          taskType,
-          workerResult: workerResult ?? undefined,
-          verificationPassed: false,
-          iterationCount: totalIterations,
-          reflexionSummary,
-        }
-      }
-
-      const mergedWorker: WorkerResult = {
-        ...workerResult,
-        content: finalOutput,
-        iterationCount: totalIterations,
-      }
-
-      if (!finalVerificationPassed) {
-        console.warn(`${LOG} Max reflexion iterations reached, returning best attempt`)
-        return {
-          type: 'standard',
-          response: finalOutput,
-          action: 'verification_failed',
-          success: false,
-          taskType,
-          workerResult: mergedWorker,
-          verificationPassed: false,
-          iterationCount: totalIterations,
-          reflexionSummary,
-        }
-      }
-
-      return {
-        type: 'standard',
-        response: finalOutput,
-        action: 'briefed_worker',
-        success: true,
-        taskType,
-        workerResult: mergedWorker,
-        verificationPassed: true,
-        iterationCount: totalIterations,
-        reflexionSummary,
-      }
+      return await this._processReflexionLoop(effectiveBrief, userMessage, activeBasePrompt, managerDecision, complexityScore, taskType)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       telemetry.record(
@@ -562,11 +279,330 @@ export default class ManagerWorkerOrchestrator {
     }
   }
 
+  private async _processReActRoute(
+    userMessage: string,
+    intentResult: RouteResult,
+    ragContent: string[],
+    managerDecision: Awaited<ReturnType<ManagerAgent['processTurn']>>,
+    config: { effectiveBrief: string; activeBasePrompt: string; complexityScore: number; taskType: TaskType },
+  ): Promise<MWOrchestratorResult> {
+    const { effectiveBrief, activeBasePrompt, complexityScore, taskType } = config
+    this.reflexionController.reset()
+    this._pendingConfidenceClarification = undefined
+
+    let reActWorkerBrief = effectiveBrief
+
+    const loopController = new ReActLoopController({
+      taskType: intentResult.route,
+      sessionId: this.sessionId,
+      model: 'gpt-4o',
+      complexityScore,
+    })
+
+    const loopResult = await loopController.run(
+      {
+        userMessage,
+        taskType: intentResult.route,
+        priorSteps: [],
+        ragContent,
+        taskBrief: effectiveBrief,
+        iterationCount: 0,
+      },
+      async (decision) => {
+        if (decision.action === 'execute_task') {
+          const phase = await this._executeWithWorker(
+            managerDecision,
+            {
+              brief: reActWorkerBrief,
+              userMessage,
+              activeBasePrompt,
+              complexityScore,
+              taskType: managerDecision.taskState.taskType,
+            },
+            0,
+          )
+          if (!phase.ok) {
+            this._pendingConfidenceClarification = phase.clarificationQuestion
+            return {
+              actionType: 'execute_task',
+              rawOutput: '',
+              success: false,
+              error: 'confidence_clarification',
+            }
+          }
+          const workerResult = phase.workerResult
+          if (!workerResult.success) {
+            return {
+              actionType: 'execute_task',
+              rawOutput: workerResult.content,
+              success: false,
+              tokensUsed: workerResult.tokensUsed,
+              error: workerResult.error,
+            }
+          }
+          const reflexionResult = phase.reflexionResult
+          if (reflexionResult === undefined) {
+            return {
+              actionType: 'execute_task',
+              rawOutput: workerResult.content,
+              success: true,
+              tokensUsed: workerResult.tokensUsed,
+            }
+          }
+          if (reflexionResult.shouldRetry) {
+            reActWorkerBrief = reflexionResult.enrichedBrief
+            return {
+              actionType: 'execute_task',
+              rawOutput: reflexionResult.enrichedBrief,
+              success: false,
+              tokensUsed: workerResult.tokensUsed,
+              error: `Reflexion: ${reflexionResult.retryInstruction}`,
+            }
+          }
+
+          return {
+            actionType: 'execute_task',
+            rawOutput: workerResult.content,
+            success: true,
+            tokensUsed: workerResult.tokensUsed,
+          }
+        }
+        return {
+          actionType: decision.action,
+          rawOutput: '',
+          success: true,
+        }
+      },
+    )
+
+    this.manager.ingestReActLoopResult(loopResult)
+
+    if (this._pendingConfidenceClarification !== undefined) {
+      const q = this._pendingConfidenceClarification
+      this._pendingConfidenceClarification = undefined
+      return {
+        type: 'clarification_required',
+        question: q,
+        response: q,
+        action: 'clarified',
+        success: false,
+        taskType,
+        iterationCount: loopResult.trace.steps.length,
+        reActTrace: loopResult.trace,
+        reasoningSummary: loopResult.reasoningSummary,
+      }
+    }
+
+    if (loopResult.shouldRequestClarification) {
+      const q = loopResult.finalDecision.thought.content
+      return {
+        type: 'clarification_required',
+        question: q,
+        response: q,
+        action: 'clarified',
+        success: false,
+        taskType,
+        iterationCount: loopResult.trace.steps.length,
+        reActTrace: loopResult.trace,
+        reasoningSummary: loopResult.reasoningSummary,
+      }
+    }
+
+    let lastExecuteStep: typeof loopResult.trace.steps[number] | undefined
+    for (let _i = loopResult.trace.steps.length - 1; _i >= 0; _i--) {
+      if (loopResult.trace.steps[_i].action.type === 'execute_task') {
+        lastExecuteStep = loopResult.trace.steps[_i]
+        break
+      }
+    }
+    const lastWorkerOutput =
+      lastExecuteStep?.observation.content ??
+      loopResult.finalDecision.finalAnswer ??
+      ''
+
+    return {
+      type: 'standard',
+      response: lastWorkerOutput,
+      action: 'briefed_worker',
+      success: true,
+      taskType,
+      iterationCount: loopResult.trace.steps.length,
+      reActTrace: loopResult.trace,
+      reasoningSummary: loopResult.reasoningSummary,
+      verificationPassed: true,
+    }
+  }
+
+  private async _runReflexionIterations(
+    initialBrief: string,
+    userMessage: string,
+    activeBasePrompt: string,
+    managerDecision: Awaited<ReturnType<ManagerAgent['processTurn']>>,
+    complexityScore: number,
+    taskType: TaskType,
+  ): Promise<{
+    earlyReturn?: MWOrchestratorClarificationRequired
+    bestOutput: string
+    bestScore: number
+    finalVerificationPassed: boolean
+    totalIterations: number
+    workerResult: WorkerResult | null
+    allOutputs: string[]
+  }> {
+    let brief = initialBrief
+    let bestOutput = ''
+    let bestScore = 0
+    let finalVerificationPassed = false
+    let totalIterations = 0
+    let workerResult: WorkerResult | null = null
+    const allOutputs: string[] = []
+
+    for (let iteration = 1; iteration <= MAX_REFLEXION_ITERATIONS; iteration++) {
+      totalIterations = iteration
+      const phase = await this._executeWithWorker(
+        managerDecision,
+        { brief, userMessage, activeBasePrompt, complexityScore, taskType },
+        0,
+      )
+
+      if (!phase.ok) {
+        const q = phase.clarificationQuestion
+        return {
+          earlyReturn: { type: 'clarification_required', question: q, response: q, action: 'clarified', success: false, taskType, iterationCount: totalIterations },
+          bestOutput, bestScore, finalVerificationPassed, totalIterations, workerResult, allOutputs,
+        }
+      }
+
+      workerResult = phase.workerResult
+      if (!workerResult.success) break
+
+      const reflexionResult = phase.reflexionResult
+      if (reflexionResult === undefined) break
+
+      allOutputs.push(workerResult.content)
+      this.manager.recordAssistantTurn(workerResult.content)
+
+      if (reflexionResult.critique.overallScore > bestScore) {
+        bestScore = reflexionResult.critique.overallScore
+        bestOutput = workerResult.content
+      }
+
+      if (reflexionResult.critique.passed) {
+        finalVerificationPassed = true
+        break
+      }
+
+      if (!reflexionResult.shouldRetry) break
+
+      brief = reflexionResult.enrichedBrief
+      console.log(
+        `${LOG} Reflexion retry ${String(iteration + 1)}: ${reflexionResult.retryInstruction.slice(0, 80)}`,
+      )
+    }
+
+    return { bestOutput, bestScore, finalVerificationPassed, totalIterations, workerResult, allOutputs }
+  }
+
+  private async _markEffectiveLessons(): Promise<void> {
+    for (const c of this.reflexionController.getIterationHistory()) {
+      for (const l of c.lessonsForFuture) {
+        const lesson = await lessonsStore.findLessonByExactContent(this.sessionId, l)
+        if (lesson !== undefined) {
+          await lessonsStore.markEffective(lesson.id, this.sessionId, true)
+        }
+      }
+    }
+  }
+
+  private async _processReflexionLoop(
+    effectiveBrief: string,
+    userMessage: string,
+    activeBasePrompt: string,
+    managerDecision: Awaited<ReturnType<ManagerAgent['processTurn']>>,
+    complexityScore: number,
+    taskType: TaskType,
+  ): Promise<MWOrchestratorResult> {
+    this.reflexionController.reset()
+    const iter = await this._runReflexionIterations(effectiveBrief, userMessage, activeBasePrompt, managerDecision, complexityScore, taskType)
+    if (iter.earlyReturn !== undefined) return iter.earlyReturn
+
+    const { bestOutput, bestScore, finalVerificationPassed, totalIterations, allOutputs } = iter
+    const { workerResult } = iter
+
+    if (bestScore < 0.5 && !finalVerificationPassed) {
+      console.warn(
+        `${LOG} All iterations failed critique — returning best attempt (score: ${String(bestScore)})`,
+      )
+    }
+
+    const finalOutput = finalVerificationPassed
+      ? (workerResult?.content ?? '')
+      : this.reflexionController.getBestOutput(allOutputs) || bestOutput || workerResult?.content || ''
+
+    if (finalVerificationPassed) {
+      await this._markEffectiveLessons()
+    }
+
+    const reflexionSummary = {
+      totalIterations,
+      finalScore: bestScore,
+      lessonsLearned: this.reflexionController.getIterationHistory().flatMap((c) => c.lessonsForFuture),
+    }
+
+    if (!workerResult?.success) {
+      return {
+        type: 'standard',
+        response: 'I encountered an error completing that task. Could you try again?',
+        action: 'error',
+        success: false,
+        taskType,
+        workerResult: workerResult ?? undefined,
+        verificationPassed: false,
+        iterationCount: totalIterations,
+        reflexionSummary,
+      }
+    }
+
+    const mergedWorker: WorkerResult = {
+      ...workerResult,
+      content: finalOutput,
+      iterationCount: totalIterations,
+    }
+
+    if (!finalVerificationPassed) {
+      console.warn(`${LOG} Max reflexion iterations reached, returning best attempt`)
+      return {
+        type: 'standard',
+        response: finalOutput,
+        action: 'verification_failed',
+        success: false,
+        taskType,
+        workerResult: mergedWorker,
+        verificationPassed: false,
+        iterationCount: totalIterations,
+        reflexionSummary,
+      }
+    }
+
+    return {
+      type: 'standard',
+      response: finalOutput,
+      action: 'briefed_worker',
+      success: true,
+      taskType,
+      workerResult: mergedWorker,
+      verificationPassed: true,
+      iterationCount: totalIterations,
+      reflexionSummary,
+    }
+  }
+
+
   /**
    * Worker → Reflexion → confidence (with {@link WorkerResult.critiqueScore}) → hard-block, tier escalation, or proceed.
    */
   private async _executeWithWorker(
-    managerDecision: Awaited<ReturnType<InstanceType<typeof ManagerAgent>['processTurn']>>,
+    managerDecision: Awaited<ReturnType<ManagerAgent['processTurn']>>,
     config: {
       brief: string
       userMessage: string
@@ -574,22 +610,23 @@ export default class ManagerWorkerOrchestrator {
       complexityScore: number
       taskType: TaskType
     },
-    iterationCount?: number,
+    iterationCount = 0,
   ): Promise<
     | { ok: false; clarificationQuestion: string }
     | { ok: true; workerResult: WorkerResult; reflexionResult?: ReflexionResult }
   > {
-    const escalationPass = iterationCount ?? 0
+    const escalationPass = iterationCount
 
     const workerResult = await this.worker.execute(
       config.brief,
       config.taskType,
       'gpt-4o',
       this.sessionId,
-      config.activeBasePrompt,
-      config.complexityScore,
-      undefined,
-      true,
+      {
+        orchestratorBasePrompt: config.activeBasePrompt,
+        complexityScore: config.complexityScore,
+        skipConfidenceEvaluation: true,
+      },
     )
 
     telemetry.record('worker_executed', this.sessionId, {
@@ -654,7 +691,7 @@ export default class ManagerWorkerOrchestrator {
     }
 
     if (confidenceResult.shouldEscalate && escalationPass < 2) {
-      const escalatedComplexity = Math.min((config.complexityScore ?? 0.5) + 0.25, 1.0)
+      const escalatedComplexity = Math.min((config.complexityScore ?? 0.5) + 0.25, 1)
       console.log(
         `${PRE_TASK_LOG} Confidence escalation — retrying with complexityScore: ${String(escalatedComplexity)}`,
       )
