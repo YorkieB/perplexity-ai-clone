@@ -62,7 +62,7 @@ export function buildSearchQueryForFocusMode(query: string, focusMode: FocusMode
 }
 
 function stripLeadingWww(hostname: string): string {
-  return hostname.replace(/^www\./i, '')
+  return hostname.toLowerCase().startsWith('www.') ? hostname.slice(4) : hostname
 }
 
 function getHost(rawUrl: string): string {
@@ -74,7 +74,69 @@ function getHost(rawUrl: string): string {
 }
 
 function isIpv4(hostname: string): boolean {
-  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
+  const parts = hostname.split('.')
+  if (parts.length !== 4) return false
+  for (const part of parts) {
+    if (!part || part.length > 3) return false
+    for (const char of part) {
+      if (char < '0' || char > '9') return false
+    }
+    const numeric = Number(part)
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 255) return false
+  }
+  return true
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length
+  while (end > 0 && value.charAt(end - 1) === '/') {
+    end -= 1
+  }
+  return value.slice(0, end)
+}
+
+function stripHash(value: string): string {
+  const hashIndex = value.indexOf('#')
+  if (hashIndex === -1) return value
+  return value.slice(0, hashIndex)
+}
+
+function collapseWhitespace(value: string): string {
+  let result = ''
+  let pendingSpace = false
+
+  for (const char of value) {
+    const isWhitespace = char <= ' '
+    if (isWhitespace) {
+      if (result) pendingSpace = true
+      continue
+    }
+
+    if (pendingSpace) {
+      result += ' '
+      pendingSpace = false
+    }
+    result += char
+  }
+
+  return result
+}
+
+function stripTrailingQuestionPunctuation(value: string): string {
+  const punctuation = new Set(['?', '!', '.', ',', ';', ':'])
+  let end = value.length
+  while (end > 0 && punctuation.has(value.charAt(end - 1))) {
+    end -= 1
+  }
+  return value.slice(0, end)
+}
+
+function stripQuoteMarks(value: string): string {
+  return value
+    .split('“').join('')
+    .split('”').join('')
+    .split('"').join('')
+    .split('\'').join('')
 }
 
 function toRegistrableFromHost(hostname: string): string {
@@ -124,11 +186,11 @@ export function normalizeSourceUrl(rawUrl: string): string {
     // - keep "/" for origin-only URLs (https://example.com/)
     // - drop trailing slash for non-root paths so /article and /article/ dedupe.
     if (normalized.pathname !== '/' && normalized.pathname.endsWith('/')) {
-      normalized.pathname = normalized.pathname.replace(/\/+$/, '')
+      normalized.pathname = trimTrailingSlashes(normalized.pathname)
     }
     return normalized.toString()
   } catch {
-    const withoutHash = rawUrl.trim().replace(/#.*$/, '')
+    const withoutHash = stripHash(rawUrl.trim())
     return withoutHash
   }
 }
@@ -192,12 +254,9 @@ export function groupSourcesByRegistrableDomain(sources: Source[]): SourceDomain
 }
 
 function normalizeQuestionForComparison(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[“”"']/g, '')
-    .replace(/[?!.,;:]+$/g, '')
-    .trim()
+  const compact = collapseWhitespace(input.toLowerCase())
+  const withoutQuotes = stripQuoteMarks(compact)
+  return stripTrailingQuestionPunctuation(withoutQuotes).trim()
 }
 
 export function sanitizeFollowUpQuestions(questions: string[], assistantContent: string): string[] {
@@ -206,7 +265,7 @@ export function sanitizeFollowUpQuestions(questions: string[], assistantContent:
   const sanitized: string[] = []
 
   for (const question of questions) {
-    const cleaned = question.trim().replace(/\s+/g, ' ')
+    const cleaned = collapseWhitespace(question.trim())
     if (!cleaned) continue
 
     const normalizedQuestion = normalizeQuestionForComparison(cleaned)
