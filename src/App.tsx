@@ -12,6 +12,7 @@ import { Message } from '@/components/Message'
 import { MessageSkeleton } from '@/components/MessageSkeleton'
 import { QueryInput } from '@/components/QueryInput'
 import { WorkspaceDialog } from '@/components/WorkspaceDialog'
+import { WorkspaceFilesModal, type WorkspaceFileRow } from '@/components/WorkspaceFilesModal'
 import { FocusModeSelector } from '@/components/FocusModeSelector'
 import { SettingsDialog } from '@/components/SettingsDialog'
 import { ProactiveVisionLoop } from '@/components/ProactiveVisionLoop'
@@ -55,6 +56,7 @@ import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
+const MAX_PROMPT_FILE_CONTENT_CHARS = 2000
 
 function logAppDegradedPath(message: string, error: unknown): void {
   console.warn(`[App] ${message}`, error)
@@ -82,6 +84,24 @@ function toWorkspaceFile(file: UploadedFile): WorkspaceFile {
     content: truncatedContent,
     uploadedAt: file.uploadedAt,
   }
+}
+
+function toWorkspaceFileRows(files: readonly WorkspaceFile[]): WorkspaceFileRow[] {
+  return files.map((file) => {
+    const lowerType = file.type.toLowerCase()
+    const markdownLike = lowerType.includes('markdown') || file.name.toLowerCase().endsWith('.md')
+    const preview = markdownLike
+      ? { kind: 'markdown' as const, content: file.content }
+      : { kind: 'text' as const, content: file.content }
+    return {
+      id: file.id,
+      name: file.name,
+      origin: 'Upload' as const,
+      date: file.uploadedAt,
+      status: 'Ready' as const,
+      preview,
+    }
+  })
 }
 
 function notifyWorkspaceUploadSummary(
@@ -112,6 +132,7 @@ function MainApp() {
   const [focusMode, setFocusMode] = useState<FocusMode>('all')
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [isUploadingWorkspaceFiles, setIsUploadingWorkspaceFiles] = useState(false)
+  const [workspaceFilesModalOpen, setWorkspaceFilesModalOpen] = useState(false)
   const [workspacePreviewFile, setWorkspacePreviewFile] = useState<WorkspaceFile | null>(null)
   const [workspacePreviewOpen, setWorkspacePreviewOpen] = useState(false)
   const [a2eStudioOpen, setA2eStudioOpen] = useState(false)
@@ -455,7 +476,9 @@ function MainApp() {
           .map(
             (file) =>
               `File: ${file.name} (${file.type})\nContent: ${
-                file.content.length > 2000 ? file.content.substring(0, 2000) + '...' : file.content
+                file.content.length > MAX_PROMPT_FILE_CONTENT_CHARS
+                  ? file.content.substring(0, MAX_PROMPT_FILE_CONTENT_CHARS) + '...'
+                  : file.content
               }\n`
           )
           .join('\n')}`
@@ -467,7 +490,9 @@ function MainApp() {
           .map(
             (file) =>
               `File: ${file.name} (${file.type})\nContent: ${
-                file.content.length > 2000 ? `${file.content.substring(0, 2000)}...` : file.content
+                file.content.length > MAX_PROMPT_FILE_CONTENT_CHARS
+                  ? `${file.content.substring(0, MAX_PROMPT_FILE_CONTENT_CHARS)}...`
+                  : file.content
               }\n`
           )
           .join('\n')}`
@@ -813,6 +838,13 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 <UploadSimple size={16} />
                 {isUploadingWorkspaceFiles ? 'Uploading...' : 'Upload files'}
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setWorkspaceFilesModalOpen(true)}
+              >
+                Manage files
+              </Button>
             </div>
             <input
               ref={workspaceFileInputRef}
@@ -1028,6 +1060,15 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
         file={workspacePreviewFile}
         open={workspacePreviewOpen}
         onOpenChange={setWorkspacePreviewOpen}
+      />
+
+      <WorkspaceFilesModal
+        open={workspaceFilesModalOpen}
+        onOpenChange={setWorkspaceFilesModalOpen}
+        files={toWorkspaceFileRows(activeWorkspace?.workspaceFiles || [])}
+        onRemoveFile={handleWorkspaceFileRemove}
+        onAddFiles={handleWorkspaceUploadClick}
+        isAddingFiles={isUploadingWorkspaceFiles}
       />
 
       <A2EStudioPanel open={a2eStudioOpen} onOpenChange={setA2eStudioOpen} />

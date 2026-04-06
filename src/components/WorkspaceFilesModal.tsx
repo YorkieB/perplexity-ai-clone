@@ -280,9 +280,20 @@ interface WorkspaceFilesModalProps {
   readonly files?: WorkspaceFileRow[]
   /** When set, called after remove; parent should update `files`. If omitted, removals are tracked only inside the modal. */
   readonly onRemoveFile?: (fileId: string) => void
+  /** Optional upload action to attach files to the current workspace. */
+  readonly onAddFiles?: () => void
+  /** Upload-in-progress indicator controlled by parent workspace state. */
+  readonly isAddingFiles?: boolean
 }
 
-export function WorkspaceFilesModal({ open, onOpenChange, files, onRemoveFile }: WorkspaceFilesModalProps) {
+export function WorkspaceFilesModal({
+  open,
+  onOpenChange,
+  files,
+  onRemoveFile,
+  onAddFiles,
+  isAddingFiles = false,
+}: WorkspaceFilesModalProps) {
   const [removedIds, setRemovedIds] = useState<Set<string>>(() => new Set())
   const baseRows = files ?? WORKSPACE_FILES_DEMO
   const rows = useMemo(() => {
@@ -295,6 +306,7 @@ export function WorkspaceFilesModal({ open, onOpenChange, files, onRemoveFile }:
   const [status, setStatus] = useState<string>('all')
   const [page, setPage] = useState(0)
   const [previewRow, setPreviewRow] = useState<WorkspaceFileRow | null>(null)
+  const canUpload = typeof onAddFiles === 'function'
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -424,7 +436,16 @@ export function WorkspaceFilesModal({ open, onOpenChange, files, onRemoveFile }:
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuItem disabled>Upload from device</DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!canUpload || isAddingFiles}
+                    onSelect={(event) => {
+                      if (!canUpload || isAddingFiles) return
+                      event.preventDefault()
+                      onAddFiles()
+                    }}
+                  >
+                    {isAddingFiles ? 'Uploading...' : 'Upload from device'}
+                  </DropdownMenuItem>
                   <DropdownMenuItem disabled>Sync from Google Drive</DropdownMenuItem>
                   <DropdownMenuItem disabled>Paste text as file</DropdownMenuItem>
                 </DropdownMenuContent>
