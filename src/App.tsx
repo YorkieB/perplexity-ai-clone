@@ -852,6 +852,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              recentMessages={[]}
             />
           </div>
         </div>
@@ -929,6 +930,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 onToggleAutopilot={() => setMainAutopilot((p) => !p)}
                 onStopAutopilot={stopMainAutopilot}
                 autopilotRunning={mainAutopilotRunning}
+                recentMessages={activeThread.messages}
               />
             </div>
           </div>
@@ -956,6 +958,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              recentMessages={[]}
             />
           </div>
         </div>

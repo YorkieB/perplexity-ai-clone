@@ -3,6 +3,7 @@ import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { UserSettings } from '@/lib/types'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { buildAuthUrl, isTokenExpired } from '@/lib/oauth'
+import { APP_OWNED_LOCAL_STORAGE_KEYS, downloadLocalDataExport } from '@/lib/local-data-export'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -180,6 +181,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     if (key.length <= 8) return '•'.repeat(key.length)
     return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4)
   }
+
+  const handleExportLocalData = useCallback(() => {
+    const confirmed = window.confirm(
+      'Export all local app data from this browser?\n\nThis JSON includes app-owned localStorage keys only (threads, workspaces, user settings, and model preferences).\n\nWarning: if you stored API keys or OAuth tokens in Settings, they are included because they already exist locally in your browser.',
+    )
+    if (!confirmed) return
+    try {
+      const filename = downloadLocalDataExport()
+      toast.success(`Downloaded ${filename}`)
+    } catch (error) {
+      console.error('Failed to export local data:', error)
+      toast.error('Failed to export local data')
+    }
+  }, [])
 
   // ── Voice Library State ──
   const [voiceSearch, setVoiceSearch] = useState('')
@@ -619,6 +634,26 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 {localApiKeys.xApiKey && localApiKeys.xAccessToken && (
                   <p className="text-sm text-emerald-500">X credentials configured — Jarvis can post tweets and replies.</p>
                 )}
+              </Card>
+
+              <Card className="p-6 space-y-4 border-dashed">
+                <div className="space-y-2">
+                  <h3 className="font-semibold text-base">Privacy — Export local data</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Download a JSON backup of local data stored in this browser.
+                    Exported keys: {APP_OWNED_LOCAL_STORAGE_KEYS.join(', ')}.
+                  </p>
+                </div>
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                  <p className="text-xs text-amber-600">
+                    Warning: exports include whatever you already stored locally, including API keys or OAuth tokens from Settings.
+                  </p>
+                </div>
+                <div className="flex justify-end">
+                  <Button type="button" variant="outline" onClick={handleExportLocalData}>
+                    Export local data (JSON)
+                  </Button>
+                </div>
               </Card>
 
               <div className="flex justify-end gap-3 pt-4">

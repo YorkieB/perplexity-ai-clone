@@ -1,4 +1,4 @@
-import { useState, KeyboardEvent, useRef, useEffect, useMemo } from 'react'
+import { useState, KeyboardEvent, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -7,13 +7,15 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CloudFile, UploadedFile, UserSettings } from '@/lib/types'
+import { CloudFile, UploadedFile, UserSettings, type Message } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { ragIngestBulk } from '@/lib/rag'
 import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
 import { mergeDigitalOceanInferenceCatalog } from '@/lib/digitalocean-inference-models'
 import { clientMayUseDigitalOceanInference } from '@/lib/digitalocean-client'
 import { getPreferredChatModel, setPreferredChatModel } from '@/lib/chat-preferences'
+import { chooseAutoModel } from '@/lib/chat-model-heuristics'
+import { estimateLocalQuota, estimateLocalUsage } from '@/lib/local-usage-estimate'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { FileAttachment } from '@/components/FileAttachment'
 import { FilePreviewModal } from '@/components/FilePreviewModal'
@@ -36,6 +38,7 @@ import {
   Waveform,
   Desktop,
   Brain,
+  Stop,
 } from '@phosphor-icons/react'
 import {
   Select,
@@ -57,6 +60,7 @@ interface QueryInputProps {
   readonly onToggleAutopilot?: () => void
   readonly onStopAutopilot?: () => void
   readonly autopilotRunning?: boolean
+  readonly recentMessages?: Message[]
 }
 
 export function QueryInput({
@@ -70,10 +74,13 @@ export function QueryInput({
   onToggleAutopilot,
   onStopAutopilot,
   autopilotRunning = false,
+  recentMessages = [],
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [selectedModel, setSelectedModel] = useState(() => getPreferredChatModel('gpt-4o-mini'))
+  const [autoModelEnabled, setAutoModelEnabled] = useLocalStorage<boolean>('auto-model-enabled', false)
+  const [manualAutoModelOverride, setManualAutoModelOverride] = useState(false)
   const [moreExpanded, setMoreExpanded] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([])
   const [isUploadingFile, setIsUploadingFile] = useState(false)
@@ -89,10 +96,19 @@ export function QueryInput({
   const { selectorOptions: replicateModelOptions } = useReplicateModelCatalog(2000)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const dictationStoppedByUserRef = useRef(false)
+  const [isDictating, setIsDictating] = useState(false)
+  const [dictationError, setDictationError] = useState<string | null>(null)
 
   const [settings] = useLocalStorage<UserSettings>('user-settings', { apiKeys: {}, oauthTokens: {}, oauthClientIds: {}, oauthClientSecrets: {}, connectedServices: { googledrive: false, onedrive: false, github: false, dropbox: false, spotify: false } })
   const doToken = settings?.apiKeys?.digitalOcean?.trim()
   const useDigitalOcean = clientMayUseDigitalOceanInference(doToken)
+  const speechRecognitionCtor =
+    typeof window !== 'undefined'
+      ? window.SpeechRecognition || window.webkitSpeechRecognition
+      : undefined
+  const speechInputSupported = Boolean(speechRecognitionCtor)
 
   useEffect(() => {
     setPreferredChatModel(selectedModel)
@@ -130,6 +146,32 @@ export function QueryInput({
     return [...openai, ...doItems, ...rep]
   }, [doModels, useDigitalOcean, replicateModelOptions])
 
+  const modelLabelById = useMemo(
+    () => new Map(modelOptions.map((option) => [option.id, option.label] as const)),
+    [modelOptions],
+  )
+
+  const autoModelDecision = useMemo(
+    () => chooseAutoModel(query, attachedFiles.length > 0),
+    [query, attachedFiles.length],
+  )
+
+  const effectiveModel = useMemo(() => {
+    if (!autoModelEnabled) return selectedModel
+    if (manualAutoModelOverride) return selectedModel
+    return autoModelDecision.model
+  }, [autoModelDecision.model, autoModelEnabled, manualAutoModelOverride, selectedModel])
+
+  const localUsageEstimate = useMemo(
+    () => estimateLocalUsage(recentMessages),
+    [recentMessages],
+  )
+
+  const localQuotaEstimate = useMemo(
+    () => estimateLocalQuota(effectiveModel, localUsageEstimate.estimatedTokenCount),
+    [effectiveModel, localUsageEstimate.estimatedTokenCount],
+  )
+
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
     setPreviewOpen(true)
@@ -154,12 +196,112 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel, autopilot)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        effectiveModel,
+        autopilot,
+      )
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
     }
   }
+
+  const stopDictation = useCallback(() => {
+    dictationStoppedByUserRef.current = true
+    const recognition = recognitionRef.current
+    if (!recognition) {
+      setIsDictating(false)
+      return
+    }
+    try {
+      recognition.stop()
+    } catch {
+      recognition.abort()
+    }
+    recognitionRef.current = null
+    setIsDictating(false)
+  }, [])
+
+  const appendDictationTranscript = useCallback((transcript: string) => {
+    const normalized = transcript.trim()
+    if (!normalized) return
+    /**
+     * UX choice: append dictated speech to existing draft so users do not lose typed text.
+     */
+    setQuery((previous) => {
+      const base = previous.trimEnd()
+      return base ? `${base} ${normalized}` : normalized
+    })
+  }, [])
+
+  /**
+   * Web Speech API recognition typically requires a secure context (HTTPS) or localhost.
+   */
+  const toggleDictation = useCallback(() => {
+    if (isDictating) {
+      stopDictation()
+      return
+    }
+    if (!speechRecognitionCtor) {
+      toast.info('Voice input is not supported in this browser.')
+      return
+    }
+    dictationStoppedByUserRef.current = false
+    setDictationError(null)
+    const recognition = new speechRecognitionCtor()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = navigator.language || 'en-US'
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const finalChunks: string[] = []
+      for (let index = event.resultIndex; index < event.results.length; index++) {
+        const result = event.results[index]
+        const transcript = (result[0]?.transcript || '').trim()
+        if (result.isFinal && transcript) {
+          finalChunks.push(transcript)
+        }
+      }
+      if (finalChunks.length > 0) {
+        appendDictationTranscript(finalChunks.join(' '))
+      }
+    }
+    recognition.onerror = (event: Event) => {
+      const errorCode = (event as Event & { error?: string }).error
+      if (!errorCode || errorCode === 'aborted' || errorCode === 'no-speech') return
+      if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+        setDictationError('Microphone permission denied')
+        toast.error('Microphone permission is required for voice input.')
+      } else {
+        setDictationError(`Voice input error: ${errorCode}`)
+        toast.error(`Voice input error: ${errorCode}`)
+      }
+      setIsDictating(false)
+    }
+    recognition.onend = () => {
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null
+      }
+      setIsDictating(false)
+      if (!dictationStoppedByUserRef.current) {
+        toast.info('Voice input stopped. Press mic to continue.')
+      }
+    }
+    recognitionRef.current = recognition
+    try {
+      recognition.start()
+      setIsDictating(true)
+    } catch {
+      recognitionRef.current = null
+      setIsDictating(false)
+      setDictationError('Could not start voice input')
+      toast.error('Could not start voice input.')
+    }
+  }, [appendDictationTranscript, isDictating, speechRecognitionCtor, stopDictation])
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
@@ -258,6 +400,31 @@ export function QueryInput({
       textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
     }
   }, [query])
+
+  useEffect(() => {
+    return () => {
+      dictationStoppedByUserRef.current = true
+      try {
+        recognitionRef.current?.abort()
+      } catch {
+        /* no-op */
+      }
+      recognitionRef.current = null
+    }
+  }, [])
+
+  const handleModelSelect = (modelId: string) => {
+    setSelectedModel(modelId)
+    if (autoModelEnabled) {
+      setManualAutoModelOverride(true)
+    }
+  }
+
+  const autoModelSummary = autoModelEnabled
+    ? manualAutoModelOverride
+      ? `Override active: ${modelLabelById.get(selectedModel) ?? selectedModel}`
+      : `Auto: ${modelLabelById.get(autoModelDecision.model) ?? autoModelDecision.model} (${autoModelDecision.reason})`
+    : 'Manual model selection'
 
   return (
     <div className="space-y-3">
@@ -435,6 +602,11 @@ export function QueryInput({
                 Show suggestions
               </div>
             )}
+            {dictationError && (
+              <div className="mt-2 text-xs text-amber-500">
+                {dictationError}
+              </div>
+            )}
           </div>
 
           <input
@@ -456,7 +628,7 @@ export function QueryInput({
           />
 
           <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0 min-w-0 sm:ml-auto">
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <Select value={selectedModel} onValueChange={handleModelSelect}>
               <SelectTrigger className="h-8 border-0 bg-transparent hover:bg-muted text-xs w-auto max-w-[12rem] px-2">
                 <SelectValue />
               </SelectTrigger>
@@ -468,6 +640,42 @@ export function QueryInput({
                 ))}
               </SelectContent>
             </Select>
+            <button
+              type="button"
+              onClick={() => {
+                setAutoModelEnabled((enabled) => !enabled)
+                setManualAutoModelOverride(false)
+              }}
+              className="h-8 rounded-md border px-2 text-[11px] font-medium text-muted-foreground hover:bg-muted transition-colors"
+              title="Auto model uses lightweight local heuristics; selecting a model while auto is on enables manual override."
+            >
+              {autoModelEnabled ? 'Auto model: On' : 'Auto model: Off'}
+            </button>
+            {autoModelEnabled && manualAutoModelOverride && (
+              <button
+                type="button"
+                onClick={() => setManualAutoModelOverride(false)}
+                className="h-8 rounded-md border px-2 text-[11px] font-medium text-primary hover:bg-primary/10 transition-colors"
+                title="Clear manual model override and return to auto model heuristic"
+              >
+                Use auto
+              </button>
+            )}
+
+            {speechInputSupported ? (
+              <Button
+                variant={isDictating ? 'default' : 'ghost'}
+                size="icon"
+                className="h-8 w-8 hover:bg-muted shrink-0"
+                disabled={isLoading}
+                onClick={toggleDictation}
+                title={isDictating ? 'Stop voice input' : 'Start voice input'}
+              >
+                {isDictating ? <Stop size={16} weight="bold" /> : <Microphone size={16} />}
+              </Button>
+            ) : (
+              <span className="text-[11px] text-muted-foreground px-1">Mic not supported</span>
+            )}
 
             <Button
               variant="ghost"
@@ -521,20 +729,35 @@ export function QueryInput({
                 ■ Stop
               </button>
             )}
+            <span className="text-[11px] text-muted-foreground">{autoModelSummary}</span>
           </div>
-          <button
-            type="button"
-            id="query-input-voice"
-            data-testid="voice-mode-button"
-            disabled={isLoading}
-            onClick={handleVoiceOpen}
-            title="Voice mode — speak to the assistant"
-            aria-label="Open voice mode"
-            className="inline-flex shrink-0 items-center gap-2 rounded-lg border-2 border-primary bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Microphone size={16} weight="fill" className="text-primary-foreground" aria-hidden />
-            <span>Voice</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="text-[11px] text-muted-foreground">
+                ~{localUsageEstimate.estimatedTokenCount.toLocaleString()} tokens from{' '}
+                {localUsageEstimate.recentCharacterCount.toLocaleString()} chars (last{' '}
+                {localUsageEstimate.recentMessageCount} messages)
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {localQuotaEstimate.contextWindow && localQuotaEstimate.estimatedUsagePercent !== null
+                  ? `~${localQuotaEstimate.estimatedUsagePercent.toFixed(1)}% of ${localQuotaEstimate.contextWindow.toLocaleString()} context`
+                  : 'No local context window estimate for this model'} • Local estimate only
+              </div>
+            </div>
+            <button
+              type="button"
+              id="query-input-voice"
+              data-testid="voice-mode-button"
+              disabled={isLoading}
+              onClick={handleVoiceOpen}
+              title="Voice mode — speak to the assistant"
+              aria-label="Open voice mode"
+              className="inline-flex shrink-0 items-center gap-2 rounded-lg border-2 border-primary bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Microphone size={16} weight="fill" className="text-primary-foreground" aria-hidden />
+              <span>Voice</span>
+            </button>
+          </div>
         </div>
       </div>
 
