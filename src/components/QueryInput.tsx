@@ -63,6 +63,7 @@ interface QueryInputProps {
   readonly recentMessages?: Message[]
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export function QueryInput({
   onSubmit,
   isLoading = false,
@@ -420,11 +421,14 @@ export function QueryInput({
     }
   }
 
-  const autoModelSummary = autoModelEnabled
-    ? manualAutoModelOverride
-      ? `Override active: ${modelLabelById.get(selectedModel) ?? selectedModel}`
-      : `Auto: ${modelLabelById.get(autoModelDecision.model) ?? autoModelDecision.model} (${autoModelDecision.reason})`
-    : 'Manual model selection'
+  let autoModelSummary = 'Manual model selection'
+  if (autoModelEnabled) {
+    if (manualAutoModelOverride) {
+      autoModelSummary = `Override active: ${modelLabelById.get(selectedModel) ?? selectedModel}`
+    } else {
+      autoModelSummary = `Auto: ${modelLabelById.get(autoModelDecision.model) ?? autoModelDecision.model} (${autoModelDecision.reason})`
+    }
+  }
 
   return (
     <div className="space-y-3">

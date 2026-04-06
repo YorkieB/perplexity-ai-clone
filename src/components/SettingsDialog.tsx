@@ -26,6 +26,7 @@ interface SettingsDialogProps {
 
 type OAuthCloudProvider = 'googledrive' | 'onedrive' | 'github' | 'dropbox'
 
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [settings, setSettings] = useLocalStorage<UserSettings>('user-settings', DEFAULT_USER_SETTINGS)
 
