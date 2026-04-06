@@ -1,6 +1,7 @@
 import { UserSettings } from './types'
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
+  // Workspace `includeWebSearch` inherits this global default when workspace override is undefined.
   includeWebSearch: true,
   proactiveVision: false,
   voiceGuidanceMode: 'copilot',
