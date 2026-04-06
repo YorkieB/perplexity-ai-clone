@@ -111,6 +111,50 @@ export function Message({
     )
   }
 
+  const deepResearchMeta = !isUser && message.isDeepResearch ? message.deepResearchMeta : undefined
+  const renderDeepResearchStatus = () => {
+    if (!deepResearchMeta) return null
+
+    const stage = deepResearchMeta.stage
+    const planningState = stage === 'planning' ? 'in_progress' : 'done'
+    const searchingState =
+      stage === 'planning' ? 'pending' : stage === 'searching' ? 'in_progress' : stage === 'failed' ? 'failed' : 'done'
+    const synthesizingState =
+      stage === 'planning' || stage === 'searching'
+        ? 'pending'
+        : stage === 'synthesizing'
+        ? 'in_progress'
+        : stage === 'failed'
+        ? 'failed'
+        : 'done'
+
+    const stepGlyph = (status: 'pending' | 'in_progress' | 'done' | 'failed') => {
+      if (status === 'done') return '✓'
+      if (status === 'in_progress') return '●'
+      if (status === 'failed') return '!'
+      return '○'
+    }
+
+    return (
+      <div className="rounded-lg border border-accent/20 bg-accent/5 px-3 py-2 text-xs space-y-1">
+        <p className="font-medium text-accent">Deep Research</p>
+        <ul className="space-y-0.5 text-muted-foreground">
+          <li>{stepGlyph(planningState)} Planning</li>
+          <li>
+            {stepGlyph(searchingState)} Searching ({deepResearchMeta.completedSubQueries}/{deepResearchMeta.totalSubQueries})
+          </li>
+          <li>{stepGlyph(synthesizingState)} Synthesizing</li>
+        </ul>
+        {deepResearchMeta.failedSubQueries && deepResearchMeta.failedSubQueries.length > 0 && (
+          <p className="text-amber-600 dark:text-amber-400">
+            {deepResearchMeta.failedSubQueries.length} sub-search
+            {deepResearchMeta.failedSubQueries.length > 1 ? 'es' : ''} failed and were skipped.
+          </p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       className={cn(
@@ -189,6 +233,9 @@ export function Message({
           )}
           style={{ overflowWrap: 'break-word', wordBreak: 'break-word', overflow: 'hidden' }}
         >
+          <div className={!isUser && message.isDeepResearch ? 'mb-3' : undefined}>
+            {renderDeepResearchStatus()}
+          </div>
           {mainContent}
         </div>
 
