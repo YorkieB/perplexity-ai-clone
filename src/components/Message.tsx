@@ -49,6 +49,7 @@ function groupSourcesByDomain(sources: Source[]): SourceGroup[] {
   return [...grouped.values()]
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export function Message({
   message,
   onFollowUpClick,

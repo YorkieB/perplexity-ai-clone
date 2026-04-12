@@ -44,6 +44,22 @@ function normalizeTextForComparison(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
+function trimTrailingSlashes(pathname: string): string {
+  let out = pathname
+  while (out.length > 1 && out.endsWith('/')) {
+    out = out.slice(0, -1)
+  }
+  return out
+}
+
+function trimTrailingQuestionPunctuation(value: string): string {
+  let out = value
+  while (out.endsWith('?') || out.endsWith('.') || out.endsWith('!')) {
+    out = out.slice(0, -1).trimEnd()
+  }
+  return out
+}
+
 /**
  * URL normalization policy for source dedupe:
  * - Remove URL hash fragments (`#...`) because they usually point to an in-page anchor.
@@ -64,7 +80,7 @@ export function normalizeSourceUrlForDedup(rawUrl: string): string | null {
 
     let normalizedPath = parsed.pathname || '/'
     if (normalizedPath !== '/') {
-      normalizedPath = normalizedPath.replace(/\/+$/, '')
+      normalizedPath = trimTrailingSlashes(normalizedPath)
       if (!normalizedPath) normalizedPath = '/'
     }
 
@@ -146,7 +162,7 @@ export function sanitizeFollowUpQuestions(
     const trimmed = question.trim()
     if (!trimmed) continue
 
-    const normalizedQuestion = normalizeTextForComparison(trimmed.replace(/[?.!]+$/g, ''))
+    const normalizedQuestion = normalizeTextForComparison(trimTrailingQuestionPunctuation(trimmed))
     if (!normalizedQuestion || seen.has(normalizedQuestion)) continue
 
     if (normalizedContent.includes(normalizedQuestion)) continue
