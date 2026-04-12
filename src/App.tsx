@@ -52,6 +52,7 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
+import { getFocusModeLabel } from '@/lib/search-utils'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
@@ -411,13 +412,31 @@ function MainApp() {
       }
 
       let webSources: Source[] = []
+      let searchTrace: MessageType['searchTrace'] = undefined
 
       if (useWebSearchForQuery) {
+        if (import.meta.env.DEV) {
+          console.debug('[Search] executeWebSearch params', {
+            query,
+            focusMode,
+            focusModeLabel: getFocusModeLabel(focusMode),
+            advanced: useAdvancedMode,
+          })
+        }
         const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
         if ('error' in searchResult) {
           toast.error(searchResult.message)
         } else {
           webSources = searchResult
+          if (webSources.length > 0) {
+            searchTrace = {
+              query,
+              focusMode,
+              focusModeLabel: getFocusModeLabel(focusMode),
+              advanced: useAdvancedMode,
+              executedAt: Date.now(),
+            }
+          }
         }
       }
 
@@ -484,12 +503,21 @@ function MainApp() {
           systemPrompt + modeInstruction,
           selectedModels
         )
+        const councilResponseForFollowUps = councilResult.models
+          .map((modelResponse) => modelResponse.content)
+          .join('\n\n')
+        const followUpQuestions = await generateFollowUpQuestions(
+          query,
+          councilResponseForFollowUps,
+          webSources,
+        )
         
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
           content: 'Model Council Response',
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           focusMode,
           isModelCouncil: true,
@@ -497,6 +525,7 @@ function MainApp() {
             ...m,
             convergenceScore: councilResult.convergence.score,
           })),
+          followUpQuestions,
         }
 
         setThreads((current) =>
@@ -614,6 +643,7 @@ ${sourceGuidance}${autopilotHint}`
           content: response,
           reasoning: reasoning || undefined,
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           modelUsed: chatModel,
           focusMode,

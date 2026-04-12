@@ -2,6 +2,11 @@ import { callLlm, llmPrompt } from './llm'
 import { getPreferredChatModel } from './chat-preferences'
 import { Source, FocusMode } from './types'
 import { isSafeScheme, parseUrlSafely } from './url-validation'
+import {
+  dedupeRankedSourcesByNormalizedUrl,
+  type RankedSourceCandidate,
+  sanitizeFollowUpQuestions,
+} from './search-utils'
 
 export interface TavilySearchResult {
   url: string
@@ -10,17 +15,12 @@ export interface TavilySearchResult {
   score: number
 }
 
-export interface TavilySearchResponse {
-  results: TavilySearchResult[]
-  query: string
-}
-
 export interface SearchError {
   error: true
   message: string
 }
 
-function normalizeSearchResult(result: TavilySearchResult): Source | null {
+function normalizeSearchResult(result: TavilySearchResult): RankedSourceCandidate | null {
   if (!result || typeof result.url !== 'string') return null
 
   const parsed = parseUrlSafely(result.url)
@@ -46,13 +46,22 @@ function normalizeSearchResult(result: TavilySearchResult): Source | null {
   const confidence = Math.max(0, Math.min(100, Math.round(score * 100)))
 
   return {
-    url: url.href,
-    title,
-    snippet,
-    confidence,
-    domain,
-    favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=32`,
+    source: {
+      url: url.href,
+      title,
+      snippet,
+      confidence,
+      domain,
+      favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=32`,
+    },
+    score,
   }
+}
+
+function hasResultsArray(value: unknown): value is { results: TavilySearchResult[] } {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as { results?: unknown }
+  return Array.isArray(candidate.results)
 }
 
 function getFocusModeSearchModifier(focusMode: FocusMode): string {
@@ -114,18 +123,28 @@ export async function executeWebSearch(
       }
     }
 
-    const data: TavilySearchResponse = await response.json()
+    const data: unknown = await response.json()
+    if (!hasResultsArray(data)) {
+      console.warn('[API] Tavily search returned invalid payload shape; expected results array.', {
+        payloadType: typeof data,
+      })
+      return {
+        error: true,
+        message: 'Search failed: invalid response payload from provider.',
+      }
+    }
 
-    const sources: Source[] = data.results
+    const rankedCandidates = data.results
       .map((result) => normalizeSearchResult(result))
-      .filter((source): source is Source => source !== null)
+      .filter((candidate): candidate is RankedSourceCandidate => candidate !== null)
 
-    if (sources.length !== data.results.length) {
+    if (rankedCandidates.length !== data.results.length) {
       console.warn(
-        `[API] Dropped ${String(data.results.length - sources.length)} search results with invalid or unsafe URLs.`,
+        `[API] Dropped ${String(data.results.length - rankedCandidates.length)} search results with invalid or unsafe URLs.`,
       )
     }
 
+    const sources: Source[] = dedupeRankedSourcesByNormalizedUrl(rankedCandidates)
     return sources
   } catch (error) {
     console.error('Web search error:', error)
@@ -153,13 +172,18 @@ Sources covered: ${sources.map((s) => s.title).join(', ')}
 Return a JSON object only, with this shape: {"questions": ["question1", "question2", "question3"]}. Each question must be specific and actionable.`
 
     const result = await callLlm(prompt, getPreferredChatModel('gpt-4o-mini'), true)
-    const parsed = JSON.parse(result)
-
-    if (parsed.questions && Array.isArray(parsed.questions)) {
-      return parsed.questions.slice(0, 3)
+    const parsed: unknown = JSON.parse(result)
+    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { questions?: unknown }).questions)) {
+      console.warn('[API] Follow-up generation returned invalid payload shape; expected questions array.', {
+        payloadType: typeof parsed,
+      })
+      return []
     }
-    
-    return []
+
+    const questions = ((parsed as { questions: unknown[] }).questions)
+      .filter((item): item is string => typeof item === 'string')
+
+    return sanitizeFollowUpQuestions(questions, response, 3)
   } catch (error) {
     console.error('Failed to generate follow-up questions:', error)
     return []
@@ -262,14 +286,40 @@ Return a JSON object with this structure:
 
   try {
     const analysisResult = await callLlm(analysisPrompt, getPreferredChatModel('gpt-4o-mini'), true)
-    const convergence = JSON.parse(analysisResult)
-    
+    const convergencePayload: unknown = JSON.parse(analysisResult)
+    const convergenceRecord = (convergencePayload && typeof convergencePayload === 'object')
+      ? (convergencePayload as { score?: unknown; commonThemes?: unknown; divergentPoints?: unknown })
+      : {}
+
+    const hasExpectedShape =
+      typeof convergenceRecord.score === 'number' &&
+      Array.isArray(convergenceRecord.commonThemes) &&
+      Array.isArray(convergenceRecord.divergentPoints)
+    if (!hasExpectedShape) {
+      console.warn(
+        '[API] Model council convergence payload missing expected shape; using normalized defaults.',
+        {
+          payloadType: typeof convergencePayload,
+        },
+      )
+    }
+
+    const normalizedScore = typeof convergenceRecord.score === 'number' && Number.isFinite(convergenceRecord.score)
+      ? Math.max(0, Math.min(100, Math.round(convergenceRecord.score)))
+      : 0
+    const normalizedCommonThemes = Array.isArray(convergenceRecord.commonThemes)
+      ? convergenceRecord.commonThemes.filter((item): item is string => typeof item === 'string')
+      : []
+    const normalizedDivergentPoints = Array.isArray(convergenceRecord.divergentPoints)
+      ? convergenceRecord.divergentPoints.filter((item): item is string => typeof item === 'string')
+      : []
+
     return {
       models: responses,
       convergence: {
-        score: convergence.score || 0,
-        commonThemes: convergence.commonThemes || [],
-        divergentPoints: convergence.divergentPoints || [],
+        score: normalizedScore,
+        commonThemes: normalizedCommonThemes,
+        divergentPoints: normalizedDivergentPoints,
       },
     }
   } catch (error) {

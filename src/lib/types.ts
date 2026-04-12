@@ -16,6 +16,14 @@ export interface Source {
   favicon?: string
 }
 
+export interface SearchTrace {
+  query: string
+  focusMode: FocusMode
+  focusModeLabel: string
+  advanced: boolean
+  executedAt: number
+}
+
 export interface SearchImage {
   url: string
   description?: string
@@ -96,6 +104,7 @@ export interface Message {
   modelUsed?: string
   focusMode?: FocusMode
   isDeepResearch?: boolean
+  searchTrace?: SearchTrace
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]

@@ -235,4 +235,46 @@ describe('executeWebSearch degraded-path telemetry', () => {
     }
   })
 
+  it('deduplicates equivalent URLs and keeps highest scored source', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn(async () => ({
+          results: [
+            {
+              url: 'https://example.com/docs/#intro',
+              title: 'Docs intro (lower score)',
+              content: 'first',
+              score: 0.2,
+            },
+            {
+              url: 'https://example.com/docs',
+              title: 'Docs canonical (highest score)',
+              content: 'second',
+              score: 0.9,
+            },
+            {
+              url: 'https://example.com/docs/',
+              title: 'Docs canonical (same score later)',
+              content: 'third',
+              score: 0.9,
+            },
+          ],
+        })),
+      }),
+    )
+
+    const { executeWebSearch } = await import('../../src/lib/api')
+    const result = await executeWebSearch('q')
+
+    expect(Array.isArray(result)).toBe(true)
+    if (Array.isArray(result)) {
+      expect(result).toHaveLength(1)
+      expect(result[0]?.url).toBe('https://example.com/docs')
+      expect(result[0]?.title).toBe('Docs canonical (highest score)')
+      expect(result[0]?.confidence).toBe(90)
+    }
+  })
+
 })
