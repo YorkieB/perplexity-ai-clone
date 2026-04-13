@@ -128,6 +128,41 @@ function SidebarLibrarySection({
   onClearWorkspaceFilter: () => void
 }) {
   const emptyLabel = activeWorkspace !== undefined ? 'No threads in this workspace yet' : 'No threads yet'
+  const hasVisibleThreads = visibleThreads.length > 0
+
+  let threadListContent: ReactNode
+  if (!hasVisibleThreads) {
+    threadListContent = <p className="text-xs text-muted-foreground px-2 py-4">{emptyLabel}</p>
+  } else if (activeWorkspace !== undefined) {
+    threadListContent = visibleThreads.map((thread) => (
+      <SidebarThreadRow
+        key={thread.id}
+        thread={thread}
+        activeThreadId={activeThreadId}
+        activeWorkspaceId={activeWorkspaceId}
+        workspaceNames={workspaceNames}
+        onThreadSelect={onThreadSelect}
+      />
+    ))
+  } else {
+    threadListContent = groupedThreads.map((group) => (
+      <div key={group.id} className="space-y-1">
+        <p className="px-2 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {group.label}
+        </p>
+        {group.threads.map((thread) => (
+          <SidebarThreadRow
+            key={thread.id}
+            thread={thread}
+            activeThreadId={activeThreadId}
+            activeWorkspaceId={activeWorkspaceId}
+            workspaceNames={workspaceNames}
+            onThreadSelect={onThreadSelect}
+          />
+        ))}
+      </div>
+    ))
+  }
 
   return (
     <Collapsible open={libraryOpen} onOpenChange={setLibraryOpen}>
@@ -153,38 +188,7 @@ function SidebarLibrarySection({
             </Button>
           </div>
         )}
-        {visibleThreads.length === 0 ? (
-          <p className="text-xs text-muted-foreground px-2 py-4">{emptyLabel}</p>
-        ) : activeWorkspace !== undefined ? (
-          visibleThreads.map((thread) => (
-            <SidebarThreadRow
-              key={thread.id}
-              thread={thread}
-              activeThreadId={activeThreadId}
-              activeWorkspaceId={activeWorkspaceId}
-              workspaceNames={workspaceNames}
-              onThreadSelect={onThreadSelect}
-            />
-          ))
-        ) : (
-          groupedThreads.map((group) => (
-            <div key={group.id} className="space-y-1">
-              <p className="px-2 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                {group.label}
-              </p>
-              {group.threads.map((thread) => (
-                <SidebarThreadRow
-                  key={thread.id}
-                  thread={thread}
-                  activeThreadId={activeThreadId}
-                  activeWorkspaceId={activeWorkspaceId}
-                  workspaceNames={workspaceNames}
-                  onThreadSelect={onThreadSelect}
-                />
-              ))}
-            </div>
-          ))
-        )}
+        {threadListContent}
       </CollapsibleContent>
     </Collapsible>
   )
