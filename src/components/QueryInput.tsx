@@ -71,6 +71,7 @@ interface QueryInputProps {
   readonly onCancelDeepResearch?: () => void
 }
 
+/* eslint-disable sonarjs/cognitive-complexity */
 export function QueryInput({
   onSubmit,
   isLoading = false,
@@ -313,6 +314,26 @@ export function QueryInput({
     deepResearchProgress !== null &&
     (deepResearchProgress.stage === 'searching' || deepResearchProgress.stage === 'synthesizing')
   const searchingDone = deepResearchProgress !== null && deepResearchProgress.stage === 'synthesizing'
+  let planningIndicator = '○'
+  if (planningDone) {
+    planningIndicator = '✓'
+  } else if (deepResearchProgress?.stage === 'planning') {
+    planningIndicator = '●'
+  }
+
+  let searchingIndicator = '○'
+  if (searchingDone) {
+    searchingIndicator = '✓'
+  } else if (deepResearchProgress?.stage === 'searching') {
+    searchingIndicator = '●'
+  }
+
+  let searchingProgressLabel = '0/0'
+  if (deepResearchProgress?.stage === 'searching') {
+    searchingProgressLabel = `${String(deepResearchProgress.searchIndex)}/${String(deepResearchProgress.totalSearches)}`
+  } else if (deepResearchProgress) {
+    searchingProgressLabel = `${String(deepResearchProgress.totalSearches)}/${String(deepResearchProgress.totalSearches)}`
+  }
 
   return (
     <div className="space-y-3">
@@ -345,20 +366,16 @@ export function QueryInput({
           <div className="space-y-1 text-xs">
             <div className="flex items-center justify-between">
               <span className={planningDone ? 'text-foreground' : 'text-muted-foreground'}>
-                {planningDone ? '✓' : deepResearchProgress?.stage === 'planning' ? '●' : '○'} Planning
+                {planningIndicator} Planning
               </span>
               <span className="text-muted-foreground">1 step</span>
             </div>
             <div className="flex items-center justify-between">
               <span className={searchingDone ? 'text-foreground' : 'text-muted-foreground'}>
-                {searchingDone ? '✓' : deepResearchProgress?.stage === 'searching' ? '●' : '○'} Searching
+                {searchingIndicator} Searching
               </span>
               <span className="text-muted-foreground">
-                {deepResearchProgress?.stage === 'searching'
-                  ? `${String(deepResearchProgress.searchIndex)}/${String(deepResearchProgress.totalSearches)}`
-                  : deepResearchProgress
-                    ? `${String(deepResearchProgress.totalSearches)}/${String(deepResearchProgress.totalSearches)}`
-                    : '0/0'}
+                {searchingProgressLabel}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -710,3 +727,4 @@ export function QueryInput({
     </div>
   )
 }
+/* eslint-enable sonarjs/cognitive-complexity */

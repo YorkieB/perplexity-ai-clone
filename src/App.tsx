@@ -424,7 +424,7 @@ function MainApp() {
     }
   }
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity
+  /* eslint-disable sonarjs/cognitive-complexity */
   const handleQuery = async (
     query: string,
     useAdvancedMode: boolean,
@@ -611,6 +611,25 @@ Workspace/file context: ${combinedFileContext || '[none]'}`
         })
 
         const synthesisStartedAt = Date.now()
+        const searchFindingsSection = searchByQuery
+          .map((item, idx) => {
+            if (item.sources.length === 0) {
+              return `Sub-query ${idx + 1}: ${item.query}\nNo successful results.`
+            }
+            const sourceLines = item.sources
+              .map((source, sourceIdx) => {
+                return `- [${sourceIdx + 1}] ${source.title}\n  URL: ${source.url}\n  Snippet: ${source.snippet}`
+              })
+              .join('\n')
+            return `Sub-query ${idx + 1}: ${item.query}\n${sourceLines}`
+          })
+          .join('\n\n')
+
+        const subQueryList = subQueries.map((subQuery, idx) => `${idx + 1}. ${subQuery}`).join('\n')
+        const failureList =
+          failedSubQueries.length > 0
+            ? failedSubQueries.map((entry) => `- ${entry.query}: ${entry.message}`).join('\n')
+            : 'None'
         const synthesisPrompt = `You are a deep research assistant. Synthesize the collected web findings into a clear answer.
 
 When comparing options/sources, use markdown tables.
@@ -627,25 +646,13 @@ Workspace/file context:
 ${combinedFileContext || '[none]'}
 
 Research plan sub-queries:
-${subQueries.map((subQuery, idx) => `${idx + 1}. ${subQuery}`).join('\n')}
+${subQueryList}
 
 Search findings by sub-query:
-${searchByQuery
-  .map((item, idx) => {
-    if (item.sources.length === 0) {
-      return `Sub-query ${idx + 1}: ${item.query}\nNo successful results.`
-    }
-    return `Sub-query ${idx + 1}: ${item.query}\n${item.sources
-      .map(
-        (source, sourceIdx) =>
-          `- [${sourceIdx + 1}] ${source.title}\n  URL: ${source.url}\n  Snippet: ${source.snippet}`
-      )
-      .join('\n')}`
-  })
-  .join('\n\n')}
+${searchFindingsSection}
 
 Failures:
-${failedSubQueries.length > 0 ? failedSubQueries.map((entry) => `- ${entry.query}: ${entry.message}`).join('\n') : 'None'}`
+${failureList}`
 
         const response = await callLlm(synthesisPrompt, chatModel, false, {
           signal: deepResearchAbortController.signal,
@@ -653,9 +660,7 @@ ${failedSubQueries.length > 0 ? failedSubQueries.map((entry) => `- ${entry.query
         const synthesizingMs = Date.now() - synthesisStartedAt
         const deepResearchFailureSummary =
           failedSubQueries.length > 0
-            ? `\n\n---\n**Deep research search issues:**\n${failedSubQueries
-                .map((entry) => `- ${entry.query}: ${entry.message}`)
-                .join('\n')}`
+            ? `\n\n---\n**Deep research search issues:**\n${failureList}`
             : ''
         const finalDeepResearchResponse = `${response}${deepResearchFailureSummary}`
 
@@ -913,6 +918,7 @@ ${sourceGuidance}${autopilotHint}`
       }
     }
   }
+  /* eslint-enable sonarjs/cognitive-complexity */
 
   const stopMainAutopilot = () => {
     mainAutopilotAbortRef.current?.abort()
