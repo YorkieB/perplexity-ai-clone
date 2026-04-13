@@ -190,9 +190,16 @@ export function QueryInput({
     [query, attachedFiles.length],
   )
 
-  const resolvedModel = autoModelEnabled
-    ? (autoModelChoice === 'auto' ? autoModelDecision.model : autoModelChoice)
-    : selectedModel
+  let resolvedModel = selectedModel
+  if (autoModelEnabled) {
+    resolvedModel = autoModelChoice === 'auto' ? autoModelDecision.model : autoModelChoice
+  }
+
+  const autoModelSummary = useMemo(() => {
+    if (!autoModelEnabled) return 'off'
+    if (autoModelChoice !== 'auto') return `${resolvedModel} (manual override)`
+    return `${resolvedModel} (${describeAutoModelDecision(autoModelDecision)})`
+  }, [autoModelEnabled, autoModelChoice, resolvedModel, autoModelDecision])
 
   const localUsage = useMemo(() => estimateLocalUsage(recentMessages), [recentMessages])
 
@@ -722,10 +729,7 @@ export function QueryInput({
               </button>
             )}
             <span className="text-[11px] text-muted-foreground">
-              Auto model:{' '}
-              {autoModelEnabled
-                ? `${resolvedModel} (${autoModelChoice === 'auto' ? describeAutoModelDecision(autoModelDecision) : 'manual override'})`
-                : 'off'}
+              Auto model: {autoModelSummary}
             </span>
             <span className="text-[11px] text-muted-foreground">
               Usage: ~{localUsage.estimatedTokens.toLocaleString()} tokens / {localUsage.characterCount.toLocaleString()} chars ({localUsage.messageCount} msgs, local estimate only)
