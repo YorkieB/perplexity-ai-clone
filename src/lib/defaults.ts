@@ -2,6 +2,7 @@ import { UserSettings } from './types'
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   includeWebSearch: true,
+  autoModelEnabled: false,
   proactiveVision: false,
   voiceGuidanceMode: 'copilot',
   nativeControlEnabled: true,

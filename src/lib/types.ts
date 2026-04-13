@@ -177,6 +177,8 @@ export interface UserSettings {
   plaidEnvironment?: 'sandbox' | 'development' | 'production'
   /** Read-aloud / voice chat TTS backend. Default OpenAI. */
   ttsProvider?: 'openai' | 'elevenlabs'
+  /** Use a simple local heuristic to auto-pick chat model per query. */
+  autoModelEnabled?: boolean
   includeWebSearch?: boolean
   oauthTokens: {
     googledrive?: OAuthToken

@@ -159,6 +159,9 @@ function MainApp() {
   }, [])
 
   const activeThread = (threads || []).find((t) => t.id === activeThreadId)
+  const recentMessagesForUsage = (activeThread?.messages || []).slice(-20).map((message) => ({
+    content: message.content,
+  }))
   const contextWorkspaceId = activeWorkspaceId ?? activeThread?.workspaceId ?? null
   const activeWorkspace = (workspaces || []).find((w) => w.id === contextWorkspaceId)
   const globalWebSearchEnabled = userSettings?.includeWebSearch ?? DEFAULT_USER_SETTINGS.includeWebSearch
@@ -852,6 +855,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              recentMessages={recentMessagesForUsage}
             />
           </div>
         </div>
@@ -929,6 +933,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 onToggleAutopilot={() => setMainAutopilot((p) => !p)}
                 onStopAutopilot={stopMainAutopilot}
                 autopilotRunning={mainAutopilotRunning}
+                recentMessages={recentMessagesForUsage}
               />
             </div>
           </div>
@@ -956,6 +961,7 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              recentMessages={recentMessagesForUsage}
             />
           </div>
         </div>

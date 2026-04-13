@@ -13,10 +13,11 @@ import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star, Monitor } from '@phosphor-icons/react'
+import { Key, CloudArrowUp, Link as LinkIcon, CheckCircle, Warning, XCircle, Microphone, MagnifyingGlass, Play, Stop, Trash, Plus, Star, Monitor, DownloadSimple } from '@phosphor-icons/react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { VoiceProfile } from '@/lib/voice-registry'
 import { PlaidLinkButton } from '@/components/PlaidLinkButton'
+import { APP_LOCAL_STORAGE_EXPORT_KEYS, buildLocalDataExportPayload } from '@/lib/local-data-export'
 
 interface SettingsDialogProps {
   open: boolean
@@ -180,6 +181,23 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     if (key.length <= 8) return '•'.repeat(key.length)
     return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4)
   }
+
+  const handleExportLocalData = useCallback(() => {
+    const confirmed = window.confirm(
+      'This export includes data stored in your browser, including any API keys or OAuth tokens you previously saved locally. Continue?',
+    )
+    if (!confirmed) return
+
+    const payload = buildLocalDataExportPayload(window.localStorage)
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `jarvis-local-data-export-${Date.now()}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast.success(`Local export downloaded (${payload.exportedKeys.length} keys).`)
+  }, [])
 
   // ── Voice Library State ──
   const [voiceSearch, setVoiceSearch] = useState('')
@@ -619,6 +637,34 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 {localApiKeys.xApiKey && localApiKeys.xAccessToken && (
                   <p className="text-sm text-emerald-500">X credentials configured — Jarvis can post tweets and replies.</p>
                 )}
+              </Card>
+
+              <Card className="p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-amber-500/10 rounded-lg">
+                    <DownloadSimple className="text-amber-500" size={20} />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="font-semibold text-base">Export local app data</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Download a JSON backup of localStorage keys owned by this app.
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Includes keys:
+                  {' '}
+                  {APP_LOCAL_STORAGE_EXPORT_KEYS.join(', ')}
+                </p>
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Warning: this may include secrets you already saved locally (API keys, OAuth tokens).
+                </p>
+                <div className="flex justify-end">
+                  <Button variant="outline" onClick={handleExportLocalData} className="gap-2">
+                    <DownloadSimple size={16} />
+                    Export local data (JSON)
+                  </Button>
+                </div>
               </Card>
 
               <div className="flex justify-end gap-3 pt-4">
