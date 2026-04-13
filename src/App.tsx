@@ -53,6 +53,8 @@ import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
 
+// Workspace file refs are stored in localStorage; cap count + per-file text
+// to avoid quota failures in browsers with smaller storage limits.
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
 
@@ -228,7 +230,6 @@ function MainApp() {
   const handleNewThread = () => {
     setMainView('chat')
     setActiveThreadId(null)
-    setActiveWorkspaceId(null)
   }
 
   const handleThreadSelect = (threadId: string) => {
@@ -238,7 +239,7 @@ function MainApp() {
     setActiveWorkspaceId(selectedThread?.workspaceId ?? null)
   }
 
-  const handleWorkspaceSelect = (workspaceId: string) => {
+  const handleWorkspaceSelect = (workspaceId: string | null) => {
     setMainView('chat')
     setActiveWorkspaceId(workspaceId)
     setActiveThreadId(null)

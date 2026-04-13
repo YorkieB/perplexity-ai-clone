@@ -33,7 +33,7 @@ interface AppSidebarProps {
   activeThreadId: string | null
   activeWorkspaceId: string | null
   onThreadSelect: (threadId: string) => void
-  onWorkspaceSelect: (workspaceId: string) => void
+  onWorkspaceSelect: (workspaceId: string | null) => void
   onNewThread: () => void
   onNewWorkspace: () => void
   onOpenSettings: () => void
@@ -108,20 +108,24 @@ function SidebarLibrarySection({
   onNewThread,
   activeWorkspace,
   visibleThreads,
+  groupedThreads,
   activeThreadId,
   activeWorkspaceId,
   workspaceNames,
   onThreadSelect,
+  onClearWorkspaceFilter,
 }: {
   libraryOpen: boolean
   setLibraryOpen: (open: boolean) => void
   onNewThread: () => void
   activeWorkspace: Workspace | undefined
   visibleThreads: Thread[]
+  groupedThreads: Array<{ id: string; label: string; threads: Thread[] }>
   activeThreadId: string | null
   activeWorkspaceId: string | null
   workspaceNames: Map<string, string>
   onThreadSelect: (id: string) => void
+  onClearWorkspaceFilter: () => void
 }) {
   const emptyLabel = activeWorkspace !== undefined ? 'No threads in this workspace yet' : 'No threads yet'
 
@@ -140,13 +144,18 @@ function SidebarLibrarySection({
       </div>
       <CollapsibleContent className="mt-2 space-y-1">
         {activeWorkspace !== undefined && (
-          <p className="text-xs text-muted-foreground px-2 pb-1">
-            Showing threads in <span className="font-medium text-foreground">{activeWorkspace.name}</span>
-          </p>
+          <div className="flex items-center justify-between gap-2 px-2 pb-1">
+            <p className="text-xs text-muted-foreground">
+              Showing threads in <span className="font-medium text-foreground">{activeWorkspace.name}</span>
+            </p>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onClearWorkspaceFilter}>
+              Show all
+            </Button>
+          </div>
         )}
         {visibleThreads.length === 0 ? (
           <p className="text-xs text-muted-foreground px-2 py-4">{emptyLabel}</p>
-        ) : (
+        ) : activeWorkspace !== undefined ? (
           visibleThreads.map((thread) => (
             <SidebarThreadRow
               key={thread.id}
@@ -156,6 +165,24 @@ function SidebarLibrarySection({
               workspaceNames={workspaceNames}
               onThreadSelect={onThreadSelect}
             />
+          ))
+        ) : (
+          groupedThreads.map((group) => (
+            <div key={group.id} className="space-y-1">
+              <p className="px-2 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                {group.label}
+              </p>
+              {group.threads.map((thread) => (
+                <SidebarThreadRow
+                  key={thread.id}
+                  thread={thread}
+                  activeThreadId={activeThreadId}
+                  activeWorkspaceId={activeWorkspaceId}
+                  workspaceNames={workspaceNames}
+                  onThreadSelect={onThreadSelect}
+                />
+              ))}
+            </div>
           ))
         )}
       </CollapsibleContent>
@@ -176,7 +203,7 @@ function SidebarWorkspacesSection({
   onNewWorkspace: () => void
   workspaces: Workspace[]
   activeWorkspaceId: string | null
-  onWorkspaceSelect: (id: string) => void
+  onWorkspaceSelect: (id: string | null) => void
 }) {
   const list = workspaces ?? []
 
@@ -424,11 +451,23 @@ export function AppSidebar({
 
   const sortedThreads = [...(threads || [])].sort((a, b) => b.updatedAt - a.updatedAt)
   const activeWorkspace = (workspaces || []).find((workspace) => workspace.id === activeWorkspaceId)
-  const visibleThreads =
-    activeWorkspaceId !== null && activeWorkspaceId !== ''
-      ? sortedThreads.filter((thread) => thread.workspaceId === activeWorkspaceId)
-      : sortedThreads
+  const visibleThreads = activeWorkspaceId ? sortedThreads.filter((thread) => thread.workspaceId === activeWorkspaceId) : sortedThreads
   const workspaceNames = new Map((workspaces || []).map((workspace) => [workspace.id, workspace.name]))
+  const groupedThreads = (workspaces || [])
+    .map((workspace) => ({
+      id: workspace.id,
+      label: workspace.name,
+      threads: sortedThreads.filter((thread) => thread.workspaceId === workspace.id),
+    }))
+    .filter((group) => group.threads.length > 0)
+  const noWorkspaceThreads = sortedThreads.filter((thread) => !thread.workspaceId || !workspaceNames.has(thread.workspaceId))
+  if (noWorkspaceThreads.length > 0) {
+    groupedThreads.push({
+      id: 'no-workspace',
+      label: 'No workspace',
+      threads: noWorkspaceThreads,
+    })
+  }
 
   return (
     <div
@@ -453,10 +492,12 @@ export function AppSidebar({
               onNewThread={onNewThread}
               activeWorkspace={activeWorkspace}
               visibleThreads={visibleThreads}
+              groupedThreads={groupedThreads}
               activeThreadId={activeThreadId}
               activeWorkspaceId={activeWorkspaceId}
               workspaceNames={workspaceNames}
               onThreadSelect={onThreadSelect}
+              onClearWorkspaceFilter={() => onWorkspaceSelect(null)}
             />
             <Separator />
             <SidebarWorkspacesSection
