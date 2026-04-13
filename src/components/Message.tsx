@@ -14,6 +14,7 @@ import { VideoRow } from './VideoCard'
 import { A2EMediaResult } from './A2EMediaResult'
 import { MessageActionToolbar } from './MessageActionToolbar'
 import { ThinkingProcessPanel, type ThinkingPhase } from '@/components/ThinkingProcessPanel'
+import { Badge } from '@/components/ui/badge'
 
 interface MessageProps {
   message: MessageType
@@ -152,6 +153,14 @@ export function Message({
 
         {!isUser && message.tavilyAnswer && (
           <QuickAnswer answer={message.tavilyAnswer} isGenerating={isGenerating} />
+        )}
+
+        {!isUser && message.isDeepResearch && (
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="bg-accent/10 text-accent border-accent/20">
+              Deep Research
+            </Badge>
+          </div>
         )}
 
         {!isUser && message.a2eTask && <A2EMediaResult task={message.a2eTask} />}

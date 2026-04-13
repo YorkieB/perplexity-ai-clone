@@ -82,6 +82,30 @@ export interface ChatMessageMetadata {
   preTaskEstimate?: unknown | null
 }
 
+export interface DeepResearchFailure {
+  query: string
+  message: string
+}
+
+export interface DeepResearchMeta {
+  subQueries: string[]
+  succeededSubQueries: number
+  failedSubQueries: DeepResearchFailure[]
+  timingsMs: {
+    planning: number
+    searching: number
+    synthesizing: number
+    total: number
+  }
+}
+
+export interface DeepResearchProgress {
+  stage: 'planning' | 'searching' | 'synthesizing'
+  searchIndex: number
+  totalSearches: number
+  failedSearches: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -96,6 +120,7 @@ export interface Message {
   modelUsed?: string
   focusMode?: FocusMode
   isDeepResearch?: boolean
+  deepResearchMeta?: DeepResearchMeta
   followUpQuestions?: string[]
   isModelCouncil?: boolean
   modelResponses?: ModelResponse[]

@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CloudFile, UploadedFile, UserSettings } from '@/lib/types'
+import { CloudFile, DeepResearchProgress, UploadedFile, UserSettings } from '@/lib/types'
 import { processFile } from '@/lib/helpers'
 import { ragIngestBulk } from '@/lib/rag'
 import { fetchDigitalOceanModels, type DigitalOceanModelOption } from '@/lib/digitalocean-api'
@@ -47,7 +47,16 @@ import {
 import { useReplicateModelCatalog } from '@/hooks/useReplicateModelCatalog'
 
 interface QueryInputProps {
-  readonly onSubmit: (query: string, advancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilot?: boolean) => void
+  readonly onSubmit: (
+    query: string,
+    advancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    selectedModel?: string,
+    autopilot?: boolean,
+    deepResearch?: boolean
+  ) => void
   readonly isLoading?: boolean
   readonly placeholder?: string
   readonly advancedMode: boolean
@@ -57,6 +66,9 @@ interface QueryInputProps {
   readonly onToggleAutopilot?: () => void
   readonly onStopAutopilot?: () => void
   readonly autopilotRunning?: boolean
+  readonly webSearchEnabled?: boolean
+  readonly deepResearchProgress?: DeepResearchProgress | null
+  readonly onCancelDeepResearch?: () => void
 }
 
 export function QueryInput({
@@ -70,6 +82,9 @@ export function QueryInput({
   onToggleAutopilot,
   onStopAutopilot,
   autopilotRunning = false,
+  webSearchEnabled = true,
+  deepResearchProgress = null,
+  onCancelDeepResearch,
 }: QueryInputProps) {
   const [query, setQuery] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -80,6 +95,7 @@ export function QueryInput({
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [useModelCouncil, setUseModelCouncil] = useState(false)
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false)
   const [modelCouncilDialogOpen, setModelCouncilDialogOpen] = useState(false)
   const [selectedCouncilModels, setSelectedCouncilModels] = useState<string[]>(['gpt-4o', 'gpt-4o-mini'])
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false)
@@ -130,6 +146,31 @@ export function QueryInput({
     return [...openai, ...doItems, ...rep]
   }, [doModels, useDigitalOcean, replicateModelOptions])
 
+  useEffect(() => {
+    if (!webSearchEnabled && deepResearchEnabled) {
+      setDeepResearchEnabled(false)
+    }
+  }, [webSearchEnabled, deepResearchEnabled])
+
+  const toggleDeepResearch = () => {
+    if (!webSearchEnabled) {
+      toast.info('Deep research needs web search enabled.')
+      return
+    }
+    if (useModelCouncil && !deepResearchEnabled) {
+      setUseModelCouncil(false)
+      toast.info('Deep research uses a single synthesis pass, so Model Council was turned off.')
+    }
+    setDeepResearchEnabled((previous) => !previous)
+  }
+
+  const handleDeepResearchSwitchChange = (enabled: boolean) => {
+    if (enabled === deepResearchEnabled) {
+      return
+    }
+    toggleDeepResearch()
+  }
+
   const handleFilePreview = (file: UploadedFile) => {
     setPreviewFile(file)
     setPreviewOpen(true)
@@ -154,7 +195,16 @@ export function QueryInput({
 
   const handleSubmit = () => {
     if ((query.trim() || attachedFiles.length > 0) && !isLoading) {
-      onSubmit(query.trim(), advancedMode, attachedFiles.length > 0 ? attachedFiles : undefined, useModelCouncil, useModelCouncil ? selectedCouncilModels : undefined, selectedModel, autopilot)
+      onSubmit(
+        query.trim(),
+        advancedMode,
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        useModelCouncil,
+        useModelCouncil ? selectedCouncilModels : undefined,
+        selectedModel,
+        autopilot,
+        deepResearchEnabled
+      )
       setQuery('')
       setAttachedFiles([])
       setUseModelCouncil(false)
@@ -259,6 +309,11 @@ export function QueryInput({
     }
   }, [query])
 
+  const planningDone =
+    deepResearchProgress !== null &&
+    (deepResearchProgress.stage === 'searching' || deepResearchProgress.stage === 'synthesizing')
+  const searchingDone = deepResearchProgress !== null && deepResearchProgress.stage === 'synthesizing'
+
   return (
     <div className="space-y-3">
       {useModelCouncil && (
@@ -273,6 +328,57 @@ export function QueryInput({
           >
             <span className="text-xs underline">Disable</span>
           </button>
+        </div>
+      )}
+      {deepResearchEnabled && (
+        <div className="space-y-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <MagnifyingGlass size={16} className="text-accent" weight="bold" />
+            <span className="font-medium text-accent">Deep Research enabled</span>
+            <span className="text-xs text-muted-foreground">
+              Multi-step workflow: plan → search sub-queries → synthesize.
+            </span>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Advanced Analysis = deeper single-pass response. Deep Research = orchestrated multi-step web investigation.
+          </div>
+          <div className="space-y-1 text-xs">
+            <div className="flex items-center justify-between">
+              <span className={planningDone ? 'text-foreground' : 'text-muted-foreground'}>
+                {planningDone ? '✓' : deepResearchProgress?.stage === 'planning' ? '●' : '○'} Planning
+              </span>
+              <span className="text-muted-foreground">1 step</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className={searchingDone ? 'text-foreground' : 'text-muted-foreground'}>
+                {searchingDone ? '✓' : deepResearchProgress?.stage === 'searching' ? '●' : '○'} Searching
+              </span>
+              <span className="text-muted-foreground">
+                {deepResearchProgress?.stage === 'searching'
+                  ? `${String(deepResearchProgress.searchIndex)}/${String(deepResearchProgress.totalSearches)}`
+                  : deepResearchProgress
+                    ? `${String(deepResearchProgress.totalSearches)}/${String(deepResearchProgress.totalSearches)}`
+                    : '0/0'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className={deepResearchProgress?.stage === 'synthesizing' ? 'text-foreground' : 'text-muted-foreground'}>
+                {deepResearchProgress?.stage === 'synthesizing' ? '●' : '○'} Synthesizing
+              </span>
+              <span className="text-muted-foreground">
+                Failed sub-searches: {String(deepResearchProgress?.failedSearches ?? 0)}
+              </span>
+            </div>
+          </div>
+          {deepResearchProgress && onCancelDeepResearch && (
+            <button
+              type="button"
+              onClick={onCancelDeepResearch}
+              className="rounded-md border border-red-500/30 px-2 py-1 text-[11px] font-bold text-red-500 hover:bg-red-500/10"
+            >
+              Cancel deep research
+            </button>
+          )}
         </div>
       )}
       <div className="relative bg-card border border-border rounded-xl shadow-sm">
@@ -337,18 +443,28 @@ export function QueryInput({
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
-                  onClick={() => handleComingSoon('Deep research')}
+                  onClick={toggleDeepResearch}
+                  disabled={isLoading}
                 >
-                  <MagnifyingGlass size={18} className="text-muted-foreground" />
-                  <span className="flex-1 text-left">Deep research</span>
-                  <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20">
-                    New
+                  <MagnifyingGlass size={18} className={deepResearchEnabled ? 'text-accent' : 'text-muted-foreground'} />
+                  <span className="flex-1 text-left">
+                    Deep research {deepResearchEnabled ? '(On)' : '(Off)'}
+                  </span>
+                  <Badge
+                    variant="secondary"
+                    className="text-xs px-1.5 py-0 h-5 bg-accent/10 text-accent border-accent/20"
+                  >
+                    {webSearchEnabled ? 'New' : 'Web Off'}
                   </Badge>
                 </button>
 
                 <button
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm"
                   onClick={() => {
+                    if (deepResearchEnabled) {
+                      toast.info('Disable Deep research before enabling Model council.')
+                      return
+                    }
                     setModelCouncilDialogOpen(true)
                   }}
                 >
@@ -538,20 +654,40 @@ export function QueryInput({
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <Switch
-          id="advanced-mode"
-          checked={advancedMode}
-          onCheckedChange={onAdvancedModeChange}
-          disabled={isLoading}
-        />
-        <Label
-          htmlFor="advanced-mode"
-          className="flex items-center gap-2 cursor-pointer text-sm"
-        >
-          <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
-          <span>Enable Advanced Analysis</span>
-        </Label>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="advanced-mode"
+            checked={advancedMode}
+            onCheckedChange={onAdvancedModeChange}
+            disabled={isLoading}
+          />
+          <Label
+            htmlFor="advanced-mode"
+            className="flex items-center gap-2 cursor-pointer text-sm"
+          >
+            <Lightning size={16} weight={advancedMode ? 'fill' : 'regular'} className="text-accent" />
+            <span>Enable Advanced Analysis (single-pass depth)</span>
+          </Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch
+            id="deep-research-mode"
+            checked={deepResearchEnabled}
+            onCheckedChange={handleDeepResearchSwitchChange}
+            disabled={isLoading || !webSearchEnabled}
+          />
+          <Label
+            htmlFor="deep-research-mode"
+            className="flex items-center gap-2 cursor-pointer text-sm"
+          >
+            <MagnifyingGlass size={16} weight={deepResearchEnabled ? 'fill' : 'regular'} className="text-accent" />
+            <span>
+              Deep Research (plan + multi-search + synthesis)
+              {!webSearchEnabled ? ' — requires web search enabled' : ''}
+            </span>
+          </Label>
+        </div>
       </div>
 
       <FilePreviewModal file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
@@ -567,6 +703,7 @@ export function QueryInput({
         onConfirm={(models) => {
           setSelectedCouncilModels(models)
           setUseModelCouncil(true)
+          setDeepResearchEnabled(false)
           toast.success(`Model Council enabled with ${models.length} models`)
         }}
       />

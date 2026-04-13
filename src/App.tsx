@@ -1,7 +1,18 @@
 import { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
-import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, WorkspaceFile, UserSettings } from '@/lib/types'
+import {
+  Thread,
+  Workspace,
+  Message as MessageType,
+  Source,
+  UploadedFile,
+  FocusMode,
+  WorkspaceFile,
+  UserSettings,
+  DeepResearchMeta,
+  DeepResearchProgress,
+} from '@/lib/types'
 import { generateId, generateThreadTitle, processFile } from '@/lib/helpers'
 import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
 import { ragSearch } from '@/lib/rag'
@@ -52,9 +63,57 @@ import { getLearnedContext } from '@/lib/learning-engine'
 import { buildJarvisToolSystemPrompt } from '@/lib/jarvis-tool-system-prompt'
 import type { IdeChatPayload } from '@/lib/jarvis-ide-chat-types'
 import { presetToInstruction } from '@/lib/jarvis-ide-chat-types'
+import { callLlm } from '@/lib/llm'
 
 const MAX_WORKSPACE_FILES = 12
 const MAX_WORKSPACE_FILE_CONTENT_CHARS = 12000
+// Deep research limits keep Tavily usage bounded and predictable per request.
+const DEEP_RESEARCH_MIN_SUB_QUERIES = 3
+const DEEP_RESEARCH_MAX_SUB_QUERIES = 5
+const DEEP_RESEARCH_MAX_RESULTS_PER_QUERY = 8
+
+function parseDeepResearchPlan(rawPlan: string, userQuery: string): string[] {
+  const fallback = [
+    userQuery,
+    `${userQuery} latest developments`,
+    `${userQuery} expert analysis`,
+  ]
+
+  try {
+    const parsed = JSON.parse(rawPlan) as { subQueries?: unknown; queries?: unknown; steps?: unknown }
+    const candidateArrays = [parsed.subQueries, parsed.queries, parsed.steps]
+    const planSource = candidateArrays.find((value) => Array.isArray(value))
+    if (!Array.isArray(planSource)) {
+      return fallback
+    }
+
+    const cleaned = planSource
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length >= 8)
+
+    const deduped = Array.from(new Set(cleaned))
+    if (deduped.length >= DEEP_RESEARCH_MIN_SUB_QUERIES) {
+      return deduped.slice(0, DEEP_RESEARCH_MAX_SUB_QUERIES)
+    }
+  } catch (error) {
+    logAppDegradedPath('Deep research planner output parse failed; using fallback sub-queries.', error)
+  }
+
+  return fallback
+}
+
+function dedupeSourcesByUrl(sources: Source[]): Source[] {
+  const seen = new Set<string>()
+  const unique: Source[] = []
+  for (const source of sources) {
+    if (!seen.has(source.url)) {
+      seen.add(source.url)
+      unique.push(source)
+    }
+  }
+  return unique
+}
 
 function logAppDegradedPath(message: string, error: unknown): void {
   console.warn(`[App] ${message}`, error)
@@ -136,6 +195,8 @@ function MainApp() {
   const [mainAutopilot, setMainAutopilot] = useState(false)
   const [mainAutopilotRunning, setMainAutopilotRunning] = useState(false)
   const mainAutopilotAbortRef = useRef<AbortController | null>(null)
+  const [deepResearchProgress, setDeepResearchProgress] = useState<DeepResearchProgress | null>(null)
+  const deepResearchAbortRef = useRef<AbortController | null>(null)
 
   const browserControl = useBrowserControl()
   const { guideMode: browserGuideMode } = useBrowserGuideMode()
@@ -364,13 +425,25 @@ function MainApp() {
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity
-  const handleQuery = async (query: string, useAdvancedMode: boolean, files?: UploadedFile[], useModelCouncil?: boolean, selectedModels?: string[], selectedModel?: string, autopilotFlag?: boolean) => {
+  const handleQuery = async (
+    query: string,
+    useAdvancedMode: boolean,
+    files?: UploadedFile[],
+    useModelCouncil?: boolean,
+    selectedModels?: string[],
+    selectedModel?: string,
+    autopilotFlag?: boolean,
+    deepResearchFlag?: boolean,
+  ) => {
     setIsGenerating(true)
     const isAutopilot = autopilotFlag === true
+    const useDeepResearch = deepResearchFlag === true
+
     if (isAutopilot) {
       setMainAutopilotRunning(true)
       mainAutopilotAbortRef.current = new AbortController()
     }
+
     const workspaceForQuery = activeWorkspace
     const useWebSearchForQuery = workspaceForQuery?.includeWebSearch ?? globalWebSearchEnabled
     const workspaceFiles = workspaceForQuery?.workspaceFiles || []
@@ -410,44 +483,11 @@ function MainApp() {
         setCodeEditorOpen(true)
       }
 
-      let webSources: Source[] = []
-
-      if (useWebSearchForQuery) {
-        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
-        if ('error' in searchResult) {
-          toast.error(searchResult.message)
-        } else {
-          webSources = searchResult
-        }
-      }
-
       const systemPrompt = workspaceForQuery?.customSystemPrompt || ''
       const modeInstruction = useAdvancedMode
         ? ' Provide a comprehensive, in-depth analysis with detailed explanations.'
         : ''
-
-      let contextSection = ''
-      if (webSources.length > 0) {
-        contextSection = `\n\nWeb Search Results:\n${webSources
-          .map(
-            (source, idx) =>
-              `[${idx + 1}] ${source.title}\nURL: ${source.url}\nContent: ${source.snippet}\n`
-          )
-          .join('\n')}`
-      }
-
-      // RAG: retrieve relevant knowledge from the vector store
-      let ragContext = ''
-      try {
-        const ragResults = await ragSearch(query, 5)
-        if (ragResults.length > 0) {
-          ragContext = `\n\nRetrieved Knowledge:\n${ragResults
-            .map((r) => `[From: ${r.document_title}]\n${r.content}`)
-            .join('\n---\n')}`
-        }
-      } catch (error) {
-        logAppDegradedPath('RAG search failed during chat query; continuing without RAG context.', error)
-      }
+      const chatModel = selectedModel || 'gpt-4o-mini'
 
       let fileContext = ''
       if (files && files.length > 0) {
@@ -476,6 +516,232 @@ function MainApp() {
       const combinedFileContext = `${workspaceFileContext}${fileContext}`
       const hasAttachedFileContext = (files && files.length > 0) || workspaceFiles.length > 0
 
+      if (useDeepResearch && !useWebSearchForQuery) {
+        toast.error('Deep research requires web search. Enable web search to run multi-step web research.')
+        const assistantMessage: MessageType = {
+          id: generateId(),
+          role: 'assistant',
+          content:
+            'Deep research is disabled because web search is currently turned off for this workspace/thread. Enable web search and retry to run a multi-step web research pass.',
+          createdAt: Date.now(),
+          focusMode,
+          isDeepResearch: true,
+        }
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: [...t.messages, assistantMessage],
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
+        )
+        return
+      }
+
+      if (useDeepResearch) {
+        const deepResearchAbortController = new AbortController()
+        deepResearchAbortRef.current = deepResearchAbortController
+        const startedAt = Date.now()
+
+        setDeepResearchProgress({
+          stage: 'planning',
+          searchIndex: 0,
+          totalSearches: 0,
+          failedSearches: 0,
+        })
+
+        const plannerStartedAt = Date.now()
+        const plannerPrompt = `You are preparing a multi-step web research plan.
+Return JSON only with this exact shape:
+{"subQueries":["query 1","query 2","query 3"]}
+
+Rules:
+- Produce ${String(DEEP_RESEARCH_MIN_SUB_QUERIES)} to ${String(DEEP_RESEARCH_MAX_SUB_QUERIES)} sub-queries.
+- Each query must be distinct, specific, and directly useful for answering the user.
+- Respect focus mode: ${focusMode}.
+- If workspace/system context exists, include those constraints.
+
+User question: ${query}
+System prompt/context: ${systemPrompt || '[none]'}
+Workspace/file context: ${combinedFileContext || '[none]'}`
+        const rawPlan = await callLlm(plannerPrompt, chatModel, true, {
+          signal: deepResearchAbortController.signal,
+        })
+        const planningMs = Date.now() - plannerStartedAt
+
+        const subQueries = parseDeepResearchPlan(rawPlan, query).slice(0, DEEP_RESEARCH_MAX_SUB_QUERIES)
+        const failedSubQueries: DeepResearchMeta['failedSubQueries'] = []
+        const searchByQuery: Array<{ query: string; sources: Source[] }> = []
+
+        const searchingStartedAt = Date.now()
+        for (let index = 0; index < subQueries.length; index++) {
+          const subQuery = subQueries[index]
+          setDeepResearchProgress({
+            stage: 'searching',
+            searchIndex: index + 1,
+            totalSearches: subQueries.length,
+            failedSearches: failedSubQueries.length,
+          })
+
+          const searchResult = await executeWebSearch(subQuery, focusMode, true, {
+            signal: deepResearchAbortController.signal,
+            searchDepth: 'advanced',
+            maxResults: DEEP_RESEARCH_MAX_RESULTS_PER_QUERY,
+          })
+
+          if ('error' in searchResult) {
+            failedSubQueries.push({ query: subQuery, message: searchResult.message })
+            toast.error(`Deep research sub-search failed for "${subQuery}". Continuing with remaining steps.`)
+            searchByQuery.push({ query: subQuery, sources: [] })
+            continue
+          }
+
+          searchByQuery.push({ query: subQuery, sources: searchResult })
+        }
+        const searchingMs = Date.now() - searchingStartedAt
+
+        setDeepResearchProgress({
+          stage: 'synthesizing',
+          searchIndex: subQueries.length,
+          totalSearches: subQueries.length,
+          failedSearches: failedSubQueries.length,
+        })
+
+        const synthesisStartedAt = Date.now()
+        const synthesisPrompt = `You are a deep research assistant. Synthesize the collected web findings into a clear answer.
+
+When comparing options/sources, use markdown tables.
+Always call out uncertainty and conflicting evidence.
+Respect this system guidance: ${systemPrompt || '[none]'}${modeInstruction}
+
+User question:
+${query}
+
+Focus mode:
+${focusMode}
+
+Workspace/file context:
+${combinedFileContext || '[none]'}
+
+Research plan sub-queries:
+${subQueries.map((subQuery, idx) => `${idx + 1}. ${subQuery}`).join('\n')}
+
+Search findings by sub-query:
+${searchByQuery
+  .map((item, idx) => {
+    if (item.sources.length === 0) {
+      return `Sub-query ${idx + 1}: ${item.query}\nNo successful results.`
+    }
+    return `Sub-query ${idx + 1}: ${item.query}\n${item.sources
+      .map(
+        (source, sourceIdx) =>
+          `- [${sourceIdx + 1}] ${source.title}\n  URL: ${source.url}\n  Snippet: ${source.snippet}`
+      )
+      .join('\n')}`
+  })
+  .join('\n\n')}
+
+Failures:
+${failedSubQueries.length > 0 ? failedSubQueries.map((entry) => `- ${entry.query}: ${entry.message}`).join('\n') : 'None'}`
+
+        const response = await callLlm(synthesisPrompt, chatModel, false, {
+          signal: deepResearchAbortController.signal,
+        })
+        const synthesizingMs = Date.now() - synthesisStartedAt
+        const deepResearchFailureSummary =
+          failedSubQueries.length > 0
+            ? `\n\n---\n**Deep research search issues:**\n${failedSubQueries
+                .map((entry) => `- ${entry.query}: ${entry.message}`)
+                .join('\n')}`
+            : ''
+        const finalDeepResearchResponse = `${response}${deepResearchFailureSummary}`
+
+        const webSources = dedupeSourcesByUrl(searchByQuery.flatMap((item) => item.sources))
+        const followUpQuestions = await generateFollowUpQuestions(query, finalDeepResearchResponse, webSources)
+
+        const deepResearchMeta: DeepResearchMeta = {
+          subQueries,
+          succeededSubQueries: searchByQuery.filter((item) => item.sources.length > 0).length,
+          failedSubQueries,
+          timingsMs: {
+            planning: planningMs,
+            searching: searchingMs,
+            synthesizing: synthesizingMs,
+            total: Date.now() - startedAt,
+          },
+        }
+
+        if (failedSubQueries.length > 0) {
+          toast.warning(
+            `Deep research completed with ${String(failedSubQueries.length)} failed sub-search${
+              failedSubQueries.length === 1 ? '' : 'es'
+            }.`
+          )
+        }
+
+        const assistantMessage: MessageType = {
+          id: generateId(),
+          role: 'assistant',
+          content: finalDeepResearchResponse,
+          createdAt: Date.now(),
+          modelUsed: chatModel,
+          focusMode,
+          isDeepResearch: true,
+          deepResearchMeta,
+          sources: webSources.length > 0 ? webSources : undefined,
+          followUpQuestions,
+        }
+
+        setThreads((current) =>
+          (current || []).map((t) =>
+            t.id === thread.id
+              ? {
+                  ...t,
+                  messages: [...t.messages, assistantMessage],
+                  updatedAt: Date.now(),
+                }
+              : t
+          )
+        )
+        return
+      }
+
+      let webSources: Source[] = []
+      if (useWebSearchForQuery) {
+        const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
+        if ('error' in searchResult) {
+          toast.error(searchResult.message)
+        } else {
+          webSources = searchResult
+        }
+      }
+
+      let contextSection = ''
+      if (webSources.length > 0) {
+        contextSection = `\n\nWeb Search Results:\n${webSources
+          .map(
+            (source, idx) =>
+              `[${idx + 1}] ${source.title}\nURL: ${source.url}\nContent: ${source.snippet}\n`
+          )
+          .join('\n')}`
+      }
+
+      // RAG: retrieve relevant knowledge from the vector store
+      let ragContext = ''
+      try {
+        const ragResults = await ragSearch(query, 5)
+        if (ragResults.length > 0) {
+          ragContext = `\n\nRetrieved Knowledge:\n${ragResults
+            .map((r) => `[From: ${r.document_title}]\n${r.content}`)
+            .join('\n---\n')}`
+        }
+      } catch (error) {
+        logAppDegradedPath('RAG search failed during chat query; continuing without RAG context.', error)
+      }
+
       if (useModelCouncil) {
         const councilResult = await executeModelCouncil(
           query,
@@ -484,7 +750,7 @@ function MainApp() {
           systemPrompt + modeInstruction,
           selectedModels
         )
-        
+
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
@@ -545,8 +811,6 @@ function MainApp() {
 User query: ${query}
 
 ${sourceGuidance}${autopilotHint}`
-
-        const chatModel = selectedModel || 'gpt-4o-mini'
 
         const runOnce = async (prompt: string) => {
           return runChatWithTools({
@@ -633,10 +897,16 @@ ${sourceGuidance}${autopilotHint}`
         )
       }
     } catch (error) {
-      toast.error('Failed to generate response. Please try again.')
-      console.error(error)
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        toast.info('Deep research canceled.')
+      } else {
+        toast.error('Failed to generate response. Please try again.')
+        console.error(error)
+      }
     } finally {
       setIsGenerating(false)
+      setDeepResearchProgress(null)
+      deepResearchAbortRef.current = null
       if (isAutopilot) {
         setMainAutopilotRunning(false)
         mainAutopilotAbortRef.current = null
@@ -648,6 +918,10 @@ ${sourceGuidance}${autopilotHint}`
     mainAutopilotAbortRef.current?.abort()
     setMainAutopilotRunning(false)
     toast.info('Autopilot stopped')
+  }
+
+  const stopDeepResearch = () => {
+    deepResearchAbortRef.current?.abort()
   }
 
   const handleIdeChat = async (payload: IdeChatPayload): Promise<{ content: string; reasoning?: string }> => {
@@ -852,6 +1126,9 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              webSearchEnabled={isWorkspaceWebSearchEnabled}
+              deepResearchProgress={deepResearchProgress}
+              onCancelDeepResearch={stopDeepResearch}
             />
           </div>
         </div>
@@ -929,6 +1206,9 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
                 onToggleAutopilot={() => setMainAutopilot((p) => !p)}
                 onStopAutopilot={stopMainAutopilot}
                 autopilotRunning={mainAutopilotRunning}
+                webSearchEnabled={isWorkspaceWebSearchEnabled}
+                deepResearchProgress={deepResearchProgress}
+                onCancelDeepResearch={stopDeepResearch}
               />
             </div>
           </div>
@@ -956,6 +1236,9 @@ You are assisting from the IDE chat panel. Prefer ide_* tools for editor actions
               onToggleAutopilot={() => setMainAutopilot((p) => !p)}
               onStopAutopilot={stopMainAutopilot}
               autopilotRunning={mainAutopilotRunning}
+              webSearchEnabled={isWorkspaceWebSearchEnabled}
+              deepResearchProgress={deepResearchProgress}
+              onCancelDeepResearch={stopDeepResearch}
             />
           </div>
         </div>

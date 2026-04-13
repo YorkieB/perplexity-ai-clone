@@ -61,7 +61,8 @@ export function llmPrompt(strings: TemplateStringsArray, ...values: unknown[]): 
 export async function callLlm(
   prompt: string,
   model: string,
-  jsonMode = false
+  jsonMode = false,
+  options?: { signal?: AbortSignal }
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: normalizeLlmModelForApiRequest(model),
@@ -80,6 +81,7 @@ export async function callLlm(
   const response = await fetch('/api/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getLlmProviderHeadersForModel(model) },
+    signal: options?.signal,
     body: JSON.stringify(body),
   })
 

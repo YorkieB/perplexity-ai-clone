@@ -20,6 +20,12 @@ export interface SearchError {
   message: string
 }
 
+export interface ExecuteWebSearchOptions {
+  signal?: AbortSignal
+  searchDepth?: 'basic' | 'advanced'
+  maxResults?: number
+}
+
 function normalizeSearchResult(result: TavilySearchResult): Source | null {
   if (!result || typeof result.url !== 'string') return null
 
@@ -76,7 +82,8 @@ function getFocusModeSearchModifier(focusMode: FocusMode): string {
 export async function executeWebSearch(
   query: string,
   focusMode: FocusMode = 'all',
-  isDeepResearch: boolean = false
+  isDeepResearch: boolean = false,
+  options?: ExecuteWebSearchOptions
 ): Promise<Source[] | SearchError> {
   try {
     const apiKey = import.meta.env.VITE_TAVILY_API_KEY
@@ -97,12 +104,13 @@ export async function executeWebSearch(
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: options?.signal,
       body: JSON.stringify({
         api_key: apiKey,
         query: enhancedQuery,
-        search_depth: isDeepResearch ? 'advanced' : 'basic',
+        search_depth: options?.searchDepth ?? (isDeepResearch ? 'advanced' : 'basic'),
         include_answer: false,
-        max_results: isDeepResearch ? 12 : 6,
+        max_results: options?.maxResults ?? (isDeepResearch ? 12 : 6),
       }),
     })
 
@@ -128,6 +136,9 @@ export async function executeWebSearch(
 
     return sources
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
     console.error('Web search error:', error)
     return {
       error: true,
