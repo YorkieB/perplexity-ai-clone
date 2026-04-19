@@ -170,7 +170,7 @@
         "ts-jest": "^29.4.6",
         "typescript": "~5.7.2",
         "typescript-eslint": "^8.38.0",
-        "vite": "^7.2.6"
+        "vite": "^8.0.8"
     },
     "optionalDependencies": {
         "robotjs": "^0.7.0",
