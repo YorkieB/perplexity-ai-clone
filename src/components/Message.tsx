@@ -14,6 +14,8 @@ import { VideoRow } from './VideoCard'
 import { A2EMediaResult } from './A2EMediaResult'
 import { MessageActionToolbar } from './MessageActionToolbar'
 import { ThinkingProcessPanel, type ThinkingPhase } from '@/components/ThinkingProcessPanel'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
+import { getRegistrableDomain } from '@/lib/search-utils'
 
 interface MessageProps {
   message: MessageType
@@ -111,6 +113,35 @@ export function Message({
     )
   }
 
+  const groupedSources = (message.sources || []).reduce<
+    Array<{
+      domain: string
+      items: Array<{ source: NonNullable<MessageType['sources']>[number]; index: number }>
+    }>
+  >((groups, source, index) => {
+    const domain = getRegistrableDomain(source.domain || source.url)
+    const existing = groups.find((group) => group.domain === domain)
+    const item = { source, index }
+
+    if (existing) {
+      existing.items.push(item)
+    } else {
+      groups.push({ domain, items: [item] })
+    }
+    return groups
+  }, [])
+  const singleSourceItems = groupedSources
+    .filter((group) => group.items.length === 1)
+    .flatMap((group) => group.items)
+  const clusteredSourceGroups = groupedSources.filter((group) => group.items.length > 1)
+
+  const uniqueFollowUpQuestions = (message.followUpQuestions || []).filter((question, index, questions) => {
+    const normalized = question.trim().toLowerCase()
+    if (!normalized) return false
+    if (questions.findIndex((candidate) => candidate.trim().toLowerCase() === normalized) !== index) return false
+    return !message.content.toLowerCase().includes(normalized)
+  })
+
   return (
     <div
       className={cn(
@@ -161,17 +192,66 @@ export function Message({
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Sources
             </p>
-            <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-              {message.sources.map((source, index) => (
-                <SourceCard
-                  key={index}
-                  source={source}
-                  index={index + 1}
-                  isHighlighted={highlightedSource === index + 1}
-                />
-              ))}
-            </div>
+            {singleSourceItems.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                {singleSourceItems.map(({ source, index }) => (
+                  <SourceCard
+                    key={index}
+                    source={source}
+                    index={index + 1}
+                    isHighlighted={highlightedSource === index + 1}
+                  />
+                ))}
+              </div>
+            )}
+            {clusteredSourceGroups.length > 0 && (
+              <Accordion type="multiple" className="w-full rounded-md border border-border/60 px-3">
+                {clusteredSourceGroups.map((group) => (
+                  <AccordionItem key={group.domain} value={group.domain}>
+                    <AccordionTrigger className="py-3 text-sm">
+                      {group.domain} ({group.items.length})
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                        {group.items.map(({ source, index }) => (
+                          <SourceCard
+                            key={index}
+                            source={source}
+                            index={index + 1}
+                            isHighlighted={highlightedSource === index + 1}
+                          />
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                ))}
+              </Accordion>
+            )}
           </div>
+        )}
+
+        {!isUser && message.searchTrace && (
+          <Accordion type="single" collapsible className="w-full rounded-md border border-border/60 px-3">
+            <AccordionItem value="search-steps" className="border-b-0">
+              <AccordionTrigger className="py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Search steps
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-1 pb-2 text-sm">
+                  <p><span className="font-medium text-muted-foreground">Query:</span> {message.searchTrace.querySent}</p>
+                  <p><span className="font-medium text-muted-foreground">Focus:</span> {message.searchTrace.focusModeLabel}</p>
+                  <p><span className="font-medium text-muted-foreground">Advanced:</span> {message.searchTrace.advancedMode ? 'On' : 'Off'}</p>
+                  <p><span className="font-medium text-muted-foreground">Results:</span> {message.searchTrace.resultCount}</p>
+                  {typeof message.searchTrace.executedAt === 'number' && (
+                    <p>
+                      <span className="font-medium text-muted-foreground">Time:</span>{' '}
+                      {new Date(message.searchTrace.executedAt).toLocaleTimeString()}
+                    </p>
+                  )}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         )}
 
         {!isUser && message.images && message.images.length > 0 && (
@@ -205,12 +285,16 @@ export function Message({
             />
           )}
 
-        {!isUser && message.followUpQuestions && message.followUpQuestions.length > 0 && onFollowUpClick && (
-          <FollowUpQuestions
-            questions={message.followUpQuestions}
-            onQuestionClick={onFollowUpClick}
-            isLoading={isGenerating}
-          />
+        {!isUser && !message.isStreaming && message.followUpQuestions !== undefined && onFollowUpClick && (
+          uniqueFollowUpQuestions.length > 0 ? (
+            <FollowUpQuestions
+              questions={uniqueFollowUpQuestions}
+              onQuestionClick={onFollowUpClick}
+              isLoading={isGenerating}
+            />
+          ) : (
+            <p className="text-xs text-muted-foreground">No related questions right now.</p>
+          )
         )}
       </div>
 

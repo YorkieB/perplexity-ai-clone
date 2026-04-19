@@ -16,6 +16,14 @@ export interface Source {
   favicon?: string
 }
 
+export interface SearchTrace {
+  querySent: string
+  focusModeLabel: string
+  advancedMode: boolean
+  executedAt: number
+  resultCount: number
+}
+
 export interface SearchImage {
   url: string
   description?: string
@@ -104,6 +112,7 @@ export interface Message {
   a2eTask?: A2ETask
   isStreaming?: boolean
   reasoning?: string
+  searchTrace?: SearchTrace
 }
 
 export interface Thread {

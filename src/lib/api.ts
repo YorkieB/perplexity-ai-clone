@@ -2,6 +2,7 @@ import { callLlm, llmPrompt } from './llm'
 import { getPreferredChatModel } from './chat-preferences'
 import { Source, FocusMode } from './types'
 import { isSafeScheme, parseUrlSafely } from './url-validation'
+import { buildSearchQueryWithFocus, normalizeSourceUrlForDedupe } from './search-utils'
 
 export interface TavilySearchResult {
   url: string
@@ -55,22 +56,33 @@ function normalizeSearchResult(result: TavilySearchResult): Source | null {
   }
 }
 
-function getFocusModeSearchModifier(focusMode: FocusMode): string {
-  switch (focusMode) {
-    case 'academic':
-      return ' site:edu OR site:arxiv.org OR site:scholar.google.com'
-    case 'reddit':
-      return ' site:reddit.com'
-    case 'youtube':
-      return ' site:youtube.com'
-    case 'news':
-      return ' (news OR latest OR breaking)'
-    case 'code':
-      return ' site:github.com OR site:stackoverflow.com OR site:docs OR (code OR api OR library)'
-    case 'all':
-    default:
-      return ''
+function dedupeSourcesByNormalizedUrl(sources: Source[]): Source[] {
+  const deduped = new Map<string, Source>()
+
+  for (const source of sources) {
+    const normalized = normalizeSourceUrlForDedupe(source.url)
+    if (!normalized) continue
+
+    const existing = deduped.get(normalized)
+    if (!existing) {
+      deduped.set(normalized, source)
+      continue
+    }
+
+    const existingScore = existing.confidence ?? 0
+    const incomingScore = source.confidence ?? 0
+
+    // Keep the highest-confidence duplicate; for ties retain first occurrence.
+    if (incomingScore > existingScore) {
+      deduped.set(normalized, source)
+    }
   }
+
+  return Array.from(deduped.values())
+}
+
+export function buildWebSearchQuery(query: string, focusMode: FocusMode): string {
+  return buildSearchQueryWithFocus(query, focusMode)
 }
 
 export async function executeWebSearch(
@@ -89,8 +101,15 @@ export async function executeWebSearch(
       }
     }
 
-    const focusModifier = getFocusModeSearchModifier(focusMode)
-    const enhancedQuery = query + focusModifier
+    const enhancedQuery = buildWebSearchQuery(query, focusMode)
+    if (import.meta.env.DEV) {
+      console.debug('[API] Web search params', {
+        query: enhancedQuery,
+        focusMode,
+        searchDepth: isDeepResearch ? 'advanced' : 'basic',
+        maxResults: isDeepResearch ? 12 : 6,
+      })
+    }
 
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -114,19 +133,37 @@ export async function executeWebSearch(
       }
     }
 
-    const data: TavilySearchResponse = await response.json()
+    const payload: unknown = await response.json()
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      !Array.isArray((payload as { results?: unknown }).results)
+    ) {
+      console.warn('[API] Tavily search returned invalid payload shape; expected results array.', payload)
+      return {
+        error: true,
+        message: 'Search service returned an invalid response payload.',
+      }
+    }
 
-    const sources: Source[] = data.results
+    const data = payload as TavilySearchResponse
+    const normalizedSources: Source[] = data.results
       .map((result) => normalizeSearchResult(result))
       .filter((source): source is Source => source !== null)
+    const dedupedSources = dedupeSourcesByNormalizedUrl(normalizedSources)
 
-    if (sources.length !== data.results.length) {
+    if (normalizedSources.length !== data.results.length) {
       console.warn(
-        `[API] Dropped ${String(data.results.length - sources.length)} search results with invalid or unsafe URLs.`,
+        `[API] Dropped ${String(data.results.length - normalizedSources.length)} search results with invalid or unsafe URLs.`,
+      )
+    }
+    if (dedupedSources.length !== normalizedSources.length) {
+      console.warn(
+        `[API] Deduplicated ${String(normalizedSources.length - dedupedSources.length)} search results by normalized URL.`,
       )
     }
 
-    return sources
+    return dedupedSources
   } catch (error) {
     console.error('Web search error:', error)
     return {
@@ -153,12 +190,20 @@ Sources covered: ${sources.map((s) => s.title).join(', ')}
 Return a JSON object only, with this shape: {"questions": ["question1", "question2", "question3"]}. Each question must be specific and actionable.`
 
     const result = await callLlm(prompt, getPreferredChatModel('gpt-4o-mini'), true)
-    const parsed = JSON.parse(result)
-
-    if (parsed.questions && Array.isArray(parsed.questions)) {
-      return parsed.questions.slice(0, 3)
+    const parsed: unknown = JSON.parse(result)
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray((parsed as { questions?: unknown }).questions)
+    ) {
+      return (parsed as { questions: unknown[] }).questions
+        .filter((question): question is string => typeof question === 'string')
+        .map((question) => question.trim())
+        .filter((question) => question.length > 0)
+        .slice(0, 3)
     }
-    
+
+    console.warn('[API] Follow-up generation returned invalid payload shape; using empty follow-ups.', parsed)
     return []
   } catch (error) {
     console.error('Failed to generate follow-up questions:', error)
@@ -262,14 +307,31 @@ Return a JSON object with this structure:
 
   try {
     const analysisResult = await callLlm(analysisPrompt, getPreferredChatModel('gpt-4o-mini'), true)
-    const convergence = JSON.parse(analysisResult)
+    const parsed: unknown = JSON.parse(analysisResult)
+    const hasExpectedShape =
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof (parsed as { score?: unknown }).score === 'number' &&
+      Array.isArray((parsed as { commonThemes?: unknown }).commonThemes) &&
+      Array.isArray((parsed as { divergentPoints?: unknown }).divergentPoints)
+    if (!hasExpectedShape) {
+      console.warn(
+        '[API] Model council convergence payload missing expected shape; using normalized defaults.',
+        parsed,
+      )
+    }
+    const convergence = hasExpectedShape ? (parsed as { score: number; commonThemes: unknown[]; divergentPoints: unknown[] }) : {
+      score: 0,
+      commonThemes: [],
+      divergentPoints: [],
+    }
     
     return {
       models: responses,
       convergence: {
         score: convergence.score || 0,
-        commonThemes: convergence.commonThemes || [],
-        divergentPoints: convergence.divergentPoints || [],
+        commonThemes: (convergence.commonThemes || []).filter((item): item is string => typeof item === 'string'),
+        divergentPoints: (convergence.divergentPoints || []).filter((item): item is string => typeof item === 'string'),
       },
     }
   } catch (error) {

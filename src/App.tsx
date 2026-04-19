@@ -3,7 +3,8 @@ import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { Toaster, toast } from 'sonner'
 import { Thread, Workspace, Message as MessageType, Source, UploadedFile, FocusMode, WorkspaceFile, UserSettings } from '@/lib/types'
 import { generateId, generateThreadTitle, processFile } from '@/lib/helpers'
-import { executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
+import { buildWebSearchQuery, executeWebSearch, generateFollowUpQuestions, executeModelCouncil } from '@/lib/api'
+import { getFocusModeLabel } from '@/lib/search-utils'
 import { ragSearch } from '@/lib/rag'
 import { DEFAULT_USER_SETTINGS } from '@/lib/defaults'
 import { AppSidebar } from '@/components/AppSidebar'
@@ -411,6 +412,7 @@ function MainApp() {
       }
 
       let webSources: Source[] = []
+      let searchTrace: MessageType['searchTrace']
 
       if (useWebSearchForQuery) {
         const searchResult = await executeWebSearch(query, focusMode, useAdvancedMode)
@@ -418,6 +420,15 @@ function MainApp() {
           toast.error(searchResult.message)
         } else {
           webSources = searchResult
+          if (webSources.length > 0) {
+            searchTrace = {
+              querySent: buildWebSearchQuery(query, focusMode),
+              focusModeLabel: getFocusModeLabel(focusMode),
+              advancedMode: useAdvancedMode,
+              executedAt: Date.now(),
+              resultCount: webSources.length,
+            }
+          }
         }
       }
 
@@ -484,12 +495,17 @@ function MainApp() {
           systemPrompt + modeInstruction,
           selectedModels
         )
+        const synthesizedCouncilResponse = councilResult.models
+          .map((modelResult) => modelResult.content)
+          .join('\n\n')
+        const followUpQuestions = await generateFollowUpQuestions(query, synthesizedCouncilResponse, webSources)
         
         const assistantMessage: MessageType = {
           id: generateId(),
           role: 'assistant',
           content: 'Model Council Response',
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           focusMode,
           isModelCouncil: true,
@@ -497,6 +513,7 @@ function MainApp() {
             ...m,
             convergenceScore: councilResult.convergence.score,
           })),
+          followUpQuestions,
         }
 
         setThreads((current) =>
@@ -614,6 +631,7 @@ ${sourceGuidance}${autopilotHint}`
           content: response,
           reasoning: reasoning || undefined,
           sources: webSources.length > 0 ? webSources : undefined,
+          searchTrace,
           createdAt: Date.now(),
           modelUsed: chatModel,
           focusMode,
