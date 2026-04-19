@@ -24,37 +24,152 @@ interface MessageProps {
   isGenerating?: boolean
 }
 
-export function Message({
+type IndexedSource = {
+  source: NonNullable<MessageType['sources']>[number]
+  index: number
+}
+
+type SourceGroup = {
+  domain: string
+  items: IndexedSource[]
+}
+
+function groupSourcesByDomain(sources: MessageType['sources']): SourceGroup[] {
+  return (sources || []).reduce<SourceGroup[]>((groups, source, index) => {
+    const domain = getRegistrableDomain(source.domain || source.url)
+    const existing = groups.find((group) => group.domain === domain)
+    const item = { source, index }
+
+    if (existing) {
+      existing.items.push(item)
+    } else {
+      groups.push({ domain, items: [item] })
+    }
+
+    return groups
+  }, [])
+}
+
+function dedupeFollowUps(questions: string[] | undefined, messageContent: string): string[] {
+  return (questions || []).filter((question, index, allQuestions) => {
+    const normalized = question.trim().toLowerCase()
+    if (!normalized) return false
+    if (allQuestions.findIndex((candidate) => candidate.trim().toLowerCase() === normalized) !== index) return false
+    return !messageContent.toLowerCase().includes(normalized)
+  })
+}
+
+function SourceList({
+  items,
+  highlightedSource,
+}: {
+  items: IndexedSource[]
+  highlightedSource: number | null
+}) {
+  return (
+    <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+      {items.map(({ source, index }) => (
+        <SourceCard
+          key={index}
+          source={source}
+          index={index + 1}
+          isHighlighted={highlightedSource === index + 1}
+        />
+      ))}
+    </div>
+  )
+}
+
+function SourcesSection({
   message,
-  onFollowUpClick,
-  onRegenerateAssistant,
-  isGenerating = false,
-}: MessageProps) {
-  const isUser = message.role === 'user'
-  const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
-  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
-  const [previewOpen, setPreviewOpen] = useState(false)
+  highlightedSource,
+}: {
+  message: MessageType
+  highlightedSource: number | null
+}) {
+  if (!message.sources || message.sources.length === 0) return null
 
-  const handleFilePreview = (file: UploadedFile) => {
-    setPreviewFile(file)
-    setPreviewOpen(true)
-  }
+  const groupedSources = groupSourcesByDomain(message.sources)
+  const singleSourceItems = groupedSources
+    .filter((group) => group.items.length === 1)
+    .flatMap((group) => group.items)
+  const clusteredSourceGroups = groupedSources.filter((group) => group.items.length > 1)
 
-  const hasAnswerPreview = message.content.trim().length > 0
-  let thinkingPhase: ThinkingPhase = 'done'
-  if (message.isStreaming) {
-    thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
-  }
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Sources
+      </p>
+      {singleSourceItems.length > 0 && (
+        <SourceList items={singleSourceItems} highlightedSource={highlightedSource} />
+      )}
+      {clusteredSourceGroups.length > 0 && (
+        <Accordion type="multiple" className="w-full rounded-md border border-border/60 px-3">
+          {clusteredSourceGroups.map((group) => (
+            <AccordionItem key={group.domain} value={group.domain}>
+              <AccordionTrigger className="py-3 text-sm">
+                {group.domain} ({group.items.length})
+              </AccordionTrigger>
+              <AccordionContent>
+                <SourceList items={group.items} highlightedSource={highlightedSource} />
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      )}
+    </div>
+  )
+}
 
-  let mainContent: ReactNode
+function SearchTraceSection({ message }: { message: MessageType }) {
+  if (!message.searchTrace) return null
+
+  return (
+    <Accordion type="single" collapsible className="w-full rounded-md border border-border/60 px-3">
+      <AccordionItem value="search-steps" className="border-b-0">
+        <AccordionTrigger className="py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Search steps
+        </AccordionTrigger>
+        <AccordionContent>
+          <div className="space-y-1 pb-2 text-sm">
+            <p><span className="font-medium text-muted-foreground">Query:</span> {message.searchTrace.querySent}</p>
+            <p><span className="font-medium text-muted-foreground">Focus:</span> {message.searchTrace.focusModeLabel}</p>
+            <p><span className="font-medium text-muted-foreground">Advanced:</span> {message.searchTrace.advancedMode ? 'On' : 'Off'}</p>
+            <p><span className="font-medium text-muted-foreground">Results:</span> {message.searchTrace.resultCount}</p>
+            {typeof message.searchTrace.executedAt === 'number' && (
+              <p>
+                <span className="font-medium text-muted-foreground">Time:</span>{' '}
+                {new Date(message.searchTrace.executedAt).toLocaleTimeString()}
+              </p>
+            )}
+          </div>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  )
+}
+
+function buildMainContent({
+  isUser,
+  message,
+  thinkingPhase,
+  setHighlightedSource,
+}: {
+  isUser: boolean
+  message: MessageType
+  thinkingPhase: ThinkingPhase
+  setHighlightedSource: (sourceIndex: number | null) => void
+}): ReactNode {
   if (isUser) {
-    mainContent = (
+    return (
       <p className="text-foreground leading-relaxed whitespace-pre-wrap m-0">
         {message.content}
       </p>
     )
-  } else if (message.metadata?.type === 'clarification_required') {
-    mainContent = (
+  }
+
+  if (message.metadata?.type === 'clarification_required') {
+    return (
       <div
         className="rounded-lg border border-amber-500/45 bg-amber-500/[0.07] px-4 py-3 shadow-sm"
         role="note"
@@ -79,8 +194,10 @@ export function Message({
         </div>
       </div>
     )
-  } else if (message.isModelCouncil && message.modelResponses) {
-    mainContent = (
+  }
+
+  if (message.isModelCouncil && message.modelResponses) {
+    return (
       <ModelCouncilResponse
         modelResponses={message.modelResponses}
         convergenceScore={message.modelResponses[0]?.convergenceScore}
@@ -89,58 +206,60 @@ export function Message({
         onCitationHover={setHighlightedSource}
       />
     )
-  } else {
-    mainContent = (
-      <>
-        {!isUser && message.reasoning && (
-          <ThinkingProcessPanel
-            thinking={message.reasoning}
-            phase={thinkingPhase}
-            showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
-          />
-        )}
-        <MarkdownRenderer
-          content={message.content}
-          onCitationHover={setHighlightedSource}
-        />
-        {message.isStreaming && (
-          <span
-            className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
-            aria-hidden
-          />
-        )}
-      </>
-    )
   }
 
-  const groupedSources = (message.sources || []).reduce<
-    Array<{
-      domain: string
-      items: Array<{ source: NonNullable<MessageType['sources']>[number]; index: number }>
-    }>
-  >((groups, source, index) => {
-    const domain = getRegistrableDomain(source.domain || source.url)
-    const existing = groups.find((group) => group.domain === domain)
-    const item = { source, index }
+  return (
+    <>
+      {message.reasoning && (
+        <ThinkingProcessPanel
+          thinking={message.reasoning}
+          phase={thinkingPhase}
+          showThinkingCursor={Boolean(message.isStreaming && thinkingPhase === 'thinking')}
+        />
+      )}
+      <MarkdownRenderer
+        content={message.content}
+        onCitationHover={setHighlightedSource}
+      />
+      {message.isStreaming && (
+        <span
+          className="inline-block w-1.5 h-4 ml-0.5 align-baseline bg-accent animate-pulse rounded-sm"
+          aria-hidden
+        />
+      )}
+    </>
+  )
+}
 
-    if (existing) {
-      existing.items.push(item)
-    } else {
-      groups.push({ domain, items: [item] })
-    }
-    return groups
-  }, [])
-  const singleSourceItems = groupedSources
-    .filter((group) => group.items.length === 1)
-    .flatMap((group) => group.items)
-  const clusteredSourceGroups = groupedSources.filter((group) => group.items.length > 1)
+export function Message({
+  message,
+  onFollowUpClick,
+  onRegenerateAssistant,
+  isGenerating = false,
+}: MessageProps) {
+  const isUser = message.role === 'user'
+  const [highlightedSource, setHighlightedSource] = useState<number | null>(null)
+  const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
-  const uniqueFollowUpQuestions = (message.followUpQuestions || []).filter((question, index, questions) => {
-    const normalized = question.trim().toLowerCase()
-    if (!normalized) return false
-    if (questions.findIndex((candidate) => candidate.trim().toLowerCase() === normalized) !== index) return false
-    return !message.content.toLowerCase().includes(normalized)
+  const handleFilePreview = (file: UploadedFile) => {
+    setPreviewFile(file)
+    setPreviewOpen(true)
+  }
+
+  const hasAnswerPreview = message.content.trim().length > 0
+  let thinkingPhase: ThinkingPhase = 'done'
+  if (message.isStreaming) {
+    thinkingPhase = hasAnswerPreview ? 'answering' : 'thinking'
+  }
+  const mainContent = buildMainContent({
+    isUser,
+    message,
+    thinkingPhase,
+    setHighlightedSource,
   })
+
+  const uniqueFollowUpQuestions = dedupeFollowUps(message.followUpQuestions, message.content)
 
   return (
     <div
@@ -187,72 +306,9 @@ export function Message({
 
         {!isUser && message.a2eTask && <A2EMediaResult task={message.a2eTask} />}
 
-        {!isUser && message.sources && message.sources.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Sources
-            </p>
-            {singleSourceItems.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                {singleSourceItems.map(({ source, index }) => (
-                  <SourceCard
-                    key={index}
-                    source={source}
-                    index={index + 1}
-                    isHighlighted={highlightedSource === index + 1}
-                  />
-                ))}
-              </div>
-            )}
-            {clusteredSourceGroups.length > 0 && (
-              <Accordion type="multiple" className="w-full rounded-md border border-border/60 px-3">
-                {clusteredSourceGroups.map((group) => (
-                  <AccordionItem key={group.domain} value={group.domain}>
-                    <AccordionTrigger className="py-3 text-sm">
-                      {group.domain} ({group.items.length})
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                        {group.items.map(({ source, index }) => (
-                          <SourceCard
-                            key={index}
-                            source={source}
-                            index={index + 1}
-                            isHighlighted={highlightedSource === index + 1}
-                          />
-                        ))}
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            )}
-          </div>
-        )}
+        {!isUser && <SourcesSection message={message} highlightedSource={highlightedSource} />}
 
-        {!isUser && message.searchTrace && (
-          <Accordion type="single" collapsible className="w-full rounded-md border border-border/60 px-3">
-            <AccordionItem value="search-steps" className="border-b-0">
-              <AccordionTrigger className="py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Search steps
-              </AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-1 pb-2 text-sm">
-                  <p><span className="font-medium text-muted-foreground">Query:</span> {message.searchTrace.querySent}</p>
-                  <p><span className="font-medium text-muted-foreground">Focus:</span> {message.searchTrace.focusModeLabel}</p>
-                  <p><span className="font-medium text-muted-foreground">Advanced:</span> {message.searchTrace.advancedMode ? 'On' : 'Off'}</p>
-                  <p><span className="font-medium text-muted-foreground">Results:</span> {message.searchTrace.resultCount}</p>
-                  {typeof message.searchTrace.executedAt === 'number' && (
-                    <p>
-                      <span className="font-medium text-muted-foreground">Time:</span>{' '}
-                      {new Date(message.searchTrace.executedAt).toLocaleTimeString()}
-                    </p>
-                  )}
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
-        )}
+        {!isUser && <SearchTraceSection message={message} />}
 
         {!isUser && message.images && message.images.length > 0 && (
           <ImageGallery images={message.images} />

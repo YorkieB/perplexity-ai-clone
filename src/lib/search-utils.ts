@@ -47,7 +47,11 @@ export function normalizeSourceUrlForDedupe(rawUrl: string): string | null {
     url.hash = ''
 
     if (url.pathname.length > 1) {
-      url.pathname = url.pathname.replace(/\/+$/, '')
+      let pathname = url.pathname
+      while (pathname.length > 1 && pathname.endsWith('/')) {
+        pathname = pathname.slice(0, -1)
+      }
+      url.pathname = pathname
     }
 
     return url.toString()
